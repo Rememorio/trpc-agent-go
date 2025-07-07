@@ -7,6 +7,8 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/core/agent"
 	"trpc.group/trpc-go/trpc-agent-go/core/event"
+	"trpc.group/trpc-go/trpc-agent-go/core/knowledge"
+	knowledgetool "trpc.group/trpc-go/trpc-agent-go/core/knowledge/tool"
 	"trpc.group/trpc-go/trpc-agent-go/core/model"
 	"trpc.group/trpc-go/trpc-agent-go/core/tool"
 	"trpc.group/trpc-go/trpc-agent-go/core/tool/transfer"
@@ -14,6 +16,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/llmflow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	"trpc.group/trpc-go/trpc-agent-go/orchestration/planner"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry"
 )
 
 // Option is a function that configures an LLMAgent.
@@ -40,10 +43,10 @@ func WithInstruction(instruction string) Option {
 	}
 }
 
-// WithSystemPrompt sets the system prompt of the agent.
-func WithSystemPrompt(systemPrompt string) Option {
+// WithGlobalInstruction sets the global instruction of the agent.
+func WithGlobalInstruction(instruction string) Option {
 	return func(opts *Options) {
-		opts.SystemPrompt = systemPrompt
+		opts.GlobalInstruction = instruction
 	}
 }
 
@@ -110,6 +113,14 @@ func WithToolCallbacks(callbacks *tool.ToolCallbacks) Option {
 	}
 }
 
+// WithKnowledge sets the knowledge base for the agent.
+// If provided, the knowledge search tool will be automatically added to the agent's tools.
+func WithKnowledge(kb knowledge.Knowledge) Option {
+	return func(opts *Options) {
+		opts.Knowledge = kb
+	}
+}
+
 // Options contains configuration options for creating an LLMAgent.
 type Options struct {
 	// Name is the name of the agent.
@@ -120,8 +131,9 @@ type Options struct {
 	Description string
 	// Instruction is the instruction for the agent.
 	Instruction string
-	// SystemPrompt is the system prompt for the agent.
-	SystemPrompt string
+	// GlobalInstruction is the global instruction for the agent.
+	// It will be used for all agents in the agent tree.
+	GlobalInstruction string
 	// GenerationConfig contains the generation configuration.
 	GenerationConfig model.GenerationConfig
 	// ChannelBufferSize is the buffer size for event channels (default: 256).
@@ -140,6 +152,9 @@ type Options struct {
 	ModelCallbacks *model.ModelCallbacks
 	// ToolCallbacks contains callbacks for tool operations.
 	ToolCallbacks *tool.ToolCallbacks
+	// Knowledge is the knowledge base for the agent.
+	// If provided, the knowledge search tool will be automatically added.
+	Knowledge knowledge.Knowledge
 }
 
 // LLMAgent is an agent that uses an LLM to generate responses.
@@ -185,8 +200,8 @@ func New(name string, opts ...Option) *LLMAgent {
 	}
 
 	// 3. Instruction processor - adds instruction content and system prompt.
-	if options.Instruction != "" || options.SystemPrompt != "" {
-		instructionProcessor := processor.NewInstructionRequestProcessor(options.Instruction, options.SystemPrompt)
+	if options.Instruction != "" || options.GlobalInstruction != "" {
+		instructionProcessor := processor.NewInstructionRequestProcessor(options.Instruction, options.GlobalInstruction)
 		requestProcessors = append(requestProcessors, instructionProcessor)
 	}
 
@@ -225,15 +240,15 @@ func New(name string, opts ...Option) *LLMAgent {
 		flowOpts,
 	)
 
-	// Register tools from both tools and toolsets.
-	tools := registerTools(options.Tools, options.ToolSets)
+	// Register tools from both tools and toolsets, including knowledge search tool if provided.
+	tools := registerTools(options.Tools, options.ToolSets, options.Knowledge)
 
 	return &LLMAgent{
 		name:           name,
 		model:          options.Model,
 		description:    options.Description,
 		instruction:    options.Instruction,
-		systemPrompt:   options.SystemPrompt,
+		systemPrompt:   options.GlobalInstruction,
 		genConfig:      options.GenerationConfig,
 		flow:           llmFlow,
 		tools:          tools,
@@ -245,14 +260,10 @@ func New(name string, opts ...Option) *LLMAgent {
 	}
 }
 
-func registerTools(tools []tool.Tool, toolSets []tool.ToolSet) []tool.Tool {
-	if len(tools) == 0 && len(toolSets) == 0 {
-		return nil
-	}
-
+func registerTools(tools []tool.Tool, toolSets []tool.ToolSet, kb knowledge.Knowledge) []tool.Tool {
 	// Start with direct tools.
-	allTools := make([]tool.Tool, len(tools))
-	copy(allTools, tools)
+	allTools := make([]tool.Tool, 0, len(tools))
+	allTools = append(allTools, tools...)
 
 	// Add tools from each toolset.
 	ctx := context.Background()
@@ -263,12 +274,19 @@ func registerTools(tools []tool.Tool, toolSets []tool.ToolSet) []tool.Tool {
 		}
 	}
 
+	// Add knowledge search tool if knowledge base is provided.
+	if kb != nil {
+		allTools = append(allTools, knowledgetool.NewKnowledgeSearchTool(kb))
+	}
+
 	return allTools
 }
 
 // Run implements the agent.Agent interface.
 // It executes the LLM agent flow and returns a channel of events.
 func (a *LLMAgent) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *event.Event, error) {
+	ctx, span := telemetry.Tracer.Start(ctx, fmt.Sprintf("agent_run [%s]", a.name))
+	defer span.End()
 	// Ensure the invocation has a model set.
 	if invocation.Model == nil && a.model != nil {
 		invocation.Model = a.model
