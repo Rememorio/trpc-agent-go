@@ -138,6 +138,14 @@ type Memory interface {
 
 	// GetMemoryStats returns statistics about the memory system.
 	GetMemoryStats(ctx context.Context, appName, userID string) (*MemoryStats, error)
+
+	// SummarizeSession generates and stores a summary for the given session using LLM.
+	// Returns the generated summary or an error.
+	SummarizeSession(ctx context.Context, appName, userID, sessionID string) (string, error)
+
+	// GetSessionSummary retrieves the summary for the given session.
+	// Returns the summary string or an error.
+	GetSessionSummary(ctx context.Context, appName, userID, sessionID string) (string, error)
 }
 
 // MemoryStats represents statistics about the memory system.

@@ -23,13 +23,14 @@ var (
 
 // Session is the interface that all sessions must implement.
 type Session struct {
-	ID        string        `json:"id"`        // session id
-	AppName   string        `json:"appName"`   // app name
-	UserID    string        `json:"userID"`    // user id
-	State     StateMap      `json:"state"`     // session state with delta support
-	Events    []event.Event `json:"events"`    // session events
-	UpdatedAt time.Time     `json:"updatedAt"` // last update time
-	CreatedAt time.Time     `json:"createdAt"` // creation time
+	ID        string        `json:"id"`                // session id
+	AppName   string        `json:"appName"`           // app name
+	UserID    string        `json:"userID"`            // user id
+	State     StateMap      `json:"state"`             // session state with delta support
+	Events    []event.Event `json:"events"`            // session events
+	Summary   string        `json:"summary,omitempty"` // a short LLM-generated summary of the session
+	UpdatedAt time.Time     `json:"updatedAt"`         // last update time
+	CreatedAt time.Time     `json:"createdAt"`         // creation time
 }
 
 // Options is the options for getting a session.

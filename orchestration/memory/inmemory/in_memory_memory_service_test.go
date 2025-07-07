@@ -13,10 +13,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/core/model"
 	"trpc.group/trpc-go/trpc-agent-go/orchestration/memory"
 	"trpc.group/trpc-go/trpc-agent-go/orchestration/session"
+	ss "trpc.group/trpc-go/trpc-agent-go/orchestration/session/inmemory"
 )
 
 func TestInMemoryMemory_AddSessionToMemory(t *testing.T) {
-	mem := NewInMemoryMemory()
+	// For basic memory tests, LLM and sessionService are not required, so pass nil.
+	mem := NewInMemoryMemory(nil, nil)
 	ctx := context.Background()
 
 	// Create a test session.
@@ -53,7 +55,7 @@ func TestInMemoryMemory_AddSessionToMemory(t *testing.T) {
 }
 
 func TestInMemoryMemory_SearchMemory(t *testing.T) {
-	mem := NewInMemoryMemory()
+	mem := NewInMemoryMemory(nil, nil)
 	ctx := context.Background()
 
 	// Create a test session with multiple events.
@@ -113,7 +115,7 @@ func TestInMemoryMemory_SearchMemory(t *testing.T) {
 }
 
 func TestInMemoryMemory_SearchMemoryWithOptions(t *testing.T) {
-	mem := NewInMemoryMemory()
+	mem := NewInMemoryMemory(nil, nil)
 	ctx := context.Background()
 
 	// Create multiple test sessions.
@@ -185,7 +187,7 @@ func TestInMemoryMemory_SearchMemoryWithOptions(t *testing.T) {
 }
 
 func TestInMemoryMemory_DeleteMemory(t *testing.T) {
-	mem := NewInMemoryMemory()
+	mem := NewInMemoryMemory(nil, nil)
 	ctx := context.Background()
 
 	// Create a test session.
@@ -229,7 +231,7 @@ func TestInMemoryMemory_DeleteMemory(t *testing.T) {
 }
 
 func TestInMemoryMemory_DeleteUserMemories(t *testing.T) {
-	mem := NewInMemoryMemory()
+	mem := NewInMemoryMemory(nil, nil)
 	ctx := context.Background()
 
 	// Create test sessions for the same user.
@@ -296,7 +298,7 @@ func TestInMemoryMemory_DeleteUserMemories(t *testing.T) {
 }
 
 func TestInMemoryMemory_GetMemoryStats(t *testing.T) {
-	mem := NewInMemoryMemory()
+	mem := NewInMemoryMemory(nil, nil)
 	ctx := context.Background()
 
 	// Create a test session.
@@ -345,4 +347,72 @@ func TestInMemoryMemory_GetMemoryStats(t *testing.T) {
 	assert.Equal(t, float64(2), stats.AverageMemoriesPerSession)
 	assert.False(t, stats.OldestMemory.IsZero())
 	assert.False(t, stats.NewestMemory.IsZero())
+}
+
+// mockLLM is a mock implementation of model.Model for testing summary generation.
+type mockLLM struct{}
+
+func (m *mockLLM) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Content: "This is a mock summary.",
+			},
+		}},
+		Done: true,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func TestInMemoryMemory_SummarizeSessionAndGetSessionSummary(t *testing.T) {
+	// Create a mock LLM and a real in-memory session service.
+	llm := &mockLLM{}
+	sessService := ss.NewSessionService()
+	mem := NewInMemoryMemory(llm, sessService)
+	ctx := context.Background()
+
+	// Create a test session with user and assistant events.
+	sessionObj := &session.Session{
+		ID:      "summary-session-1",
+		AppName: "summary-app",
+		UserID:  "summary-user",
+		Events:  []event.Event{},
+	}
+	evt1 := event.NewResponseEvent("inv-1", "user", &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role:    model.RoleUser,
+				Content: "User message for summary.",
+			},
+		}},
+	})
+	evt2 := event.NewResponseEvent("inv-2", "assistant", &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role:    model.RoleAssistant,
+				Content: "Assistant reply for summary.",
+			},
+		}},
+	})
+	sessionObj.Events = append(sessionObj.Events, *evt1, *evt2)
+
+	// Store the session in the session service.
+	_, err := sessService.CreateSession(ctx, session.Key{AppName: sessionObj.AppName, UserID: sessionObj.UserID, SessionID: sessionObj.ID}, sessionObj.State)
+	assert.NoError(t, err)
+
+	// Overwrite events (CreateSession returns a new session with empty events).
+	stored, _ := sessService.GetSession(ctx, session.Key{AppName: sessionObj.AppName, UserID: sessionObj.UserID, SessionID: sessionObj.ID})
+	stored.Events = sessionObj.Events
+
+	// Test SummarizeSession.
+	summary, err := mem.SummarizeSession(ctx, sessionObj.AppName, sessionObj.UserID, sessionObj.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "This is a mock summary.", summary)
+
+	// Test GetSessionSummary.
+	gotSummary, err := mem.GetSessionSummary(ctx, sessionObj.AppName, sessionObj.UserID, sessionObj.ID)
+	assert.NoError(t, err)
+	assert.Equal(t, "This is a mock summary.", gotSummary)
 }

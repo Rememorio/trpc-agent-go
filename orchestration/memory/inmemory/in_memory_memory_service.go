@@ -3,6 +3,7 @@ package inmemory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -10,8 +11,29 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/core/event"
+	"trpc.group/trpc-go/trpc-agent-go/core/model"
 	"trpc.group/trpc-go/trpc-agent-go/orchestration/memory"
 	"trpc.group/trpc-go/trpc-agent-go/orchestration/session"
+	ss "trpc.group/trpc-go/trpc-agent-go/orchestration/session/inmemory"
+)
+
+var (
+	// ErrSessionNil is returned when a session is nil.
+	ErrSessionNil = errors.New("session cannot be nil")
+	// ErrAppNameAndUserIDRequired is returned when appName or userID is empty.
+	ErrAppNameAndUserIDRequired = errors.New("appName and userID are required")
+	// ErrAppNameUserIDSessionIDRequired is returned when appName, userID, or sessionID is empty.
+	ErrAppNameUserIDSessionIDRequired = errors.New("appName, userID, and sessionID are required")
+
+	// ErrLLMModelOrSessionServiceNotInitialized is returned when LLM model or session service is not initialized.
+	ErrLLMModelOrSessionServiceNotInitialized = errors.New("LLM model or session service not initialized")
+	// ErrSessionNotFound is returned when a session is not found.
+	ErrSessionNotFound = errors.New("session not found")
+	// ErrEmptySummaryFromLLM is returned when the summary from LLM is empty.
+	ErrEmptySummaryFromLLM = errors.New("empty summary from LLM")
+
+	// letterRe is a regular expression to find words (letters only).
+	letterRe = regexp.MustCompile(`[A-Za-z]+`)
 )
 
 // InMemoryMemory is an in-memory memory service for prototyping and testing purposes.
@@ -22,13 +44,20 @@ type InMemoryMemory struct {
 	sessionEvents map[string]map[string][]*event.Event
 	// userKeys stores user keys for quick lookup.
 	userKeys map[string]bool
+
+	// llm is the injected LLM model for session summarization.
+	llm model.Model
+	// sessionService is the injected session service for session retrieval and update.
+	sessionService *ss.SessionService
 }
 
-// NewInMemoryMemory creates a new in-memory memory service.
-func NewInMemoryMemory() *InMemoryMemory {
+// NewInMemoryMemory creates a new in-memory memory service with LLM and session service.
+func NewInMemoryMemory(llm model.Model, sessionService *ss.SessionService) *InMemoryMemory {
 	return &InMemoryMemory{
-		sessionEvents: make(map[string]map[string][]*event.Event),
-		userKeys:      make(map[string]bool),
+		sessionEvents:  make(map[string]map[string][]*event.Event),
+		userKeys:       make(map[string]bool),
+		llm:            llm,
+		sessionService: sessionService,
 	}
 }
 
@@ -41,8 +70,7 @@ func userKey(appName, userID string) string {
 func extractWordsLower(text string) map[string]bool {
 	words := make(map[string]bool)
 	// Use regex to find words (letters only).
-	re := regexp.MustCompile(`[A-Za-z]+`)
-	matches := re.FindAllString(text, -1)
+	matches := letterRe.FindAllString(text, -1)
 	for _, match := range matches {
 		words[strings.ToLower(match)] = true
 	}
@@ -52,7 +80,7 @@ func extractWordsLower(text string) map[string]bool {
 // AddSessionToMemory adds a session to the memory service.
 func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, session *session.Session) error {
 	if session == nil {
-		return fmt.Errorf("session cannot be nil")
+		return ErrSessionNil
 	}
 
 	m.mu.Lock()
@@ -83,7 +111,7 @@ func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, session *sessio
 // SearchMemory searches for sessions that match the query.
 func (m *InMemoryMemory) SearchMemory(ctx context.Context, appName, userID, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
 	if appName == "" || userID == "" {
-		return nil, fmt.Errorf("appName and userID are required")
+		return nil, ErrAppNameAndUserIDRequired
 	}
 
 	startTime := time.Now()
@@ -195,7 +223,7 @@ func (m *InMemoryMemory) SearchMemory(ctx context.Context, appName, userID, quer
 // DeleteMemory deletes memories for a specific session.
 func (m *InMemoryMemory) DeleteMemory(ctx context.Context, appName, userID, sessionID string) error {
 	if appName == "" || userID == "" || sessionID == "" {
-		return fmt.Errorf("appName, userID, and sessionID are required")
+		return ErrAppNameUserIDSessionIDRequired
 	}
 
 	m.mu.Lock()
@@ -218,7 +246,7 @@ func (m *InMemoryMemory) DeleteMemory(ctx context.Context, appName, userID, sess
 // DeleteUserMemories deletes all memories for a specific user.
 func (m *InMemoryMemory) DeleteUserMemories(ctx context.Context, appName, userID string) error {
 	if appName == "" || userID == "" {
-		return fmt.Errorf("appName and userID are required")
+		return ErrAppNameAndUserIDRequired
 	}
 
 	m.mu.Lock()
@@ -234,7 +262,7 @@ func (m *InMemoryMemory) DeleteUserMemories(ctx context.Context, appName, userID
 // GetMemoryStats returns statistics about the memory system.
 func (m *InMemoryMemory) GetMemoryStats(ctx context.Context, appName, userID string) (*memory.MemoryStats, error) {
 	if appName == "" || userID == "" {
-		return nil, fmt.Errorf("appName and userID are required")
+		return nil, ErrAppNameAndUserIDRequired
 	}
 
 	m.mu.RLock()
@@ -280,3 +308,85 @@ func (m *InMemoryMemory) GetMemoryStats(ctx context.Context, appName, userID str
 		AverageMemoriesPerSession: averageMemoriesPerSession,
 	}, nil
 }
+
+// SummarizeSession generates and stores a summary for the given session using LLM.
+// Returns the generated summary or an error.
+func (m *InMemoryMemory) SummarizeSession(ctx context.Context, appName, userID, sessionID string) (string, error) {
+	if m.llm == nil || m.sessionService == nil {
+		return "", ErrLLMModelOrSessionServiceNotInitialized
+	}
+	// Retrieve the session.
+	sess, err := m.sessionService.GetSession(ctx, session.Key{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		return "", err
+	}
+	if sess == nil {
+		return "", ErrSessionNotFound
+	}
+	// Build the prompt from session events (only user/assistant messages).
+	var prompt strings.Builder
+	prompt.WriteString("Summarize the following session in a concise paragraph for future reference.\n")
+	for _, ev := range sess.Events {
+		if ev.Response != nil && len(ev.Response.Choices) > 0 {
+			for _, choice := range ev.Response.Choices {
+				role := string(choice.Message.Role)
+				if (role == "user" || role == "assistant") && choice.Message.Content != "" {
+					prompt.WriteString(fmt.Sprintf("%s: %s\n", role, choice.Message.Content))
+				}
+			}
+		}
+	}
+	// Call LLM to generate summary.
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewSystemMessage(prompt.String()),
+		},
+		GenerationConfig: model.GenerationConfig{
+			MaxTokens:   intPtr(256),
+			Temperature: floatPtr(0.3),
+			Stream:      false,
+		},
+	}
+	respChan, err := m.llm.GenerateContent(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	var summary string
+	for resp := range respChan {
+		if resp.Error != nil {
+			return "", errors.New(resp.Error.Message)
+		}
+		if len(resp.Choices) > 0 {
+			summary = resp.Choices[0].Message.Content
+			break
+		}
+	}
+	if summary == "" {
+		return "", ErrEmptySummaryFromLLM
+	}
+	// Store summary in session using sessionService.
+	err = m.sessionService.UpdateSessionSummary(ctx, session.Key{AppName: appName, UserID: userID, SessionID: sessionID}, summary)
+	if err != nil {
+		return "", err
+	}
+	return summary, nil
+}
+
+// GetSessionSummary retrieves the summary for the given session.
+// Returns the summary string or an error.
+func (m *InMemoryMemory) GetSessionSummary(ctx context.Context, appName, userID, sessionID string) (string, error) {
+	if m.sessionService == nil {
+		return "", ErrLLMModelOrSessionServiceNotInitialized
+	}
+	sess, err := m.sessionService.GetSession(ctx, session.Key{AppName: appName, UserID: userID, SessionID: sessionID})
+	if err != nil {
+		return "", err
+	}
+	if sess == nil {
+		return "", ErrSessionNotFound
+	}
+	return sess.Summary, nil
+}
+
+func intPtr(i int) *int           { return &i }
+func floatPtr(f float64) *float64 { return &f }

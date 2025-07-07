@@ -181,7 +181,7 @@ func (s *SessionService) GetSession(
 
 	copiedSess := copySession(sess)
 
-	// apply filtering options if provided
+	// Apply filtering options if provided.
 	applyGetSessionOptions(copiedSess, opt)
 	return mergeState(app.appState, app.userState[key.UserID], copiedSess), nil
 }
@@ -454,16 +454,20 @@ func (s *SessionService) updateSessionState(sess *session.Session, event *event.
 	sess.UpdatedAt = time.Now()
 }
 
-// copySession creates a  copy of a session.
+// copySession creates a copy of a session.
 func copySession(sess *session.Session) *session.Session {
+	if sess == nil {
+		return nil
+	}
 	copiedSess := &session.Session{
 		ID:        sess.ID,
 		AppName:   sess.AppName,
 		UserID:    sess.UserID,
-		State:     make(session.StateMap), // Create new state to avoid reference sharing
+		State:     make(session.StateMap), // Create new state to avoid reference sharing.
 		Events:    make([]event.Event, len(sess.Events)),
+		Summary:   sess.Summary,
 		UpdatedAt: sess.UpdatedAt,
-		CreatedAt: sess.CreatedAt, // Add missing CreatedAt field
+		CreatedAt: sess.CreatedAt, // Add missing CreatedAt field.
 	}
 
 	// copy state
@@ -513,4 +517,54 @@ func applyOptions(opts ...session.Option) *session.Options {
 		o(opt)
 	}
 	return opt
+}
+
+// UpdateSessionSummary sets or updates the summary for the given session.
+// If the session does not exist, it returns nil.
+func (s *SessionService) UpdateSessionSummary(ctx context.Context, key session.Key, summary string) error {
+	if err := key.CheckSessionKey(); err != nil {
+		return err
+	}
+	app, ok := s.getAppSessions(key.AppName)
+	if !ok {
+		return nil
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	userSessions, ok := app.sessions[key.UserID]
+	if !ok {
+		return nil
+	}
+	sess, ok := userSessions[key.SessionID]
+	if !ok {
+		return nil
+	}
+	sess.Summary = summary
+	sess.UpdatedAt = time.Now()
+	return nil
+}
+
+// DeleteSessionSummary deletes the summary for the given session.
+// If the session does not exist, it returns nil.
+func (s *SessionService) DeleteSessionSummary(ctx context.Context, key session.Key) error {
+	if err := key.CheckSessionKey(); err != nil {
+		return err
+	}
+	app, ok := s.getAppSessions(key.AppName)
+	if !ok {
+		return nil
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	userSessions, ok := app.sessions[key.UserID]
+	if !ok {
+		return nil
+	}
+	sess, ok := userSessions[key.SessionID]
+	if !ok {
+		return nil
+	}
+	sess.Summary = ""
+	sess.UpdatedAt = time.Now()
+	return nil
 }
