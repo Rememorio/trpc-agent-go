@@ -157,10 +157,10 @@ type MemoryStats struct {
 	TotalSessions int `json:"totalSessions"`
 
 	// OldestMemory is the timestamp of the oldest memory.
-	OldestMemory time.Time `json:"oldestMemory,omitempty"`
+	OldestMemory time.Time `json:"oldestMemory"`
 
 	// NewestMemory is the timestamp of the newest memory.
-	NewestMemory time.Time `json:"newestMemory,omitempty"`
+	NewestMemory time.Time `json:"newestMemory"`
 
 	// AverageMemoriesPerSession is the average number of memories per session.
 	AverageMemoriesPerSession float64 `json:"averageMemoriesPerSession,omitempty"`
