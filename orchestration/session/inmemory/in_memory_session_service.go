@@ -465,7 +465,6 @@ func copySession(sess *session.Session) *session.Session {
 		UserID:    sess.UserID,
 		State:     make(session.StateMap), // Create new state to avoid reference sharing.
 		Events:    make([]event.Event, len(sess.Events)),
-		Summary:   sess.Summary,
 		UpdatedAt: sess.UpdatedAt,
 		CreatedAt: sess.CreatedAt, // Add missing CreatedAt field.
 	}
@@ -539,7 +538,6 @@ func (s *SessionService) UpdateSessionSummary(ctx context.Context, key session.K
 	if !ok {
 		return nil
 	}
-	sess.Summary = summary
 	sess.UpdatedAt = time.Now()
 	return nil
 }
@@ -564,7 +562,6 @@ func (s *SessionService) DeleteSessionSummary(ctx context.Context, key session.K
 	if !ok {
 		return nil
 	}
-	sess.Summary = ""
 	sess.UpdatedAt = time.Now()
 	return nil
 }
