@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/core/agent"
-	"trpc.group/trpc-go/trpc-agent-go/core/agent/llmagent"
-	"trpc.group/trpc-go/trpc-agent-go/core/event"
-	"trpc.group/trpc-go/trpc-agent-go/core/model"
-	"trpc.group/trpc-go/trpc-agent-go/core/model/openai"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool/function"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/runner"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
+	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
 
 func main() {
@@ -205,7 +205,7 @@ func (c *multiTurnChatWithCallbacks) setup(_ context.Context) error {
 	)
 
 	appName := "multi-turn-chat-callbacks"
-	c.runner = runner.New(
+	c.runner = runner.NewRunner(
 		appName,
 		llmAgent,
 	)

@@ -11,15 +11,15 @@ import (
 	"strings"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/core/agent"
-	"trpc.group/trpc-go/trpc-agent-go/core/agent/llmagent"
-	"trpc.group/trpc-go/trpc-agent-go/core/event"
-	"trpc.group/trpc-go/trpc-agent-go/core/model"
-	"trpc.group/trpc-go/trpc-agent-go/core/model/openai"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool/function"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool/mcp"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/runner"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
+	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+	"trpc.group/trpc-go/trpc-agent-go/tool/mcp"
 )
 
 func main() {
@@ -27,10 +27,10 @@ func main() {
 	modelName := flag.String("model", "deepseek-chat", "Name of the model to use")
 	flag.Parse()
 
-	fmt.Printf("🚀 Streamable HTTP and STDIO MCP tools usage\n")
+	fmt.Printf("🚀 MCP tools usage (STDIO, Streamable HTTP, and SSE)\n")
 	fmt.Printf("Model: %s\n", *modelName)
 	fmt.Printf("Type 'exit' to end the conversation\n")
-	fmt.Printf("Available tools: calculator, current_time, echo, add, get_weather, get_news\n")
+	fmt.Printf("Available tools: calculator, current_time, echo, add, get_weather, get_news, sse_echo, sse_info\n")
 	fmt.Println(strings.Repeat("=", 50))
 
 	// Create and run the chat.
@@ -97,7 +97,21 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 		},
 		mcp.WithToolFilter(mcp.NewIncludeFilter("get_weather", "get_news")),
 	)
-	fmt.Println("MCP Toolset created successfully")
+	fmt.Println("Streamable MCP Toolset created successfully")
+
+	// Create SSE MCP tools.
+	sseToolSet := mcp.NewMCPToolSet(
+		mcp.ConnectionConfig{
+			Transport: "sse",
+			ServerURL: "http://localhost:8080/sse", // SSE server URL.
+			Timeout:   10 * time.Second,
+			Headers: map[string]string{
+				"User-Agent": "trpc-agent-go/1.0.0",
+			},
+		},
+		mcp.WithToolFilter(mcp.NewIncludeFilter("sse_recipe", "sse_health_tip")),
+	)
+	fmt.Println("SSE MCP Toolset created successfully")
 
 	// Create LLM agent with tools.
 	genConfig := model.GenerationConfig{
@@ -115,12 +129,12 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 		llmagent.WithGenerationConfig(genConfig),
 		llmagent.WithChannelBufferSize(100),
 		llmagent.WithTools([]tool.Tool{calculatorTool, timeTool}),
-		llmagent.WithToolSets([]tool.ToolSet{stdioToolSet, streamableToolSet}),
+		llmagent.WithToolSets([]tool.ToolSet{stdioToolSet, streamableToolSet, sseToolSet}),
 	)
 
 	// Create runner.
 	appName := "multi-turn-chat"
-	c.runner = runner.New(
+	c.runner = runner.NewRunner(
 		appName,
 		llmAgent,
 	)
@@ -128,6 +142,9 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 	// Setup identifiers.
 	c.userID = "user"
 	c.sessionID = fmt.Sprintf("chat-session-%d", time.Now().Unix())
+
+	// Store toolsets for proper cleanup.
+	c.mcpToolSet = []*mcp.ToolSet{stdioToolSet, streamableToolSet, sseToolSet}
 
 	fmt.Printf("✅ Chat ready! Session: %s\n\n", c.sessionID)
 

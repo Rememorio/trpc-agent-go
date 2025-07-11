@@ -5,8 +5,8 @@ import (
 	"context"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/core/event"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/session"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 // MemoryEntry represents a single memory entry.

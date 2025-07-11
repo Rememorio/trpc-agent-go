@@ -12,28 +12,27 @@ import (
 	"strings"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/core/agent"
-	"trpc.group/trpc-go/trpc-agent-go/core/agent/llmagent"
-	"trpc.group/trpc-go/trpc-agent-go/core/event"
-	"trpc.group/trpc-go/trpc-agent-go/core/knowledge"
-	openaiembedder "trpc.group/trpc-go/trpc-agent-go/core/knowledge/embedder/openai"
-	"trpc.group/trpc-go/trpc-agent-go/core/knowledge/source"
-	autosource "trpc.group/trpc-go/trpc-agent-go/core/knowledge/source/auto"
-	dirsource "trpc.group/trpc-go/trpc-agent-go/core/knowledge/source/dir"
-	filesource "trpc.group/trpc-go/trpc-agent-go/core/knowledge/source/file"
-	urlsource "trpc.group/trpc-go/trpc-agent-go/core/knowledge/source/url"
-	storageinmemory "trpc.group/trpc-go/trpc-agent-go/core/knowledge/storage/inmemory"
-	vectorinmemory "trpc.group/trpc-go/trpc-agent-go/core/knowledge/vectorstore/inmemory"
-	"trpc.group/trpc-go/trpc-agent-go/core/model"
-	openaimodel "trpc.group/trpc-go/trpc-agent-go/core/model/openai"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool/function"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/runner"
-	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/orchestration/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge"
+	openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+	"trpc.group/trpc-go/trpc-agent-go/knowledge/source"
+	autosource "trpc.group/trpc-go/trpc-agent-go/knowledge/source/auto"
+	dirsource "trpc.group/trpc-go/trpc-agent-go/knowledge/source/dir"
+	filesource "trpc.group/trpc-go/trpc-agent-go/knowledge/source/file"
+	urlsource "trpc.group/trpc-go/trpc-agent-go/knowledge/source/url"
+	vectorinmemory "trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	openaimodel "trpc.group/trpc-go/trpc-agent-go/model/openai"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
+	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
 
 var (
-	modelName = flag.String("model", "deepseek-chat", "Name of the model to use")
+	modelName = flag.String("model", "claude-4-sonnet-20250514", "Name of the model to use")
 )
 
 func main() {
@@ -62,7 +61,7 @@ type knowledgeChat struct {
 	runner    runner.Runner
 	userID    string
 	sessionID string
-	kb        knowledge.Knowledge
+	kb        *knowledge.BuiltinKnowledge
 }
 
 // run starts the interactive chat session.
@@ -126,7 +125,7 @@ func (c *knowledgeChat) setup(ctx context.Context) error {
 
 	// Create runner.
 	appName := "knowledge-chat"
-	c.runner = runner.New(
+	c.runner = runner.NewRunner(
 		appName,
 		llmAgent,
 		runner.WithSessionService(sessionService),
@@ -144,37 +143,37 @@ func (c *knowledgeChat) setup(ctx context.Context) error {
 
 // setupKnowledgeBase creates a built-in knowledge base with sample documents.
 func (c *knowledgeChat) setupKnowledgeBase(ctx context.Context) error {
-	// Create in-memory storage and vector store.
-	storage := storageinmemory.New()
+	// Create in-memory vector store.
 	vectorStore := vectorinmemory.New()
 
 	// Use OpenAI embedder for demonstration (replace with your API key).
-	embedder := openaiembedder.New(
-		openaiembedder.WithAPIKey("sk-your-openai-key"),
-	)
+	embedder := openaiembedder.New()
 
 	// Create diverse sources showcasing different types.
 	sources := []source.Source{
 		// File source for local documentation (if files exist).
 		filesource.New(
-			[]string{"README.md", "docs/api.md"},
-			filesource.WithName("Project Documentation"),
+			[]string{
+				"./data/llm.md",
+			},
+			filesource.WithName("Large Language Model"),
 			filesource.WithMetadataValue("type", "documentation"),
 		),
 
 		dirsource.New(
-			[]string{"/data"},
+			[]string{
+				"./dir",
+			},
 			dirsource.WithName("Data Directory"),
 		),
 
 		// URL source for web content.
 		urlsource.New(
 			[]string{
-				"https://golang.org/doc/",
-				"https://pkg.go.dev/",
+				"https://en.wikipedia.org/wiki/Byte-pair_encoding",
 			},
-			urlsource.WithName("Go Documentation"),
-			urlsource.WithMetadataValue("topic", "Go Programming"),
+			urlsource.WithName("Byte-pair encoding"),
+			urlsource.WithMetadataValue("topic", "Byte-pair encoding"),
 			urlsource.WithMetadataValue("source", "official"),
 		),
 
@@ -182,8 +181,8 @@ func (c *knowledgeChat) setupKnowledgeBase(ctx context.Context) error {
 		autosource.New(
 			[]string{
 				"Cloud computing is the delivery of computing services over the internet, including servers, storage, databases, networking, software, and analytics. It provides on-demand access to shared computing resources.",
-				"https://kubernetes.io/docs/concepts/",
-				"./examples/README.md",
+				"https://en.wikipedia.org/wiki/N-gram",
+				"./README.md",
 			},
 			autosource.WithName("Mixed Content Source"),
 			autosource.WithMetadataValue("topic", "Cloud Computing"),
@@ -193,12 +192,21 @@ func (c *knowledgeChat) setupKnowledgeBase(ctx context.Context) error {
 
 	// Create built-in knowledge base with all components.
 	c.kb = knowledge.New(
-		knowledge.WithStorage(storage),
 		knowledge.WithVectorStore(vectorStore),
 		knowledge.WithEmbedder(embedder),
 		knowledge.WithSources(sources),
 	)
-
+	// Load the knowledge base.
+	if err := c.kb.Load(
+		ctx,
+		knowledge.WithShowProgress(false),  // The default is true.
+		knowledge.WithProgressStepSize(10), // The default is 10.
+		knowledge.WithShowStats(false),     // The default is true.
+		knowledge.WithSourceConcurrency(4), // The default is min(4, len(sources)).
+		knowledge.WithDocConcurrency(64),   // The default is runtime.NumCPU().
+	); err != nil {
+		return fmt.Errorf("failed to load knowledge base: %w", err)
+	}
 	return nil
 }
 
@@ -212,14 +220,15 @@ func (c *knowledgeChat) startChat(ctx context.Context) error {
 	fmt.Println("   /exit      - End the conversation")
 	fmt.Println()
 	fmt.Println("🔍 Try asking questions like:")
-	fmt.Println("   - What is machine learning?")
-	fmt.Println("   - Tell me about Python programming")
-	fmt.Println("   - Explain data science")
+	fmt.Println("   - What is a Large Language Model?")
+	fmt.Println("   - Explain the Transformer architecture.")
+	fmt.Println("   - What is a Mixture-of-Experts (MoE) model?")
+	fmt.Println("   - How does Byte-pair encoding work?")
+	fmt.Println("   - What is an N-gram model?")
 	fmt.Println("   - What is cloud computing?")
 	fmt.Println("   - Calculate 15 * 23")
-	fmt.Println("   - What time is it?")
-	fmt.Println()
-
+	fmt.Println("   - What time is it in PST?")
+	fmt.Println("   - What tools are available in this chat demo?")
 	for {
 		fmt.Print("👤 You: ")
 		if !scanner.Scan() {
