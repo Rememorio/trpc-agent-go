@@ -9,8 +9,18 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	memoryutils "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+)
+
+var (
+	_ memory.Memory = (*InMemoryMemory)(nil)
+
+	// ErrSummaryNotFound is returned when a summary is not found.
+	ErrSummaryNotFound = errors.New("summary not found")
+	// ErrSessionEmpty is returned when a session is not found or empty.
+	ErrSessionEmpty = errors.New("session not found or empty")
 )
 
 // InMemoryMemory implements the memory.Memory interface using in-memory data structures.
@@ -58,7 +68,7 @@ func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, sess *session.S
 		entry := &memory.MemoryEntry{
 			Content:   &evt,
 			Author:    evt.Author,
-			Timestamp: evt.Timestamp.Format(time.RFC3339),
+			Timestamp: memoryutils.FormatTimestamp(evt.Timestamp),
 			SessionID: sess.ID,
 			AppName:   sess.AppName,
 			UserID:    sess.UserID,
@@ -95,7 +105,7 @@ func (m *InMemoryMemory) SearchMemory(ctx context.Context, appName, userID, quer
 				continue
 			}
 			if opts.TimeRange != nil {
-				t, err := time.Parse(time.RFC3339, entry.Timestamp)
+				t, err := memoryutils.ParseTimestamp(entry.Timestamp)
 				if err != nil || t.Before(opts.TimeRange.Start) || t.After(opts.TimeRange.End) {
 					continue
 				}
@@ -191,7 +201,7 @@ func (m *InMemoryMemory) GetMemoryStats(ctx context.Context, appName, userID str
 		totalSessions++
 		for _, entry := range entries {
 			totalMemories++
-			t, err := time.Parse(time.RFC3339, entry.Timestamp)
+			t, err := memoryutils.ParseTimestamp(entry.Timestamp)
 			if err != nil {
 				continue
 			}
@@ -222,7 +232,7 @@ func (m *InMemoryMemory) SummarizeSession(ctx context.Context, appName, userID, 
 	defer m.mu.Unlock()
 	entries, ok := m.sessionMemories[sessionID]
 	if !ok || len(entries) == 0 {
-		return "", errors.New("session not found or empty")
+		return "", ErrSessionEmpty
 	}
 	var summary string
 	var err error
@@ -263,7 +273,7 @@ func (m *InMemoryMemory) GetSessionSummary(ctx context.Context, appName, userID,
 	defer m.mu.RUnlock()
 	summary, ok := m.sessionSummaries[sessionID]
 	if !ok {
-		return "", errors.New("summary not found")
+		return "", ErrSummaryNotFound
 	}
 	return summary, nil
 }

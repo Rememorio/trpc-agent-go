@@ -3,6 +3,8 @@ package memory
 
 import (
 	"time"
+
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 )
 
 // FormatTimestamp formats a timestamp to ISO 8601 format.
@@ -22,20 +24,20 @@ func IsValidTimeRange(start, end time.Time) bool {
 }
 
 // GetTimeRangeFromDuration creates a time range from now minus the given duration.
-func GetTimeRangeFromDuration(duration time.Duration) *TimeRange {
+func GetTimeRangeFromDuration(duration time.Duration) *memory.TimeRange {
 	now := time.Now()
-	return &TimeRange{
+	return &memory.TimeRange{
 		Start: now.Add(-duration),
 		End:   now,
 	}
 }
 
 // GetTimeRangeFromDays creates a time range from now minus the given number of days.
-func GetTimeRangeFromDays(days int) *TimeRange {
+func GetTimeRangeFromDays(days int) *memory.TimeRange {
 	return GetTimeRangeFromDuration(time.Duration(days) * 24 * time.Hour)
 }
 
 // GetTimeRangeFromHours creates a time range from now minus the given number of hours.
-func GetTimeRangeFromHours(hours int) *TimeRange {
+func GetTimeRangeFromHours(hours int) *memory.TimeRange {
 	return GetTimeRangeFromDuration(time.Duration(hours) * time.Hour)
 }
