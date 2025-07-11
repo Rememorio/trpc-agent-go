@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/core/event"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/session"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 // InMemoryMemory implements the memory.Memory interface using in-memory data structures.

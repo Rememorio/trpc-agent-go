@@ -14,19 +14,19 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"trpc.group/trpc-go/trpc-agent-go/core/agent"
-	"trpc.group/trpc-go/trpc-agent-go/core/agent/llmagent"
-	"trpc.group/trpc-go/trpc-agent-go/core/event"
-	"trpc.group/trpc-go/trpc-agent-go/core/model"
-	"trpc.group/trpc-go/trpc-agent-go/core/model/openai"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool"
-	"trpc.group/trpc-go/trpc-agent-go/core/tool/function"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/runner"
-	"trpc.group/trpc-go/trpc-agent-go/orchestration/session"
-	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/orchestration/session/inmemory"
-	sessionredis "trpc.group/trpc-go/trpc-agent-go/orchestration/session/redis"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
+	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	sessionredis "trpc.group/trpc-go/trpc-agent-go/session/redis"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
+	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
 
 var (
@@ -139,7 +139,7 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 
 	// Create runner.
 	appName := "multi-turn-chat"
-	c.runner = runner.New(
+	c.runner = runner.NewRunner(
 		appName,
 		llmAgent,
 		runner.WithSessionService(sessionService),
