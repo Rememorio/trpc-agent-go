@@ -24,19 +24,22 @@ type InMemoryMemory struct {
 	sessionSummaries map[string]string
 	// summarizer is the injected session summarizer (optional).
 	summarizer memory.Summarizer
+	// sessionEventCount tracks the number of events already stored for each session.
+	sessionEventCount map[string]int
 }
 
 // NewInMemoryMemory creates a new in-memory memory service with optional summarizer.
 func NewInMemoryMemory(summarizer memory.Summarizer) *InMemoryMemory {
 	return &InMemoryMemory{
-		sessionMemories:  make(map[string][]*memory.MemoryEntry),
-		userSessions:     make(map[string]map[string]struct{}),
-		sessionSummaries: make(map[string]string),
-		summarizer:       summarizer,
+		sessionMemories:   make(map[string][]*memory.MemoryEntry),
+		userSessions:      make(map[string]map[string]struct{}),
+		sessionSummaries:  make(map[string]string),
+		summarizer:        summarizer,
+		sessionEventCount: make(map[string]int),
 	}
 }
 
-// AddSessionToMemory adds a session's events to the memory service.
+// AddSessionToMemory adds a session's new events to the memory service (incremental append).
 func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, sess *session.Session) error {
 	if sess == nil || sess.ID == "" {
 		return errors.New("session is nil or sessionID is empty")
@@ -47,7 +50,11 @@ func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, sess *session.S
 		m.userSessions[sess.UserID] = make(map[string]struct{})
 	}
 	m.userSessions[sess.UserID][sess.ID] = struct{}{}
-	for _, evt := range sess.Events {
+
+	// Only append new events since last call.
+	startIdx := m.sessionEventCount[sess.ID]
+	for i := startIdx; i < len(sess.Events); i++ {
+		evt := sess.Events[i]
 		entry := &memory.MemoryEntry{
 			Content:   &evt,
 			Author:    evt.Author,
@@ -58,6 +65,7 @@ func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, sess *session.S
 		}
 		m.sessionMemories[sess.ID] = append(m.sessionMemories[sess.ID], entry)
 	}
+	m.sessionEventCount[sess.ID] = len(sess.Events)
 	return nil
 }
 
