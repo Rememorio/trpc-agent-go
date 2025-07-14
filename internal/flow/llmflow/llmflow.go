@@ -1,3 +1,15 @@
+//
+// Tencent is pleased to support the open source community by making tRPC available.
+//
+// Copyright (C) 2025 Tencent.
+// All rights reserved.
+//
+// If you have downloaded a copy of the tRPC source code from Tencent,
+// please note that tRPC source code is licensed under the  Apache 2.0 License,
+// A copy of the Apache 2.0 License is included in this file.
+//
+//
+
 // Package llmflow provides an LLM-based flow implementation.
 package llmflow
 
@@ -17,7 +29,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	"trpc.group/trpc-go/trpc-agent-go/telemetry"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -139,7 +151,7 @@ func (f *Flow) runOneStep(
 		return lastEvent, nil
 	}
 
-	ctx, span := telemetry.Tracer.Start(ctx, "call_llm")
+	ctx, span := trace.Tracer.Start(ctx, "call_llm")
 	defer span.End()
 	// 2. Call LLM (get response channel).
 	responseChan, err := f.callLLM(ctx, invocation, llmRequest)
@@ -325,7 +337,7 @@ func (f *Flow) handleFunctionCalls(
 	// Execute each tool call.
 	for i, toolCall := range functionCallEvent.Response.Choices[0].Message.ToolCalls {
 		ctxWithInvocation := agent.NewContextWithInvocation(ctx, invocation)
-		ctxWithInvocation, span := telemetry.Tracer.Start(ctx, fmt.Sprintf("execute_tool %s", toolCall.Function.Name))
+		ctxWithInvocation, span := trace.Tracer.Start(ctx, fmt.Sprintf("execute_tool %s", toolCall.Function.Name))
 		choice := f.executeToolCall(ctxWithInvocation, invocation, toolCall, tools, i)
 		toolCallResponseEvent := newToolCallResponseEvent(invocation, functionCallEvent, []model.Choice{choice})
 		toolCallResponsesEvents = append(toolCallResponsesEvents, toolCallResponseEvent)
@@ -354,7 +366,7 @@ func (f *Flow) handleFunctionCalls(
 	mergedEvent.RequiresCompletion = true
 	mergedEvent.CompletionID = uuid.New().String()
 	if len(toolCallResponsesEvents) > 1 {
-		_, span := telemetry.Tracer.Start(ctx, "execute_tool (merged)")
+		_, span := trace.Tracer.Start(ctx, "execute_tool (merged)")
 		itelemetry.TraceMergedToolCalls(span, mergedEvent)
 		span.End()
 	}
