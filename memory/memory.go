@@ -133,8 +133,8 @@ func WithTimeRange(start, end time.Time) Option {
 	}
 }
 
-// Memory is the interface that wraps the basic operations a memory system should support.
-type Memory interface {
+// Service is the interface that wraps the basic operations a memory system should support.
+type Service interface {
 	// AddSessionToMemory adds a session to the memory service.
 	// A session may be added multiple times during its lifetime.
 	AddSessionToMemory(ctx context.Context, session *session.Session) error
@@ -150,14 +150,6 @@ type Memory interface {
 
 	// GetMemoryStats returns statistics about the memory system.
 	GetMemoryStats(ctx context.Context, appName, userID string) (*MemoryStats, error)
-
-	// SummarizeSession generates and stores a summary for the given session using LLM.
-	// Returns the generated summary or an error.
-	SummarizeSession(ctx context.Context, appName, userID, sessionID string) (string, error)
-
-	// GetSessionSummary retrieves the summary for the given session.
-	// Returns the summary string or an error.
-	GetSessionSummary(ctx context.Context, appName, userID, sessionID string) (string, error)
 }
 
 // MemoryStats represents statistics about the memory system.

@@ -22,11 +22,13 @@ import (
 
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 const (
 	defaultSessionEventLimit = 100
+	SessionSummaryKey        = "__summary__"
 )
 
 var _ session.Service = (*SessionService)(nil)
@@ -530,50 +532,56 @@ func applyOptions(opts ...session.Option) *session.Options {
 	return opt
 }
 
+// SummarizeSession generates and stores a summary for the given session using the provided summarizer.
+func (s *SessionService) SummarizeSession(ctx context.Context, key session.Key, summarizer memory.Summarizer) (string, error) {
+	sess, err := s.GetSession(ctx, key)
+	if err != nil || sess == nil {
+		return "", fmt.Errorf("session not found: %v", err)
+	}
+	if summarizer == nil {
+		return "", fmt.Errorf("summarizer is nil")
+	}
+	events := make([]*event.Event, 0, len(sess.Events))
+	for i := range sess.Events {
+		events = append(events, &sess.Events[i])
+	}
+	summary, err := summarizer.Summarize(ctx, events)
+	if err != nil {
+		return "", err
+	}
+	sess.State[SessionSummaryKey] = []byte(summary)
+	return summary, nil
+}
+
+// GetSessionSummary retrieves the summary for the given session.
+func (s *SessionService) GetSessionSummary(ctx context.Context, key session.Key) (string, error) {
+	sess, err := s.GetSession(ctx, key)
+	if err != nil || sess == nil {
+		return "", fmt.Errorf("session not found: %v", err)
+	}
+	data, ok := sess.State[SessionSummaryKey]
+	if !ok {
+		return "", fmt.Errorf("summary not found")
+	}
+	return string(data), nil
+}
+
 // UpdateSessionSummary sets or updates the summary for the given session.
-// If the session does not exist, it returns nil.
 func (s *SessionService) UpdateSessionSummary(ctx context.Context, key session.Key, summary string) error {
-	if err := key.CheckSessionKey(); err != nil {
-		return err
+	sess, err := s.GetSession(ctx, key)
+	if err != nil || sess == nil {
+		return fmt.Errorf("session not found: %v", err)
 	}
-	app, ok := s.getAppSessions(key.AppName)
-	if !ok {
-		return nil
-	}
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	userSessions, ok := app.sessions[key.UserID]
-	if !ok {
-		return nil
-	}
-	sess, ok := userSessions[key.SessionID]
-	if !ok {
-		return nil
-	}
-	sess.UpdatedAt = time.Now()
+	sess.State[SessionSummaryKey] = []byte(summary)
 	return nil
 }
 
 // DeleteSessionSummary deletes the summary for the given session.
-// If the session does not exist, it returns nil.
 func (s *SessionService) DeleteSessionSummary(ctx context.Context, key session.Key) error {
-	if err := key.CheckSessionKey(); err != nil {
-		return err
+	sess, err := s.GetSession(ctx, key)
+	if err != nil || sess == nil {
+		return fmt.Errorf("session not found: %v", err)
 	}
-	app, ok := s.getAppSessions(key.AppName)
-	if !ok {
-		return nil
-	}
-	app.mu.Lock()
-	defer app.mu.Unlock()
-	userSessions, ok := app.sessions[key.UserID]
-	if !ok {
-		return nil
-	}
-	sess, ok := userSessions[key.SessionID]
-	if !ok {
-		return nil
-	}
-	sess.UpdatedAt = time.Now()
+	delete(sess.State, SessionSummaryKey)
 	return nil
 }

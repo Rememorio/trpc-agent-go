@@ -1,3 +1,15 @@
+//
+// Tencent is pleased to support the open source community by making tRPC available.
+//
+// Copyright (C) 2025 Tencent.
+// All rights reserved.
+//
+// If you have downloaded a copy of the tRPC source code from Tencent,
+// please note that tRPC source code is licensed under the  Apache 2.0 License,
+// A copy of the Apache 2.0 License is included in this file.
+//
+//
+
 // Package inmemory provides an in-memory implementation of the memory system.
 package inmemory
 
@@ -8,14 +20,13 @@ import (
 	"sync"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/event"
 	memoryutils "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 var (
-	_ memory.Memory = (*InMemoryMemory)(nil)
+	_ memory.Service = (*MemoryService)(nil)
 
 	// ErrSummaryNotFound is returned when a summary is not found.
 	ErrSummaryNotFound = errors.New("summary not found")
@@ -23,8 +34,8 @@ var (
 	ErrSessionEmpty = errors.New("session not found or empty")
 )
 
-// InMemoryMemory implements the memory.Memory interface using in-memory data structures.
-type InMemoryMemory struct {
+// MemoryService implements the memory.Service interface using in-memory data structures.
+type MemoryService struct {
 	mu sync.RWMutex
 	// sessionMemories stores memories by sessionID.
 	sessionMemories map[string][]*memory.MemoryEntry
@@ -32,25 +43,25 @@ type InMemoryMemory struct {
 	userSessions map[string]map[string]struct{}
 	// sessionSummaries stores summaries by sessionID.
 	sessionSummaries map[string]string
-	// summarizer is the injected session summarizer (optional).
-	summarizer memory.Summarizer
+	// Summarizer is the injected session summarizer (optional).
+	Summarizer memory.Summarizer
 	// sessionEventCount tracks the number of events already stored for each session.
 	sessionEventCount map[string]int
 }
 
-// NewInMemoryMemory creates a new in-memory memory service with optional summarizer.
-func NewInMemoryMemory(summarizer memory.Summarizer) *InMemoryMemory {
-	return &InMemoryMemory{
+// NewMemoryService creates a new in-memory memory service with optional summarizer.
+func NewMemoryService(summarizer memory.Summarizer) *MemoryService {
+	return &MemoryService{
 		sessionMemories:   make(map[string][]*memory.MemoryEntry),
 		userSessions:      make(map[string]map[string]struct{}),
 		sessionSummaries:  make(map[string]string),
-		summarizer:        summarizer,
+		Summarizer:        summarizer,
 		sessionEventCount: make(map[string]int),
 	}
 }
 
 // AddSessionToMemory adds a session's new events to the memory service (incremental append).
-func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, sess *session.Session) error {
+func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Session) error {
 	if sess == nil || sess.ID == "" {
 		return errors.New("session is nil or sessionID is empty")
 	}
@@ -80,7 +91,7 @@ func (m *InMemoryMemory) AddSessionToMemory(ctx context.Context, sess *session.S
 }
 
 // SearchMemory searches for memories matching the query and options.
-func (m *InMemoryMemory) SearchMemory(ctx context.Context, appName, userID, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
+func (m *MemoryService) SearchMemory(ctx context.Context, appName, userID, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	opts := &memory.SearchOptions{Limit: 100}
@@ -145,7 +156,7 @@ func (m *InMemoryMemory) SearchMemory(ctx context.Context, appName, userID, quer
 }
 
 // DeleteMemory deletes all memories for a specific session.
-func (m *InMemoryMemory) DeleteMemory(ctx context.Context, appName, userID, sessionID string) error {
+func (m *MemoryService) DeleteMemory(ctx context.Context, appName, userID, sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.sessionMemories, sessionID)
@@ -162,7 +173,7 @@ func (m *InMemoryMemory) DeleteMemory(ctx context.Context, appName, userID, sess
 }
 
 // DeleteUserMemories deletes all memories for a specific user.
-func (m *InMemoryMemory) DeleteUserMemories(ctx context.Context, appName, userID string) error {
+func (m *MemoryService) DeleteUserMemories(ctx context.Context, appName, userID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sessions, ok := m.userSessions[userID]
@@ -178,7 +189,7 @@ func (m *InMemoryMemory) DeleteUserMemories(ctx context.Context, appName, userID
 }
 
 // GetMemoryStats returns statistics about the memory system.
-func (m *InMemoryMemory) GetMemoryStats(ctx context.Context, appName, userID string) (*memory.MemoryStats, error) {
+func (m *MemoryService) GetMemoryStats(ctx context.Context, appName, userID string) (*memory.MemoryStats, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var totalMemories, totalSessions int
@@ -224,56 +235,4 @@ func (m *InMemoryMemory) GetMemoryStats(ctx context.Context, appName, userID str
 		NewestMemory:              newest,
 		AverageMemoriesPerSession: avg,
 	}, nil
-}
-
-// SummarizeSession generates and stores a summary for the given session.
-func (m *InMemoryMemory) SummarizeSession(ctx context.Context, appName, userID, sessionID string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	entries, ok := m.sessionMemories[sessionID]
-	if !ok || len(entries) == 0 {
-		return "", ErrSessionEmpty
-	}
-	var summary string
-	var err error
-	if m.summarizer != nil {
-		// Use the injected summarizer for LLM-based summary.
-		events := make([]*event.Event, 0, len(entries))
-		for _, entry := range entries {
-			if entry.Content != nil {
-				events = append(events, entry.Content)
-			}
-		}
-		summary, err = m.summarizer.Summarize(ctx, events)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		// Fallback: simple concatenation of all message contents.
-		var sb strings.Builder
-		for _, entry := range entries {
-			if entry.Content != nil && entry.Content.Response != nil {
-				for _, choice := range entry.Content.Response.Choices {
-					if choice.Message.Content != "" {
-						sb.WriteString(choice.Message.Content)
-						sb.WriteString(" ")
-					}
-				}
-			}
-		}
-		summary = strings.TrimSpace(sb.String())
-	}
-	m.sessionSummaries[sessionID] = summary
-	return summary, nil
-}
-
-// GetSessionSummary retrieves the summary for the given session.
-func (m *InMemoryMemory) GetSessionSummary(ctx context.Context, appName, userID, sessionID string) (string, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	summary, ok := m.sessionSummaries[sessionID]
-	if !ok {
-		return "", ErrSummaryNotFound
-	}
-	return summary, nil
 }

@@ -1,3 +1,15 @@
+//
+// Tencent is pleased to support the open source community by making tRPC available.
+//
+// Copyright (C) 2025 Tencent.
+// All rights reserved.
+//
+// If you have downloaded a copy of the tRPC source code from Tencent,
+// please note that tRPC source code is licensed under the  Apache 2.0 License,
+// A copy of the Apache 2.0 License is included in this file.
+//
+//
+
 // Package inmemory provides tests for the in-memory memory implementation.
 package inmemory
 
@@ -9,8 +21,8 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -35,8 +47,8 @@ func makeTestSession(id, appName, userID string, contents []string) *session.Ses
 	return sess
 }
 
-func TestInMemoryMemory_FullFlow(t *testing.T) {
-	mem := NewInMemoryMemory(nil)
+func TestMemoryService_FullFlow(t *testing.T) {
+	mem := NewMemoryService(nil)
 	ctx := context.Background()
 	appName := "testApp"
 	userID := "user1"
@@ -65,17 +77,6 @@ func TestInMemoryMemory_FullFlow(t *testing.T) {
 	assert.Equal(t, 3, stats.TotalMemories)
 	assert.True(t, stats.AverageMemoriesPerSession > 0)
 
-	// Summarize session
-	summary, err := mem.SummarizeSession(ctx, appName, userID, sess.ID)
-	assert.NoError(t, err)
-	assert.Contains(t, summary, "hello world")
-	assert.Contains(t, summary, "foo bar")
-
-	// Get session summary
-	sum, err := mem.GetSessionSummary(ctx, appName, userID, sess.ID)
-	assert.NoError(t, err)
-	assert.Equal(t, summary, sum)
-
 	// Delete session memory
 	err = mem.DeleteMemory(ctx, appName, userID, sess.ID)
 	assert.NoError(t, err)
@@ -84,8 +85,8 @@ func TestInMemoryMemory_FullFlow(t *testing.T) {
 	assert.Equal(t, 0, resp3.TotalCount)
 }
 
-func TestInMemoryMemory_DeleteUserMemories(t *testing.T) {
-	mem := NewInMemoryMemory(nil)
+func TestMemoryService_DeleteUserMemories(t *testing.T) {
+	mem := NewMemoryService(nil)
 	ctx := context.Background()
 	appName := "testApp"
 	userID := "user2"
@@ -103,8 +104,8 @@ func TestInMemoryMemory_DeleteUserMemories(t *testing.T) {
 	assert.Equal(t, 0, stats.TotalMemories)
 }
 
-func TestInMemoryMemory_EdgeCases(t *testing.T) {
-	mem := NewInMemoryMemory(nil)
+func TestMemoryService_EdgeCases(t *testing.T) {
+	mem := NewMemoryService(nil)
 	ctx := context.Background()
 	appName := "testApp"
 	userID := "user3"
@@ -122,37 +123,4 @@ func TestInMemoryMemory_EdgeCases(t *testing.T) {
 	resp, err := mem.SearchMemory(ctx, appName, userID, "anything")
 	assert.NoError(t, err)
 	assert.Equal(t, 0, resp.TotalCount)
-
-	// Summarize non-existent session
-	_, err = mem.SummarizeSession(ctx, appName, userID, "notfound")
-	assert.Error(t, err)
-
-	// Get summary for non-existent session
-	_, err = mem.GetSessionSummary(ctx, appName, userID, "notfound")
-	assert.Error(t, err)
-}
-
-// Test that SummarizeSession uses the injected summarizer.
-type mockSummarizer struct {
-	called bool
-	ret    string
-}
-
-func (m *mockSummarizer) Summarize(ctx context.Context, events []*event.Event, opts ...memory.SummarizeOption) (string, error) {
-	m.called = true
-	return m.ret, nil
-}
-
-func TestInMemoryMemory_SummarizeSession_WithSummarizer(t *testing.T) {
-	ms := &mockSummarizer{ret: "mock summary"}
-	mem := NewInMemoryMemory(ms)
-	ctx := context.Background()
-	appName := "testApp"
-	userID := "user4"
-	sess := makeTestSession("sessX", appName, userID, []string{"foo", "bar"})
-	_ = mem.AddSessionToMemory(ctx, sess)
-	summary, err := mem.SummarizeSession(ctx, appName, userID, sess.ID)
-	assert.NoError(t, err)
-	assert.Equal(t, "mock summary", summary)
-	assert.True(t, ms.called)
 }

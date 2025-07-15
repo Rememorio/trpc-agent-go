@@ -65,7 +65,7 @@ type multiTurnChat struct {
 	runner         runner.Runner
 	userID         string
 	sessionID      string
-	memoryService  memory.Memory
+	memoryService  memory.Service
 	sessionService session.Service
 }
 
@@ -134,7 +134,7 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 	if c.enableMemory {
 		// Create memory summarizer with the same model.
 		summarizer := &memory.MemorySummarizer{Model: modelInstance}
-		c.memoryService = inmemory.NewInMemoryMemory(summarizer)
+		c.memoryService = inmemory.NewMemoryService(summarizer)
 	}
 
 	// Create runner.
@@ -287,12 +287,33 @@ func (c *multiTurnChat) showMemoryStats(ctx context.Context) {
 
 // generateSessionSummary generates and displays a summary for the current session.
 func (c *multiTurnChat) generateSessionSummary(ctx context.Context) {
-	summary, err := c.memoryService.SummarizeSession(ctx, "multi-turn-chat", c.userID, c.sessionID)
+	// Get summarizer (assuming memoryService is inmemory.MemoryService).
+	inMem, ok := c.memoryService.(*inmemory.MemoryService)
+	if !ok {
+		fmt.Printf("❌ Memory service is not inmemory.MemoryService\n")
+		return
+	}
+	summarizer := inMem.Summarizer
+	if summarizer == nil {
+		fmt.Printf("❌ Summarizer is not set in memory service\n")
+		return
+	}
+	key := session.Key{
+		AppName:   "multi-turn-chat",
+		UserID:    c.userID,
+		SessionID: c.sessionID,
+	}
+	// sessionService must be sessioninmemory.SessionService.
+	sessSvc, ok := c.sessionService.(*sessioninmemory.SessionService)
+	if !ok {
+		fmt.Printf("❌ Session service is not inmemory.SessionService\n")
+		return
+	}
+	summary, err := sessSvc.SummarizeSession(ctx, key, summarizer)
 	if err != nil {
 		fmt.Printf("❌ Failed to generate summary: %v\n", err)
 		return
 	}
-
 	fmt.Printf("📝 Session Summary:\n")
 	fmt.Printf("   %s\n", summary)
 	fmt.Println()
