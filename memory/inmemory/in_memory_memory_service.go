@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -16,6 +16,7 @@ package inmemory
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,8 +29,6 @@ import (
 var (
 	_ memory.Service = (*MemoryService)(nil)
 
-	// ErrSummaryNotFound is returned when a summary is not found.
-	ErrSummaryNotFound = errors.New("summary not found")
 	// ErrSessionEmpty is returned when a session is not found or empty.
 	ErrSessionEmpty = errors.New("session not found or empty")
 )
@@ -39,25 +38,24 @@ type MemoryService struct {
 	mu sync.RWMutex
 	// sessionMemories stores memories by sessionID.
 	sessionMemories map[string][]*memory.MemoryEntry
-	// userSessions maps userID to a set of sessionIDs.
+	// userSessions maps user key to a set of sessionIDs.
 	userSessions map[string]map[string]struct{}
-	// sessionSummaries stores summaries by sessionID.
-	sessionSummaries map[string]string
-	// Summarizer is the injected session summarizer (optional).
-	Summarizer memory.Summarizer
 	// sessionEventCount tracks the number of events already stored for each session.
 	sessionEventCount map[string]int
 }
 
-// NewMemoryService creates a new in-memory memory service with optional summarizer.
-func NewMemoryService(summarizer memory.Summarizer) *MemoryService {
+// NewMemoryService creates a new in-memory memory service.
+func NewMemoryService() *MemoryService {
 	return &MemoryService{
 		sessionMemories:   make(map[string][]*memory.MemoryEntry),
 		userSessions:      make(map[string]map[string]struct{}),
-		sessionSummaries:  make(map[string]string),
-		Summarizer:        summarizer,
 		sessionEventCount: make(map[string]int),
 	}
+}
+
+// userKey generates a user key string from app name and user ID.
+func userKey(appName, userID string) string {
+	return appName + "/" + userID
 }
 
 // AddSessionToMemory adds a session's new events to the memory service (incremental append).
@@ -65,12 +63,15 @@ func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Se
 	if sess == nil || sess.ID == "" {
 		return errors.New("session is nil or sessionID is empty")
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.userSessions[sess.UserID] == nil {
-		m.userSessions[sess.UserID] = make(map[string]struct{})
+
+	userKeyStr := userKey(sess.AppName, sess.UserID)
+	if m.userSessions[userKeyStr] == nil {
+		m.userSessions[userKeyStr] = make(map[string]struct{})
 	}
-	m.userSessions[sess.UserID][sess.ID] = struct{}{}
+	m.userSessions[userKeyStr][sess.ID] = struct{}{}
 
 	// Only append new events since last call.
 	startIdx := m.sessionEventCount[sess.ID]
@@ -91,148 +92,250 @@ func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Se
 }
 
 // SearchMemory searches for memories matching the query and options.
-func (m *MemoryService) SearchMemory(ctx context.Context, appName, userID, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
+func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
+	startTime := time.Now()
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+
+	// Build search options.
 	opts := &memory.SearchOptions{Limit: 100}
 	for _, opt := range options {
 		opt(opts)
 	}
-	var result []*memory.MemoryEntry
-	var total int
-	start := time.Now()
-	for sessionID, entries := range m.sessionMemories {
-		if opts.IncludeSessionID != "" && sessionID != opts.IncludeSessionID {
+
+	userKeyStr := userKey(key.AppName, key.UserID)
+	sessionIDs, exists := m.userSessions[userKeyStr]
+	if !exists {
+		return &memory.SearchMemoryResponse{
+			Memories:   []*memory.MemoryEntry{},
+			TotalCount: 0,
+			SearchTime: time.Since(startTime),
+		}, nil
+	}
+
+	var allMemories []*memory.MemoryEntry
+	queryWords := strings.Fields(strings.ToLower(query))
+
+	// Collect memories from all sessions for this user.
+	for sessionID := range sessionIDs {
+		// Filter by session ID if specified.
+		if opts.SessionID != "" && sessionID != opts.SessionID {
 			continue
 		}
-		if opts.ExcludeSessionID != "" && sessionID == opts.ExcludeSessionID {
-			continue
-		}
-		for _, entry := range entries {
-			if appName != "" && entry.AppName != appName {
-				continue
-			}
-			if userID != "" && entry.UserID != userID {
-				continue
-			}
-			if opts.TimeRange != nil {
-				t, err := memoryutils.ParseTimestamp(entry.Timestamp)
-				if err != nil || t.Before(opts.TimeRange.Start) || t.After(opts.TimeRange.End) {
-					continue
-				}
-			}
-			if query != "" {
+
+		memories := m.sessionMemories[sessionID]
+		for _, mem := range memories {
+			// Filter by authors if specified.
+			if len(opts.Authors) > 0 {
 				found := false
-				if entry.Content != nil && entry.Content.Response != nil {
-					for _, choice := range entry.Content.Response.Choices {
-						if strings.Contains(strings.ToLower(choice.Message.Content), strings.ToLower(query)) {
-							found = true
-							break
-						}
+				for _, author := range opts.Authors {
+					if mem.Author == author {
+						found = true
+						break
 					}
 				}
 				if !found {
 					continue
 				}
 			}
-			total++
-			if total <= opts.Offset {
+
+			// Filter by time range if specified.
+			if opts.TimeRange != nil {
+				if mem.Content.Timestamp.Before(opts.TimeRange.Start) || mem.Content.Timestamp.After(opts.TimeRange.End) {
+					continue
+				}
+			}
+
+			// Simple keyword matching for search.
+			score := m.calculateScore(mem, queryWords)
+			if len(queryWords) > 0 && score == 0 {
+				continue // Skip if query doesn't match at all
+			}
+			if score < opts.MinScore {
 				continue
 			}
-			result = append(result, entry)
-			if len(result) >= opts.Limit {
-				break
-			}
-		}
-		if len(result) >= opts.Limit {
-			break
+
+			// Create a copy and set the score.
+			memoryCopy := *mem
+			memoryCopy.Score = score
+			allMemories = append(allMemories, &memoryCopy)
 		}
 	}
+
+	// Sort memories.
+	m.sortMemories(allMemories, opts)
+
+	// Apply pagination.
+	totalCount := len(allMemories)
+	start := opts.Offset
+	if start > totalCount {
+		start = totalCount
+	}
+
+	end := start + opts.Limit
+	if end > totalCount {
+		end = totalCount
+	}
+
+	result := allMemories[start:end]
+
 	return &memory.SearchMemoryResponse{
 		Memories:   result,
-		TotalCount: total,
-		SearchTime: time.Since(start),
+		TotalCount: totalCount,
+		SearchTime: time.Since(startTime),
 	}, nil
 }
 
-// DeleteMemory deletes all memories for a specific session.
-func (m *MemoryService) DeleteMemory(ctx context.Context, appName, userID, sessionID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.sessionMemories, sessionID)
-	for uid, sessions := range m.userSessions {
-		if _, ok := sessions[sessionID]; ok {
-			delete(sessions, sessionID)
-			if len(sessions) == 0 {
-				delete(m.userSessions, uid)
-			}
+// calculateScore calculates the similarity score between memory and query words.
+func (m *MemoryService) calculateScore(mem *memory.MemoryEntry, queryWords []string) float64 {
+	if len(queryWords) == 0 {
+		return 1.0
+	}
+
+	// Extract text from memory content.
+	var contentText string
+	if mem.Content != nil && mem.Content.Response != nil {
+		for _, choice := range mem.Content.Response.Choices {
+			contentText += choice.Message.Content + " "
 		}
 	}
-	delete(m.sessionSummaries, sessionID)
+	contentText = strings.ToLower(contentText)
+
+	// Simple word matching score.
+	matchCount := 0
+	for _, word := range queryWords {
+		if strings.Contains(contentText, word) {
+			matchCount++
+		}
+	}
+
+	return float64(matchCount) / float64(len(queryWords))
+}
+
+// sortMemories sorts memories based on the specified sort options.
+func (m *MemoryService) sortMemories(memories []*memory.MemoryEntry, opts *memory.SearchOptions) {
+	if opts.SortBy == "" {
+		opts.SortBy = memory.SortByTimestamp
+	}
+	if opts.SortOrder == "" {
+		opts.SortOrder = memory.SortOrderDesc
+	}
+
+	sort.Slice(memories, func(i, j int) bool {
+		var less bool
+		switch opts.SortBy {
+		case memory.SortByScore:
+			less = memories[i].Score < memories[j].Score
+		case memory.SortByTimestamp:
+			less = memories[i].Content.Timestamp.Before(memories[j].Content.Timestamp)
+		default:
+			less = memories[i].Content.Timestamp.Before(memories[j].Content.Timestamp)
+		}
+
+		if opts.SortOrder == memory.SortOrderAsc {
+			return less
+		}
+		return !less
+	})
+}
+
+// DeleteMemory deletes memories (by session unit).
+func (m *MemoryService) DeleteMemory(ctx context.Context, key memory.DeleteKey) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	userKeyStr := userKey(key.AppName, key.UserID)
+
+	if key.SessionID != "" {
+		// Delete specific session memories.
+		delete(m.sessionMemories, key.SessionID)
+		delete(m.sessionEventCount, key.SessionID)
+
+		// Remove session from user sessions.
+		if sessions, exists := m.userSessions[userKeyStr]; exists {
+			delete(sessions, key.SessionID)
+			if len(sessions) == 0 {
+				delete(m.userSessions, userKeyStr)
+			}
+		}
+	} else {
+		// Delete all sessions for this user.
+		if sessions, exists := m.userSessions[userKeyStr]; exists {
+			for sessionID := range sessions {
+				delete(m.sessionMemories, sessionID)
+				delete(m.sessionEventCount, sessionID)
+			}
+			delete(m.userSessions, userKeyStr)
+		}
+	}
+
 	return nil
 }
 
 // DeleteUserMemories deletes all memories for a specific user.
-func (m *MemoryService) DeleteUserMemories(ctx context.Context, appName, userID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sessions, ok := m.userSessions[userID]
-	if !ok {
-		return nil
-	}
-	for sessionID := range sessions {
-		delete(m.sessionMemories, sessionID)
-		delete(m.sessionSummaries, sessionID)
-	}
-	delete(m.userSessions, userID)
-	return nil
+func (m *MemoryService) DeleteUserMemories(ctx context.Context, userKey memory.UserKey) error {
+	return m.DeleteMemory(ctx, memory.DeleteKey{
+		AppName: userKey.AppName,
+		UserID:  userKey.UserID,
+	})
 }
 
 // GetMemoryStats returns statistics about the memory system.
-func (m *MemoryService) GetMemoryStats(ctx context.Context, appName, userID string) (*memory.MemoryStats, error) {
+func (m *MemoryService) GetMemoryStats(ctx context.Context, uKey memory.UserKey) (*memory.MemoryStats, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var totalMemories, totalSessions int
-	var oldest, newest time.Time
-	for sessionID, entries := range m.sessionMemories {
-		if userID != "" {
-			found := false
-			for uid, sessions := range m.userSessions {
-				if uid == userID {
-					if _, ok := sessions[sessionID]; ok {
-						found = true
-						break
-					}
-				}
+
+	userKeyStr := userKey(uKey.AppName, uKey.UserID)
+	sessions, exists := m.userSessions[userKeyStr]
+	if !exists {
+		return &memory.MemoryStats{
+			TotalMemories: 0,
+			TotalSessions: 0,
+		}, nil
+	}
+
+	var totalMemories int
+	var oldestTime, newestTime time.Time
+
+	for sessionID := range sessions {
+		memories := m.sessionMemories[sessionID]
+		totalMemories += len(memories)
+
+		for _, mem := range memories {
+			memTime := mem.Content.Timestamp
+			if oldestTime.IsZero() || memTime.Before(oldestTime) {
+				oldestTime = memTime
 			}
-			if !found {
-				continue
-			}
-		}
-		totalSessions++
-		for _, entry := range entries {
-			totalMemories++
-			t, err := memoryutils.ParseTimestamp(entry.Timestamp)
-			if err != nil {
-				continue
-			}
-			if oldest.IsZero() || t.Before(oldest) {
-				oldest = t
-			}
-			if newest.IsZero() || t.After(newest) {
-				newest = t
+			if newestTime.IsZero() || memTime.After(newestTime) {
+				newestTime = memTime
 			}
 		}
 	}
-	avg := 0.0
-	if totalSessions > 0 {
-		avg = float64(totalMemories) / float64(totalSessions)
+
+	avgMemoriesPerSession := float64(0)
+	if len(sessions) > 0 {
+		avgMemoriesPerSession = float64(totalMemories) / float64(len(sessions))
 	}
+
 	return &memory.MemoryStats{
 		TotalMemories:             totalMemories,
-		TotalSessions:             totalSessions,
-		OldestMemory:              oldest,
-		NewestMemory:              newest,
-		AverageMemoriesPerSession: avg,
+		TotalSessions:             len(sessions),
+		OldestMemory:              oldestTime,
+		NewestMemory:              newestTime,
+		AverageMemoriesPerSession: avgMemoriesPerSession,
 	}, nil
+}
+
+// Close closes the service.
+func (m *MemoryService) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Clear all data.
+	m.sessionMemories = make(map[string][]*memory.MemoryEntry)
+	m.userSessions = make(map[string]map[string]struct{})
+	m.sessionEventCount = make(map[string]int)
+
+	return nil
 }

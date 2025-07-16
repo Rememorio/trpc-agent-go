@@ -21,69 +21,86 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
-// MemoryEntry represents a single memory entry.
-type MemoryEntry struct {
-	// Content is the main content of the memory.
-	Content *event.Event `json:"content"`
-
-	// Author is the author of the memory.
-	Author string `json:"author,omitempty"`
-
-	// Timestamp is the timestamp when the original content of this memory happened.
-	// This string will be forwarded to LLM. Preferred format is ISO 8601 format.
-	Timestamp string `json:"timestamp,omitempty"`
-
-	// SessionID is the session ID this memory belongs to.
-	SessionID string `json:"sessionId,omitempty"`
-
-	// AppName is the application name.
-	AppName string `json:"appName,omitempty"`
-
-	// UserID is the user ID.
-	UserID string `json:"userId,omitempty"`
+// UserKey represents a user key structure (similar to session.UserKey).
+type UserKey struct {
+	AppName string // Application name.
+	UserID  string // User ID.
 }
 
-// SearchMemoryResponse represents the response from a memory search.
+// SearchKey represents a search key structure (based on UserKey).
+type SearchKey = UserKey
+
+// DeleteKey represents a delete key structure.
+type DeleteKey struct {
+	AppName   string // Application name.
+	UserID    string // User ID.
+	SessionID string // Session ID (optional, if specified, only delete memories for this session).
+}
+
+// MemoryEntry represents a single memory entry (strictly follows ADK Python design).
+type MemoryEntry struct {
+	Content   *event.Event `json:"content"`             // Main content.
+	Author    string       `json:"author,omitempty"`    // Author.
+	Timestamp string       `json:"timestamp,omitempty"` // Timestamp.
+
+	// Go version extension fields (for internal management and search optimization).
+	SessionID string  `json:"sessionId,omitempty"` // Session ID.
+	AppName   string  `json:"appName,omitempty"`   // Application name.
+	UserID    string  `json:"userId,omitempty"`    // User ID.
+	Score     float64 `json:"score,omitempty"`     // Search similarity score.
+}
+
+// SearchMemoryResponse represents the response from a memory search (strictly follows ADK Python design).
 type SearchMemoryResponse struct {
-	// Memories is a list of memory entries that relate to the search query.
 	Memories []*MemoryEntry `json:"memories"`
 
-	// TotalCount is the total number of memories found.
-	TotalCount int `json:"totalCount"`
-
-	// SearchTime is the time taken for the search.
+	// Go version extension fields (for performance optimization).
+	TotalCount int           `json:"totalCount,omitempty"`
 	SearchTime time.Duration `json:"searchTime,omitempty"`
+	NextToken  string        `json:"nextToken,omitempty"` // Pagination support.
 }
 
-// SearchOptions represents options for memory search.
+// SearchOptions represents search options (based on existing Option pattern).
 type SearchOptions struct {
-	// Limit is the maximum number of memories to return.
-	Limit int `json:"limit,omitempty"`
+	// Pagination options.
+	Limit     int    `json:"limit,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
+	NextToken string `json:"nextToken,omitempty"`
 
-	// Offset is the number of memories to skip.
-	Offset int `json:"offset,omitempty"`
+	// Filter options.
+	SessionID string     `json:"sessionID,omitempty"` // Limit to specific session.
+	Authors   []string   `json:"authors,omitempty"`   // Limit to specific authors.
+	TimeRange *TimeRange `json:"timeRange,omitempty"` // Time range.
+	MinScore  float64    `json:"minScore,omitempty"`  // Minimum similarity score.
 
-	// MinScore is the minimum similarity score for memories to be included.
-	MinScore float64 `json:"minScore,omitempty"`
-
-	// IncludeSessionID filters memories by session ID.
-	IncludeSessionID string `json:"includeSessionId,omitempty"`
-
-	// ExcludeSessionID excludes memories by session ID.
-	ExcludeSessionID string `json:"excludeSessionId,omitempty"`
-
-	// TimeRange filters memories by time range.
-	TimeRange *TimeRange `json:"timeRange,omitempty"`
+	// Sort options.
+	SortBy    SortBy    `json:"sortBy,omitempty"`
+	SortOrder SortOrder `json:"sortOrder,omitempty"`
 }
 
 // TimeRange represents a time range for filtering memories.
 type TimeRange struct {
-	// Start is the start time.
-	Start time.Time `json:"start"`
-
-	// End is the end time.
-	End time.Time `json:"end"`
+	Start time.Time `json:"start"` // Start time.
+	End   time.Time `json:"end"`   // End time.
 }
+
+// SortBy represents the sort method.
+type SortBy string
+
+const (
+	SortByTimestamp SortBy = "timestamp"
+	SortByScore     SortBy = "score"
+	SortByCreatedAt SortBy = "createdAt"
+	SortByUpdatedAt SortBy = "updatedAt"
+)
+
+// SortOrder represents the sort order.
+type SortOrder string
+
+const (
+	SortOrderAsc  SortOrder = "asc"
+	SortOrderDesc SortOrder = "desc"
+)
 
 // Option is a function that can be used to configure search options.
 type Option func(*SearchOptions)
@@ -102,24 +119,24 @@ func WithOffset(offset int) Option {
 	}
 }
 
-// WithMinScore sets the minimum similarity score.
-func WithMinScore(score float64) Option {
+// WithNextToken sets the next token for pagination.
+func WithNextToken(token string) Option {
 	return func(o *SearchOptions) {
-		o.MinScore = score
+		o.NextToken = token
 	}
 }
 
-// WithIncludeSessionID filters memories by session ID.
-func WithIncludeSessionID(sessionID string) Option {
+// WithSessionID filters memories by session ID.
+func WithSessionID(sessionID string) Option {
 	return func(o *SearchOptions) {
-		o.IncludeSessionID = sessionID
+		o.SessionID = sessionID
 	}
 }
 
-// WithExcludeSessionID excludes memories by session ID.
-func WithExcludeSessionID(sessionID string) Option {
+// WithAuthors filters memories by authors.
+func WithAuthors(authors []string) Option {
 	return func(o *SearchOptions) {
-		o.ExcludeSessionID = sessionID
+		o.Authors = authors
 	}
 }
 
@@ -133,38 +150,57 @@ func WithTimeRange(start, end time.Time) Option {
 	}
 }
 
+// WithMinScore sets the minimum similarity score.
+func WithMinScore(score float64) Option {
+	return func(o *SearchOptions) {
+		o.MinScore = score
+	}
+}
+
+// WithSortBy sets the sort method.
+func WithSortBy(sortBy SortBy) Option {
+	return func(o *SearchOptions) {
+		o.SortBy = sortBy
+	}
+}
+
+// WithSortOrder sets the sort order.
+func WithSortOrder(order SortOrder) Option {
+	return func(o *SearchOptions) {
+		o.SortOrder = order
+	}
+}
+
 // Service is the interface that wraps the basic operations a memory system should support.
 type Service interface {
+	// === Core ADK compatible interfaces ===
 	// AddSessionToMemory adds a session to the memory service.
 	// A session may be added multiple times during its lifetime.
 	AddSessionToMemory(ctx context.Context, session *session.Session) error
 
 	// SearchMemory searches for sessions that match the query.
-	SearchMemory(ctx context.Context, appName, userID, query string, options ...Option) (*SearchMemoryResponse, error)
+	SearchMemory(ctx context.Context, key SearchKey, query string, options ...Option) (*SearchMemoryResponse, error)
 
-	// DeleteMemory deletes memories for a specific session.
-	DeleteMemory(ctx context.Context, appName, userID, sessionID string) error
+	// === Go style extension interfaces ===
+	// DeleteMemory deletes memories (by session unit).
+	DeleteMemory(ctx context.Context, key DeleteKey) error
 
 	// DeleteUserMemories deletes all memories for a specific user.
-	DeleteUserMemories(ctx context.Context, appName, userID string) error
+	DeleteUserMemories(ctx context.Context, userKey UserKey) error
 
 	// GetMemoryStats returns statistics about the memory system.
-	GetMemoryStats(ctx context.Context, appName, userID string) (*MemoryStats, error)
+	GetMemoryStats(ctx context.Context, userKey UserKey) (*MemoryStats, error)
+
+	// Close closes the service.
+	Close() error
 }
 
 // MemoryStats represents statistics about the memory system.
 type MemoryStats struct {
-	// TotalMemories is the total number of memories.
-	TotalMemories int `json:"totalMemories"`
-
-	// TotalSessions is the total number of sessions.
-	TotalSessions int `json:"totalSessions"`
-
-	// OldestMemory is the timestamp of the oldest memory.
-	OldestMemory time.Time `json:"oldestMemory"`
-
-	// NewestMemory is the timestamp of the newest memory.
-	NewestMemory time.Time `json:"newestMemory"`
+	TotalMemories int       `json:"totalMemories"` // Total number of memories.
+	TotalSessions int       `json:"totalSessions"` // Total number of sessions.
+	OldestMemory  time.Time `json:"oldestMemory"`  // Timestamp of the oldest memory.
+	NewestMemory  time.Time `json:"newestMemory"`  // Timestamp of the newest memory.
 
 	// AverageMemoriesPerSession is the average number of memories per session.
 	AverageMemoriesPerSession float64 `json:"averageMemoriesPerSession,omitempty"`

@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -47,80 +47,326 @@ func makeTestSession(id, appName, userID string, contents []string) *session.Ses
 	return sess
 }
 
-func TestMemoryService_FullFlow(t *testing.T) {
-	mem := NewMemoryService(nil)
+func TestMemoryService_AddSessionToMemory(t *testing.T) {
+	mem := NewMemoryService()
 	ctx := context.Background()
 	appName := "testApp"
 	userID := "user1"
-	sess := makeTestSession("sess1", appName, userID, []string{"hello world", "foo bar", "baz"})
+	sess := makeTestSession("sess1", appName, userID, []string{"hello world", "foo bar"})
 
-	// Add session to memory
+	// Add session to memory.
 	err := mem.AddSessionToMemory(ctx, sess)
 	assert.NoError(t, err)
 
-	// Search memory by keyword
-	resp, err := mem.SearchMemory(ctx, appName, userID, "foo")
+	// Add same session again (should be incremental).
+	sess.Events = append(sess.Events, event.Event{
+		Author:    userID,
+		Timestamp: time.Now(),
+		Response: &model.Response{
+			Choices: []model.Choice{{Message: model.Message{Content: "new content"}}},
+		},
+	})
+	err = mem.AddSessionToMemory(ctx, sess)
+	assert.NoError(t, err)
+
+	// Verify memories were added.
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	resp, err := mem.SearchMemory(ctx, searchKey, "")
+	assert.NoError(t, err)
+	assert.Equal(t, 3, resp.TotalCount) // 2 original + 1 new
+}
+
+func TestMemoryService_AddSessionToMemory_EdgeCases(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+
+	// Add nil session.
+	err := mem.AddSessionToMemory(ctx, nil)
+	assert.Error(t, err)
+
+	// Add session with empty ID.
+	sess := &session.Session{ID: "", AppName: "app", UserID: "user"}
+	err = mem.AddSessionToMemory(ctx, sess)
+	assert.Error(t, err)
+}
+
+func TestMemoryService_SearchMemory(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	appName := "testApp"
+	userID := "user1"
+	sess := makeTestSession("sess1", appName, userID, []string{"hello world", "foo bar", "baz test"})
+
+	// Add session to memory.
+	err := mem.AddSessionToMemory(ctx, sess)
+	assert.NoError(t, err)
+
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+
+	// Search by keyword.
+	resp, err := mem.SearchMemory(ctx, searchKey, "foo")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, resp.TotalCount)
 	assert.Contains(t, resp.Memories[0].Content.Response.Choices[0].Message.Content, "foo")
 
-	// Search memory by time range
-	start, _ := time.Parse(time.RFC3339, resp.Memories[0].Timestamp)
-	resp2, err := mem.SearchMemory(ctx, appName, userID, "", memory.WithTimeRange(start, start))
+	// Search all memories.
+	resp, err = mem.SearchMemory(ctx, searchKey, "")
 	assert.NoError(t, err)
-	assert.True(t, resp2.TotalCount >= 1)
+	assert.Equal(t, 3, resp.TotalCount)
 
-	// Get stats
-	stats, err := mem.GetMemoryStats(ctx, appName, userID)
+	// Search with limit.
+	resp, err = mem.SearchMemory(ctx, searchKey, "", memory.WithLimit(2))
 	assert.NoError(t, err)
-	assert.Equal(t, 1, stats.TotalSessions)
-	assert.Equal(t, 3, stats.TotalMemories)
-	assert.True(t, stats.AverageMemoriesPerSession > 0)
+	assert.Equal(t, 3, resp.TotalCount) // Total count should still be 3
+	assert.Len(t, resp.Memories, 2)     // But only 2 returned
 
-	// Delete session memory
-	err = mem.DeleteMemory(ctx, appName, userID, sess.ID)
+	// Search with offset.
+	resp, err = mem.SearchMemory(ctx, searchKey, "", memory.WithOffset(1), memory.WithLimit(2))
 	assert.NoError(t, err)
-	resp3, err := mem.SearchMemory(ctx, appName, userID, "foo")
+	assert.Equal(t, 3, resp.TotalCount)
+	assert.Len(t, resp.Memories, 2)
+}
+
+func TestMemoryService_SearchMemory_Filters(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	appName := "testApp"
+	userID := "user1"
+
+	// Create two sessions.
+	sess1 := makeTestSession("sess1", appName, userID, []string{"hello from user", "response from assistant"})
+	sess2 := makeTestSession("sess2", appName, userID, []string{"another message", "final response"})
+
+	// Set different authors.
+	sess1.Events[0].Author = "user"
+	sess1.Events[1].Author = "assistant"
+	sess2.Events[0].Author = "user"
+	sess2.Events[1].Author = "assistant"
+
+	err := mem.AddSessionToMemory(ctx, sess1)
 	assert.NoError(t, err)
-	assert.Equal(t, 0, resp3.TotalCount)
+	err = mem.AddSessionToMemory(ctx, sess2)
+	assert.NoError(t, err)
+
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+
+	// Filter by session ID.
+	resp, err := mem.SearchMemory(ctx, searchKey, "", memory.WithSessionID("sess1"))
+	assert.NoError(t, err)
+	assert.Equal(t, 2, resp.TotalCount)
+
+	// Filter by authors.
+	resp, err = mem.SearchMemory(ctx, searchKey, "", memory.WithAuthors([]string{"user"}))
+	assert.NoError(t, err)
+	assert.Equal(t, 2, resp.TotalCount) // Only user messages
+	for _, mem := range resp.Memories {
+		assert.Equal(t, "user", mem.Author)
+	}
+
+	// Filter by time range.
+	start := time.Now().Add(-2 * time.Hour)
+	end := time.Now()
+	resp, err = mem.SearchMemory(ctx, searchKey, "", memory.WithTimeRange(start, end))
+	assert.NoError(t, err)
+	assert.Equal(t, 4, resp.TotalCount) // All messages within range
+
+	// Filter by minimum score.
+	resp, err = mem.SearchMemory(ctx, searchKey, "hello", memory.WithMinScore(0.5))
+	assert.NoError(t, err)
+	assert.True(t, resp.TotalCount >= 1)
+	for _, mem := range resp.Memories {
+		assert.True(t, mem.Score >= 0.5)
+	}
+}
+
+func TestMemoryService_SearchMemory_Sorting(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	appName := "testApp"
+	userID := "user1"
+	sess := makeTestSession("sess1", appName, userID, []string{"first", "second", "third"})
+
+	err := mem.AddSessionToMemory(ctx, sess)
+	assert.NoError(t, err)
+
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+
+	// Sort by timestamp ascending.
+	resp, err := mem.SearchMemory(ctx, searchKey, "",
+		memory.WithSortBy(memory.SortByTimestamp),
+		memory.WithSortOrder(memory.SortOrderAsc))
+	assert.NoError(t, err)
+	assert.Equal(t, 3, resp.TotalCount)
+	// First memory should be earliest.
+	assert.True(t, resp.Memories[0].Content.Timestamp.Before(resp.Memories[1].Content.Timestamp))
+
+	// Sort by timestamp descending (default).
+	resp, err = mem.SearchMemory(ctx, searchKey, "",
+		memory.WithSortBy(memory.SortByTimestamp),
+		memory.WithSortOrder(memory.SortOrderDesc))
+	assert.NoError(t, err)
+	assert.Equal(t, 3, resp.TotalCount)
+	// First memory should be latest.
+	assert.True(t, resp.Memories[0].Content.Timestamp.After(resp.Memories[1].Content.Timestamp))
+}
+
+func TestMemoryService_SearchMemory_NoResults(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	searchKey := memory.SearchKey{AppName: "nonexistent", UserID: "user"}
+
+	// Search with no data.
+	resp, err := mem.SearchMemory(ctx, searchKey, "anything")
+	assert.NoError(t, err)
+	assert.Equal(t, 0, resp.TotalCount)
+	assert.Empty(t, resp.Memories)
+}
+
+func TestMemoryService_DeleteMemory(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	appName := "testApp"
+	userID := "user1"
+	sess1 := makeTestSession("sess1", appName, userID, []string{"hello"})
+	sess2 := makeTestSession("sess2", appName, userID, []string{"world"})
+
+	err := mem.AddSessionToMemory(ctx, sess1)
+	assert.NoError(t, err)
+	err = mem.AddSessionToMemory(ctx, sess2)
+	assert.NoError(t, err)
+
+	// Delete specific session.
+	deleteKey := memory.DeleteKey{AppName: appName, UserID: userID, SessionID: "sess1"}
+	err = mem.DeleteMemory(ctx, deleteKey)
+	assert.NoError(t, err)
+
+	// Verify only sess2 remains.
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	resp, err := mem.SearchMemory(ctx, searchKey, "")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, resp.TotalCount)
+	assert.Equal(t, "sess2", resp.Memories[0].SessionID)
+
+	// Delete all sessions for user.
+	deleteKey = memory.DeleteKey{AppName: appName, UserID: userID}
+	err = mem.DeleteMemory(ctx, deleteKey)
+	assert.NoError(t, err)
+
+	// Verify no memories remain.
+	resp, err = mem.SearchMemory(ctx, searchKey, "")
+	assert.NoError(t, err)
+	assert.Equal(t, 0, resp.TotalCount)
 }
 
 func TestMemoryService_DeleteUserMemories(t *testing.T) {
-	mem := NewMemoryService(nil)
+	mem := NewMemoryService()
 	ctx := context.Background()
 	appName := "testApp"
-	userID := "user2"
-	sess1 := makeTestSession("sessA", appName, userID, []string{"a1", "a2"})
-	sess2 := makeTestSession("sessB", appName, userID, []string{"b1", "b2"})
-	_ = mem.AddSessionToMemory(ctx, sess1)
-	_ = mem.AddSessionToMemory(ctx, sess2)
+	userID := "user1"
+	sess1 := makeTestSession("sess1", appName, userID, []string{"hello"})
+	sess2 := makeTestSession("sess2", appName, userID, []string{"world"})
 
-	// Delete all user memories
-	err := mem.DeleteUserMemories(ctx, appName, userID)
+	err := mem.AddSessionToMemory(ctx, sess1)
 	assert.NoError(t, err)
-	stats, err := mem.GetMemoryStats(ctx, appName, userID)
+	err = mem.AddSessionToMemory(ctx, sess2)
+	assert.NoError(t, err)
+
+	// Delete all user memories.
+	userKey := memory.UserKey{AppName: appName, UserID: userID}
+	err = mem.DeleteUserMemories(ctx, userKey)
+	assert.NoError(t, err)
+
+	// Verify no memories remain.
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	resp, err := mem.SearchMemory(ctx, searchKey, "")
+	assert.NoError(t, err)
+	assert.Equal(t, 0, resp.TotalCount)
+}
+
+func TestMemoryService_GetMemoryStats(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	appName := "testApp"
+	userID := "user1"
+	sess1 := makeTestSession("sess1", appName, userID, []string{"hello", "world"})
+	sess2 := makeTestSession("sess2", appName, userID, []string{"foo", "bar", "baz"})
+
+	err := mem.AddSessionToMemory(ctx, sess1)
+	assert.NoError(t, err)
+	err = mem.AddSessionToMemory(ctx, sess2)
+	assert.NoError(t, err)
+
+	// Get stats.
+	userKey := memory.UserKey{AppName: appName, UserID: userID}
+	stats, err := mem.GetMemoryStats(ctx, userKey)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, stats.TotalSessions)
+	assert.Equal(t, 5, stats.TotalMemories) // 2 + 3
+	assert.Equal(t, 2.5, stats.AverageMemoriesPerSession)
+	assert.False(t, stats.OldestMemory.IsZero())
+	assert.False(t, stats.NewestMemory.IsZero())
+	assert.True(t, stats.OldestMemory.Before(stats.NewestMemory) || stats.OldestMemory.Equal(stats.NewestMemory))
+}
+
+func TestMemoryService_GetMemoryStats_NoData(t *testing.T) {
+	mem := NewMemoryService()
+	ctx := context.Background()
+	userKey := memory.UserKey{AppName: "nonexistent", UserID: "user"}
+
+	// Get stats with no data.
+	stats, err := mem.GetMemoryStats(ctx, userKey)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, stats.TotalSessions)
 	assert.Equal(t, 0, stats.TotalMemories)
+	assert.Equal(t, 0.0, stats.AverageMemoriesPerSession)
 }
 
-func TestMemoryService_EdgeCases(t *testing.T) {
-	mem := NewMemoryService(nil)
+func TestMemoryService_Close(t *testing.T) {
+	mem := NewMemoryService()
 	ctx := context.Background()
 	appName := "testApp"
-	userID := "user3"
+	userID := "user1"
+	sess := makeTestSession("sess1", appName, userID, []string{"hello"})
 
-	// Add nil session
-	err := mem.AddSessionToMemory(ctx, nil)
-	assert.Error(t, err)
+	err := mem.AddSessionToMemory(ctx, sess)
+	assert.NoError(t, err)
 
-	// Add session with empty ID
-	sess := makeTestSession("", appName, userID, []string{"x"})
-	err = mem.AddSessionToMemory(ctx, sess)
-	assert.Error(t, err)
+	// Close the service.
+	err = mem.Close()
+	assert.NoError(t, err)
 
-	// Search with no data
-	resp, err := mem.SearchMemory(ctx, appName, userID, "anything")
+	// Verify data is cleared.
+	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	resp, err := mem.SearchMemory(ctx, searchKey, "")
 	assert.NoError(t, err)
 	assert.Equal(t, 0, resp.TotalCount)
+}
+
+func TestMemoryService_CalculateScore(t *testing.T) {
+	mem := NewMemoryService()
+
+	// Create test memory entry.
+	memEntry := &memory.MemoryEntry{
+		Content: &event.Event{
+			Response: &model.Response{
+				Choices: []model.Choice{{Message: model.Message{Content: "hello world test"}}},
+			},
+		},
+	}
+
+	// Test exact match.
+	score := mem.calculateScore(memEntry, []string{"hello"})
+	assert.Equal(t, 1.0, score)
+
+	// Test partial match.
+	score = mem.calculateScore(memEntry, []string{"hello", "nonexistent"})
+	assert.Equal(t, 0.5, score)
+
+	// Test no match.
+	score = mem.calculateScore(memEntry, []string{"nonexistent"})
+	assert.Equal(t, 0.0, score)
+
+	// Test empty query.
+	score = mem.calculateScore(memEntry, []string{})
+	assert.Equal(t, 1.0, score)
 }

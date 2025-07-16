@@ -22,13 +22,11 @@ import (
 
 	"github.com/google/uuid"
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 const (
 	defaultSessionEventLimit = 100
-	SessionSummaryKey        = "__summary__"
 )
 
 var _ session.Service = (*SessionService)(nil)
@@ -535,58 +533,4 @@ func applyOptions(opts ...session.Option) *session.Options {
 		o(opt)
 	}
 	return opt
-}
-
-// SummarizeSession generates and stores a summary for the given session using the provided summarizer.
-func (s *SessionService) SummarizeSession(ctx context.Context, key session.Key, summarizer memory.Summarizer) (string, error) {
-	sess, err := s.GetSession(ctx, key)
-	if err != nil || sess == nil {
-		return "", fmt.Errorf("session not found: %v", err)
-	}
-	if summarizer == nil {
-		return "", fmt.Errorf("summarizer is nil")
-	}
-	events := make([]*event.Event, 0, len(sess.Events))
-	for i := range sess.Events {
-		events = append(events, &sess.Events[i])
-	}
-	summary, err := summarizer.Summarize(ctx, events)
-	if err != nil {
-		return "", err
-	}
-	sess.State[SessionSummaryKey] = []byte(summary)
-	return summary, nil
-}
-
-// GetSessionSummary retrieves the summary for the given session.
-func (s *SessionService) GetSessionSummary(ctx context.Context, key session.Key) (string, error) {
-	sess, err := s.GetSession(ctx, key)
-	if err != nil || sess == nil {
-		return "", fmt.Errorf("session not found: %v", err)
-	}
-	data, ok := sess.State[SessionSummaryKey]
-	if !ok {
-		return "", fmt.Errorf("summary not found")
-	}
-	return string(data), nil
-}
-
-// UpdateSessionSummary sets or updates the summary for the given session.
-func (s *SessionService) UpdateSessionSummary(ctx context.Context, key session.Key, summary string) error {
-	sess, err := s.GetSession(ctx, key)
-	if err != nil || sess == nil {
-		return fmt.Errorf("session not found: %v", err)
-	}
-	sess.State[SessionSummaryKey] = []byte(summary)
-	return nil
-}
-
-// DeleteSessionSummary deletes the summary for the given session.
-func (s *SessionService) DeleteSessionSummary(ctx context.Context, key session.Key) error {
-	sess, err := s.GetSession(ctx, key)
-	if err != nil || sess == nil {
-		return fmt.Errorf("session not found: %v", err)
-	}
-	delete(sess.State, SessionSummaryKey)
-	return nil
 }
