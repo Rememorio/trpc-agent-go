@@ -16,6 +16,8 @@ package inmemory
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -26,12 +28,19 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
-var (
-	_ memory.Service = (*MemoryService)(nil)
-
-	// ErrSessionEmpty is returned when a session is not found or empty.
-	ErrSessionEmpty = errors.New("session not found or empty")
+const (
+	// defaultScore is the default score for a memory.
+	defaultScore = 1.0
+	// defaultLimit is the default limit for the memory service.
+	defaultLimit = 100
 )
+
+var (
+	// ErrSessionEmpty is returned when a session is nil or sessionID is empty.
+	ErrSessionEmpty = errors.New("session is nil or sessionID is empty")
+)
+
+var _ memory.Service = (*MemoryService)(nil)
 
 // MemoryService implements the memory.Service interface using in-memory data structures.
 type MemoryService struct {
@@ -55,13 +64,13 @@ func NewMemoryService() *MemoryService {
 
 // userKey generates a user key string from app name and user ID.
 func userKey(appName, userID string) string {
-	return appName + "/" + userID
+	return fmt.Sprintf("%s/%s", appName, userID)
 }
 
 // AddSessionToMemory adds a session's new events to the memory service (incremental append).
 func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Session) error {
 	if sess == nil || sess.ID == "" {
-		return errors.New("session is nil or sessionID is empty")
+		return ErrSessionEmpty
 	}
 
 	m.mu.Lock()
@@ -99,7 +108,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 	defer m.mu.RUnlock()
 
 	// Build search options.
-	opts := &memory.SearchOptions{Limit: 100}
+	opts := &memory.SearchOptions{Limit: defaultLimit}
 	for _, opt := range options {
 		opt(opts)
 	}
@@ -128,14 +137,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 		for _, mem := range memories {
 			// Filter by authors if specified.
 			if len(opts.Authors) > 0 {
-				found := false
-				for _, author := range opts.Authors {
-					if mem.Author == author {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if !slices.Contains(opts.Authors, mem.Author) {
 					continue
 				}
 			}
@@ -168,15 +170,8 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 
 	// Apply pagination.
 	totalCount := len(allMemories)
-	start := opts.Offset
-	if start > totalCount {
-		start = totalCount
-	}
-
-	end := start + opts.Limit
-	if end > totalCount {
-		end = totalCount
-	}
+	start := min(opts.Offset, totalCount)
+	end := min(start+opts.Limit, totalCount)
 
 	result := allMemories[start:end]
 
@@ -190,17 +185,18 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 // calculateScore calculates the similarity score between memory and query words.
 func (m *MemoryService) calculateScore(mem *memory.MemoryEntry, queryWords []string) float64 {
 	if len(queryWords) == 0 {
-		return 1.0
+		return defaultScore
 	}
 
 	// Extract text from memory content.
-	var contentText string
+	var content strings.Builder
 	if mem.Content != nil && mem.Content.Response != nil {
 		for _, choice := range mem.Content.Response.Choices {
-			contentText += choice.Message.Content + " "
+			content.WriteString(choice.Message.Content)
+			content.WriteString(" ")
 		}
 	}
-	contentText = strings.ToLower(contentText)
+	contentText := strings.ToLower(content.String())
 
 	// Simple word matching score.
 	matchCount := 0
@@ -227,12 +223,9 @@ func (m *MemoryService) sortMemories(memories []*memory.MemoryEntry, opts *memor
 		switch opts.SortBy {
 		case memory.SortByScore:
 			less = memories[i].Score < memories[j].Score
-		case memory.SortByTimestamp:
-			less = memories[i].Content.Timestamp.Before(memories[j].Content.Timestamp)
-		default:
+		default: // Sort by timestamp by default.
 			less = memories[i].Content.Timestamp.Before(memories[j].Content.Timestamp)
 		}
-
 		if opts.SortOrder == memory.SortOrderAsc {
 			return less
 		}

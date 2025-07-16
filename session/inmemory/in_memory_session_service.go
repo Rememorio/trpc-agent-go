@@ -14,6 +14,7 @@
 package inmemory
 
 import (
+	"maps"
 	"context"
 	"fmt"
 	"strings"
@@ -143,9 +144,7 @@ func (s *SessionService) CreateSession(
 	}
 
 	// Set initial state if provided
-	for k, v := range state {
-		sess.State[k] = v
-	}
+	maps.Copy(sess.State, state)
 
 	app.mu.Lock()
 	defer app.mu.Unlock()
