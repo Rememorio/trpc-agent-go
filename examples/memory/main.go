@@ -150,6 +150,8 @@ func (c *memoryChat) startChat(ctx context.Context) error {
 	fmt.Println("   /exit           - End the conversation")
 	fmt.Println()
 
+	// Start a new session.
+	c.startNewSession()
 	for {
 		fmt.Print("👤 You: ")
 		if !scanner.Scan() {
@@ -367,10 +369,14 @@ func (c *memoryChat) searchMemoryCommand(ctx context.Context, query string) {
 		fmt.Printf("   No memories found.\n")
 	} else {
 		for i, mem := range response.Memories {
+			content := ""
+			if mem.Content != nil && mem.Content.Response != nil && len(mem.Content.Response.Choices) > 0 {
+				content = mem.Content.Response.Choices[0].Message.Content
+			}
 			fmt.Printf("   %d. [%s] %s (Score: %.2f)\n",
 				i+1,
 				mem.Author,
-				mem.Content.Response.Choices[0].Message.Content,
+				content,
 				mem.Score)
 		}
 	}
