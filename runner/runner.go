@@ -23,15 +23,19 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/log"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
-// Author types for events.
 const (
+	// Author types for events.
 	authorUser = "user"
+
+	// Memory service key.
+	MemoryServiceKey = "memory_service"
 )
 
 // Option is a function that configures a Runner.
@@ -41,6 +45,13 @@ type Option func(*Options)
 func WithSessionService(service session.Service) Option {
 	return func(opts *Options) {
 		opts.sessionService = service
+	}
+}
+
+// WithMemoryService sets the memory service to use.
+func WithMemoryService(service memory.Service) Option {
+	return func(opts *Options) {
+		opts.memoryService = service
 	}
 }
 
@@ -61,11 +72,13 @@ type runner struct {
 	appName        string
 	agent          agent.Agent
 	sessionService session.Service
+	memoryService  memory.Service
 }
 
 // Options is the options for the Runner.
 type Options struct {
 	sessionService session.Service
+	memoryService  memory.Service
 }
 
 // NewRunner creates a new Runner.
@@ -80,10 +93,12 @@ func NewRunner(appName string, agent agent.Agent, opts ...Option) Runner {
 	if options.sessionService == nil {
 		options.sessionService = inmemory.NewSessionService()
 	}
+
 	return &runner{
 		appName:        appName,
 		agent:          agent,
 		sessionService: options.sessionService,
+		memoryService:  options.memoryService,
 	}
 }
 
@@ -97,6 +112,11 @@ func (r *runner) Run(
 ) (<-chan *event.Event, error) {
 	ctx, span := trace.Tracer.Start(ctx, fmt.Sprintf("invocation"))
 	defer span.End()
+
+	// Add memory service to context if available.
+	if r.memoryService != nil {
+		ctx = context.WithValue(ctx, MemoryServiceKey, r.memoryService)
+	}
 
 	sessionKey := session.Key{
 		AppName:   r.appName,
@@ -218,6 +238,13 @@ func (r *runner) Run(
 		select {
 		case processedEventCh <- runnerCompletionEvent:
 		case <-ctx.Done():
+		}
+
+		// If memory service is configured, automatically add session to memory after completion.
+		if r.memoryService != nil {
+			if err := r.memoryService.AddSessionToMemory(ctx, sess); err != nil {
+				log.Errorf("Failed to add session to memory: %v", err)
+			}
 		}
 	}()
 

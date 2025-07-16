@@ -29,10 +29,13 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/log"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+	memorytool "trpc.group/trpc-go/trpc-agent-go/tool/memory"
 )
 
 const (
@@ -329,6 +332,14 @@ func (f *Flow) preprocess(
 			llmRequest.Tools[t.Declaration().Name] = t
 		}
 	}
+
+	// Add memory tool if memory service is available in context.
+	if memoryService := ctx.Value(runner.MemoryServiceKey); memoryService != nil && invocation.Session != nil {
+		memoryTool := newMemoryTool(memoryService, invocation.Session.AppName, invocation.Session.UserID)
+		if memoryTool != nil {
+			llmRequest.Tools[memoryTool.Declaration().Name] = memoryTool
+		}
+	}
 }
 
 // callLLM performs the actual LLM call using core/model.
@@ -616,6 +627,21 @@ func (f *Flow) createErrorChoice(index int, toolID string, errorMsg string) *mod
 			ToolID:  toolID,
 		},
 	}
+}
+
+func newMemoryTool(
+	memoryService interface{},
+	appName string,
+	userID string,
+) tool.Tool {
+	// Type assert to memory.Service.
+	ms, ok := memoryService.(memory.Service)
+	if !ok {
+		return nil
+	}
+
+	// Create memory tool using the new memorytool.NewMemoryTool function.
+	return memorytool.NewMemoryTool(ms, appName, userID)
 }
 
 func newToolCallResponseEvent(

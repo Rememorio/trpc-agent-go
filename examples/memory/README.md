@@ -1,30 +1,32 @@
-# Multi-turn Chat with Runner + Tools + Memory
+# Memory Service and Tool Example
 
-This example demonstrates a comprehensive multi-turn chat interface using the `Runner` orchestration component with streaming output, session management, tool calling, and advanced memory functionality.
+This example demonstrates both the Memory Service and Memory Tool functionality, showing how to store, retrieve, and search conversation memories using different approaches.
 
-## What is Memory-Enhanced Chat?
+## What This Example Demonstrates
 
-This implementation showcases the essential features for building conversational AI applications with persistent memory:
+This implementation showcases two different approaches to working with memory in conversational AI:
 
-- **🔄 Multi-turn Conversations**: Maintains context across multiple exchanges
-- **🌊 Streaming Output**: Real-time character-by-character response generation
-- **💾 Session Management**: Conversation state preservation and continuity
-- **🔧 Tool Integration**: Working calculator and time tools with proper execution
-- **🧠 Memory System**: Persistent storage and retrieval of conversation history
-- **📝 Session Summarization**: AI-powered conversation summaries
-- **🔍 Memory Search**: Semantic search through conversation history
-- **📊 Memory Analytics**: Statistics and insights about stored memories
+### Part 1: Memory Service Example
+
+- **📝 Direct Session Storage**: Store complete conversation sessions with events
+- **🔍 Advanced Search**: Search memories with filters, sorting, and pagination
+- **📊 Memory Statistics**: Get insights about stored memories and sessions
+- **🗑️ Memory Management**: Delete specific sessions or all user memories
+
+### Part 2: Memory Tool Example
+
+- **🤖 Tool-Based Storage**: Use Memory Tool to automatically store user information
+- **💡 Smart Information Extraction**: Tool designed to identify and store user preferences
+- **🔗 Service Integration**: Memory Tool works with the same Memory Service
+- **📋 Structured Input/Output**: JSON-based tool interface for easy integration
 
 ### Key Features
 
-- **Context Preservation**: The assistant remembers previous conversation turns
-- **Streaming Responses**: Live, responsive output for better user experience
-- **Session Continuity**: Consistent conversation state across the chat session
-- **Tool Call Execution**: Proper execution and display of tool calling procedures
-- **Memory Storage**: Automatic storage of conversation events in memory
-- **Intelligent Summarization**: AI-generated summaries of conversation sessions
-- **Semantic Search**: Find relevant past conversations using natural language queries
+- **Memory Service**: Low-level API for direct memory management
+- **Memory Tool**: High-level tool for automated user information storage
+- **Semantic Search**: Find relevant memories using natural language queries
 - **Memory Statistics**: Track memory usage and conversation patterns
+- **Type Safety**: Strongly typed interfaces for reliable memory operations
 - **Error Handling**: Graceful error recovery and reporting
 
 ## Prerequisites
