@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -101,6 +101,9 @@ type Service interface {
 
 	// AppendEvent appends an event to a session.
 	AppendEvent(ctx context.Context, session *Session, event *event.Event, options ...Option) error
+
+	// Close closes the service.
+	Close() error
 }
 
 // Key is the key for a session.

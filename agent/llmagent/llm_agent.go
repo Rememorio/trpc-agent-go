@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -387,7 +387,7 @@ func (a *LLMAgent) wrapEventChannel(
 				errorEvent := event.NewErrorEvent(
 					invocation.InvocationID,
 					invocation.AgentName,
-					"agent_callback_error",
+					agent.ErrorTypeAgentCallbackError,
 					err.Error(),
 				)
 				select {

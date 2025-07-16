@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -391,5 +391,9 @@ func (m *mockSessionService) DeleteUserState(ctx context.Context, userKey sessio
 }
 
 func (m *mockSessionService) AppendEvent(ctx context.Context, session *session.Session, event *event.Event, options ...session.Option) error {
+	return nil
+}
+
+func (m *mockSessionService) Close() error {
 	return nil
 }

@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -46,8 +46,10 @@ type AfterToolCallback func(ctx context.Context, toolName string, toolDeclaratio
 
 // ToolCallbacks holds callbacks for tool operations.
 type ToolCallbacks struct {
+	// BeforeTool is a list of callbacks that are called before the tool is executed.
 	BeforeTool []BeforeToolCallback
-	AfterTool  []AfterToolCallback
+	// AfterTool is a list of callbacks that are called after the tool is executed.
+	AfterTool []AfterToolCallback
 }
 
 // NewToolCallbacks creates a new ToolCallbacks instance.

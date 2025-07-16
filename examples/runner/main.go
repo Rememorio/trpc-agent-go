@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -23,8 +23,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	goredis "github.com/redis/go-redis/v9"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -116,7 +114,7 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 		llmagent.WithModel(modelInstance),
 		llmagent.WithDescription("A helpful AI assistant with calculator and time tools"),
 		llmagent.WithInstruction("Use tools when appropriate for calculations or time queries. "+
-		"Be helpful and conversational."),
+			"Be helpful and conversational."),
 		llmagent.WithGenerationConfig(genConfig),
 		llmagent.WithChannelBufferSize(100),
 		llmagent.WithTools([]tool.Tool{calculatorTool, timeTool}),
@@ -128,8 +126,8 @@ func (c *multiTurnChat) setup(ctx context.Context) error {
 	case "inmemory":
 		sessionService = inmemory.NewSessionService()
 	case "redis":
-		redisClient := goredis.NewClient(&goredis.Options{Addr: *redisAddr})
-		sessionService, err = redis.NewService(redis.WithRedisClient(redisClient))
+		redisURL := fmt.Sprintf("redis://%s", *redisAddr)
+		sessionService, err = redis.NewService(redis.WithRedisClientURL(redisURL))
 	default:
 		return fmt.Errorf("invalid session service name: %s", *sessServiceName)
 	}

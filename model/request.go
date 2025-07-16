@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -53,6 +53,7 @@ type Message struct {
 	Role      Role       `json:"role"`                 // The role of the message author
 	Content   string     `json:"content"`              // The message content
 	ToolID    string     `json:"tool_id,omitempty"`    // Used by tool response
+	ToolName  string     `json:"tool_name,omitempty"`  // Used by tool response
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // Optional tool calls for the message
 }
 

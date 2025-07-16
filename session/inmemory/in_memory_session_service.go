@@ -1,5 +1,5 @@
 //
-// Tencent is pleased to support the open source community by making tRPC available.
+// Tencent is pleased to support the open source community by making trpc-agent-go available.
 //
 // Copyright (C) 2025 Tencent.
 // All rights reserved.
@@ -50,8 +50,8 @@ func newAppSessions() *appSessions {
 	}
 }
 
-// ServiceOpts is the options for session service.
-type ServiceOpts struct {
+// serviceOpts is the options for session service.
+type serviceOpts struct {
 	// sessionEventLimit is the limit of events in a session.
 	sessionEventLimit int
 }
@@ -60,22 +60,22 @@ type ServiceOpts struct {
 type SessionService struct {
 	mu   sync.RWMutex
 	apps map[string]*appSessions
-	opts ServiceOpts
+	opts serviceOpts
 }
 
-// ServiceOption is the option for the in-memory session service.
-type ServiceOption func(*ServiceOpts)
+// ServiceOpt is the option for the in-memory session service.
+type ServiceOpt func(*serviceOpts)
 
 // WithSessionEventLimit sets the limit of events in a session.
-func WithSessionEventLimit(limit int) func(*ServiceOpts) {
-	return func(opts *ServiceOpts) {
+func WithSessionEventLimit(limit int) ServiceOpt {
+	return func(opts *serviceOpts) {
 		opts.sessionEventLimit = limit
 	}
 }
 
 // NewSessionService creates a new in-memory session service.
-func NewSessionService(options ...ServiceOption) *SessionService {
-	opts := ServiceOpts{
+func NewSessionService(options ...ServiceOpt) *SessionService {
+	opts := serviceOpts{
 		sessionEventLimit: defaultSessionEventLimit,
 	}
 	for _, option := range options {
@@ -457,6 +457,11 @@ func (s *SessionService) AppendEvent(
 		return fmt.Errorf("session not found: %s", key.SessionID)
 	}
 	s.updateSessionState(storedSession, event)
+	return nil
+}
+
+// Close closes the service.
+func (s *SessionService) Close() error {
 	return nil
 }
 
