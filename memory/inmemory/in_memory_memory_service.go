@@ -62,12 +62,12 @@ func NewMemoryService() *MemoryService {
 	}
 }
 
-// userKey generates a user key string from app name and user ID.
-func userKey(appName, userID string) string {
+// getUserKey generates a user key string from app name and user ID.
+func getUserKey(appName, userID string) string {
 	return fmt.Sprintf("%s/%s", appName, userID)
 }
 
-// AddSessionToMemory adds a session's new events to the memory service (incremental append).
+// AddSessionToMemory adds a session's new events to the memory service (incremental append, full session merge).
 func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Session) error {
 	if sess == nil || sess.ID == "" {
 		return ErrSessionEmpty
@@ -76,15 +76,17 @@ func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Se
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	userKeyStr := userKey(sess.AppName, sess.UserID)
+	userKeyStr := getUserKey(sess.AppName, sess.UserID)
 	if m.userSessions[userKeyStr] == nil {
 		m.userSessions[userKeyStr] = make(map[string]struct{})
 	}
 	m.userSessions[userKeyStr][sess.ID] = struct{}{}
 
-	// Only append new events since last call.
-	startIdx := m.sessionEventCount[sess.ID]
-	for i := startIdx; i < len(sess.Events); i++ {
+	existingEntries := m.sessionMemories[sess.ID]
+	existingCount := len(existingEntries)
+
+	// If we already have some events, only append new ones.
+	for i := existingCount; i < len(sess.Events); i++ {
 		evt := sess.Events[i]
 		entry := &memory.MemoryEntry{
 			Content:   &evt,
@@ -101,7 +103,7 @@ func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Se
 }
 
 // SearchMemory searches for memories matching the query and options.
-func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
+func (m *MemoryService) SearchMemory(ctx context.Context, userKey memory.UserKey, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
 	startTime := time.Now()
 
 	m.mu.RLock()
@@ -113,7 +115,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 		opt(opts)
 	}
 
-	userKeyStr := userKey(key.AppName, key.UserID)
+	userKeyStr := getUserKey(userKey.AppName, userKey.UserID)
 	sessionIDs, exists := m.userSessions[userKeyStr]
 	if !exists {
 		return &memory.SearchMemoryResponse{
@@ -152,7 +154,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 			// Simple keyword matching for search.
 			score := m.calculateScore(mem, queryWords)
 			if len(queryWords) > 0 && score == 0 {
-				continue // Skip if query doesn't match at all
+				continue // Skip if query doesn't match at all.
 			}
 			if score < opts.MinScore {
 				continue
@@ -182,7 +184,6 @@ func (m *MemoryService) SearchMemory(ctx context.Context, key memory.SearchKey, 
 	}, nil
 }
 
-// calculateScore calculates the similarity score between memory and query words.
 func (m *MemoryService) calculateScore(mem *memory.MemoryEntry, queryWords []string) float64 {
 	if len(queryWords) == 0 {
 		return defaultScore
@@ -198,21 +199,20 @@ func (m *MemoryService) calculateScore(mem *memory.MemoryEntry, queryWords []str
 	}
 	contentText := strings.ToLower(content.String())
 
-	// Simple word matching score.
-	matchCount := 0
+	// Count total occurrences of all queryWords in contentText.
+	totalMatchCount := 0
 	for _, word := range queryWords {
-		if strings.Contains(contentText, word) {
-			matchCount++
-		}
+		totalMatchCount += strings.Count(contentText, word)
 	}
 
-	return float64(matchCount) / float64(len(queryWords))
+	// Normalize by queryWords length to keep score in a reasonable range.
+	return float64(totalMatchCount) / float64(len(queryWords))
 }
 
 // sortMemories sorts memories based on the specified sort options.
 func (m *MemoryService) sortMemories(memories []*memory.MemoryEntry, opts *memory.SearchOptions) {
 	if opts.SortBy == "" {
-		opts.SortBy = memory.SortByTimestamp
+		opts.SortBy = memory.SortByScore
 	}
 	if opts.SortOrder == "" {
 		opts.SortOrder = memory.SortOrderDesc
@@ -234,11 +234,11 @@ func (m *MemoryService) sortMemories(memories []*memory.MemoryEntry, opts *memor
 }
 
 // DeleteMemory deletes memories (by session unit).
-func (m *MemoryService) DeleteMemory(ctx context.Context, key memory.DeleteKey) error {
+func (m *MemoryService) DeleteMemory(ctx context.Context, key memory.Key) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	userKeyStr := userKey(key.AppName, key.UserID)
+	userKeyStr := getUserKey(key.AppName, key.UserID)
 
 	if key.SessionID != "" {
 		// Delete specific session memories.
@@ -268,7 +268,7 @@ func (m *MemoryService) DeleteMemory(ctx context.Context, key memory.DeleteKey) 
 
 // DeleteUserMemories deletes all memories for a specific user.
 func (m *MemoryService) DeleteUserMemories(ctx context.Context, userKey memory.UserKey) error {
-	return m.DeleteMemory(ctx, memory.DeleteKey{
+	return m.DeleteMemory(ctx, memory.Key{
 		AppName: userKey.AppName,
 		UserID:  userKey.UserID,
 	})
@@ -279,7 +279,7 @@ func (m *MemoryService) GetMemoryStats(ctx context.Context, uKey memory.UserKey)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	userKeyStr := userKey(uKey.AppName, uKey.UserID)
+	userKeyStr := getUserKey(uKey.AppName, uKey.UserID)
 	sessions, exists := m.userSessions[userKeyStr]
 	if !exists {
 		return &memory.MemoryStats{

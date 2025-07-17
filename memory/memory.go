@@ -21,26 +21,11 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
-// UserKey represents a user key structure (similar to session.UserKey).
-type UserKey struct {
-	// AppName is the application name.
-	AppName string
-	// UserID is the user ID.
-	UserID string
-}
+// UserKey is an alias for session.UserKey.
+type UserKey = session.UserKey
 
-// SearchKey represents a search key structure (based on UserKey).
-type SearchKey = UserKey
-
-// DeleteKey represents a delete key structure.
-type DeleteKey struct {
-	// AppName is the application name.
-	AppName string
-	// UserID is the user ID.
-	UserID string
-	// SessionID is the session ID.
-	SessionID string
-}
+// Key is an alias for session.Key.
+type Key = session.Key
 
 // MemoryEntry represents a single memory entry (strictly follows ADK Python design).
 type MemoryEntry struct {
@@ -205,17 +190,15 @@ func WithSortOrder(order SortOrder) Option {
 
 // Service is the interface that wraps the basic operations a memory system should support.
 type Service interface {
-	// === Core ADK compatible interfaces ===
 	// AddSessionToMemory adds a session to the memory service.
 	// A session may be added multiple times during its lifetime.
 	AddSessionToMemory(ctx context.Context, session *session.Session) error
 
 	// SearchMemory searches for sessions that match the query.
-	SearchMemory(ctx context.Context, key SearchKey, query string, options ...Option) (*SearchMemoryResponse, error)
+	SearchMemory(ctx context.Context, userKey UserKey, query string, options ...Option) (*SearchMemoryResponse, error)
 
-	// === Go style extension interfaces ===
 	// DeleteMemory deletes memories (by session unit).
-	DeleteMemory(ctx context.Context, key DeleteKey) error
+	DeleteMemory(ctx context.Context, key Key) error
 
 	// DeleteUserMemories deletes all memories for a specific user.
 	DeleteUserMemories(ctx context.Context, userKey UserKey) error

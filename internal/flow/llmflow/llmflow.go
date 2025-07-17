@@ -32,10 +32,11 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
-	memorytool "trpc.group/trpc-go/trpc-agent-go/tool/memory"
+	summarytool "trpc.group/trpc-go/trpc-agent-go/tool/summary"
 )
 
 const (
@@ -333,11 +334,18 @@ func (f *Flow) preprocess(
 		}
 	}
 
-	// Add memory tool if memory service is available in context.
-	if memoryService := ctx.Value(runner.MemoryServiceKey); memoryService != nil && invocation.Session != nil {
-		memoryTool := newMemoryTool(memoryService, invocation.Session.AppName, invocation.Session.UserID)
-		if memoryTool != nil {
-			llmRequest.Tools[memoryTool.Declaration().Name] = memoryTool
+	// Add memory summary tool if both memoryService and sessionService are available in context.
+	memoryService := ctx.Value(runner.MemoryServiceKey{})
+	sessionService := ctx.Value(runner.SessionServiceKey{})
+	if memoryService != nil && sessionService != nil && invocation.Session != nil {
+		summaryTool := summarytool.NewSummaryTool(
+			memoryService.(memory.Service),
+			sessionService.(session.Service),
+			invocation.Session.AppName,
+			invocation.Session.UserID,
+		)
+		if summaryTool != nil {
+			llmRequest.Tools[summaryTool.Declaration().Name] = summaryTool
 		}
 	}
 }
@@ -629,8 +637,9 @@ func (f *Flow) createErrorChoice(index int, toolID string, errorMsg string) *mod
 	}
 }
 
-func newMemoryTool(
+func newSummaryTool(
 	memoryService interface{},
+	sessionService interface{},
 	appName string,
 	userID string,
 ) tool.Tool {
@@ -640,8 +649,14 @@ func newMemoryTool(
 		return nil
 	}
 
+	// Type assert to session.Service.
+	ss, ok := sessionService.(session.Service)
+	if !ok {
+		return nil
+	}
+
 	// Create memory tool using the new memorytool.NewMemoryTool function.
-	return memorytool.NewMemoryTool(ms, appName, userID)
+	return summarytool.NewSummaryTool(ms, ss, appName, userID)
 }
 
 func newToolCallResponseEvent(

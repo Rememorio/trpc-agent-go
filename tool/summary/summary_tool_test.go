@@ -10,7 +10,7 @@
 //
 //
 
-package memory
+package summary
 
 import (
 	"context"
@@ -19,15 +19,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
+	memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
+	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 )
 
-func TestNewMemoryTool(t *testing.T) {
+func TestNewSummaryTool(t *testing.T) {
 	// Create a memory service.
-	memoryService := inmemory.NewMemoryService()
+	memoryService := memoryinmemory.NewMemoryService()
+	// Create a session service.
+	sessionService := sessioninmemory.NewSessionService()
 
-	// Create a memory tool.
-	tool := NewMemoryTool(memoryService, "test-app", "test-user")
+	// Create a summary tool.
+	tool := NewSummaryTool(memoryService, sessionService, "test-app", "test-user")
 
 	// Verify the tool is created correctly.
 	require.NotNil(t, tool)
@@ -36,18 +39,20 @@ func TestNewMemoryTool(t *testing.T) {
 	declaration := tool.Declaration()
 	require.NotNil(t, declaration)
 
-	assert.Equal(t, "store_user_memory", declaration.Name)
+	assert.Equal(t, "store_user_summary", declaration.Name)
 	assert.NotEmpty(t, declaration.Description)
 	assert.NotNil(t, declaration.InputSchema)
 	assert.NotNil(t, declaration.OutputSchema)
 }
 
-func TestMemoryTool_Call(t *testing.T) {
+func TestSummaryTool_Call(t *testing.T) {
 	// Create a memory service.
-	memoryService := inmemory.NewMemoryService()
+	memoryService := memoryinmemory.NewMemoryService()
+	// Create a session service.
+	sessionService := sessioninmemory.NewSessionService()
 
-	// Create a memory tool.
-	tool := NewMemoryTool(memoryService, "test-app", "test-user")
+	// Create a summary tool.
+	tool := NewSummaryTool(memoryService, sessionService, "test-app", "test-user")
 
 	// Test input.
 	input := `{"user_info": "User likes coffee and works as a software engineer"}`
@@ -57,19 +62,21 @@ func TestMemoryTool_Call(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the result.
-	output, ok := result.(MemoryToolOutput)
+	output, ok := result.(SummaryToolOutput)
 	require.True(t, ok)
 
 	assert.True(t, output.Success)
-	assert.Equal(t, "User information stored successfully", output.Message)
+	assert.Equal(t, "User summary stored successfully", output.Message)
 }
 
-func TestMemoryTool_Call_InvalidInput(t *testing.T) {
+func TestSummaryTool_Call_InvalidInput(t *testing.T) {
 	// Create a memory service.
-	memoryService := inmemory.NewMemoryService()
+	memoryService := memoryinmemory.NewMemoryService()
+	// Create a session service.
+	sessionService := sessioninmemory.NewSessionService()
 
-	// Create a memory tool.
-	tool := NewMemoryTool(memoryService, "test-app", "test-user")
+	// Create a summary tool.
+	tool := NewSummaryTool(memoryService, sessionService, "test-app", "test-user")
 
 	// Test invalid input.
 	input := `{"invalid_field": "value"}`
@@ -79,19 +86,21 @@ func TestMemoryTool_Call_InvalidInput(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify the result - should still work but with empty user info.
-	output, ok := result.(MemoryToolOutput)
+	output, ok := result.(SummaryToolOutput)
 	require.True(t, ok)
 
 	assert.True(t, output.Success)
-	assert.Equal(t, "User information stored successfully", output.Message)
+	assert.Equal(t, "User summary stored successfully", output.Message)
 }
 
-func TestMemoryTool_Call_InvalidJSON(t *testing.T) {
+func TestSummaryTool_Call_InvalidJSON(t *testing.T) {
 	// Create a memory service.
-	memoryService := inmemory.NewMemoryService()
+	memoryService := memoryinmemory.NewMemoryService()
+	// Create a session service.
+	sessionService := sessioninmemory.NewSessionService()
 
-	// Create a memory tool.
-	tool := NewMemoryTool(memoryService, "test-app", "test-user")
+	// Create a summary tool.
+	tool := NewSummaryTool(memoryService, sessionService, "test-app", "test-user")
 
 	// Test invalid JSON.
 	input := `{"invalid_json": }`

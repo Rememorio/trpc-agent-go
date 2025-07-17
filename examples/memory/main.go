@@ -353,7 +353,7 @@ func (c *memoryChat) searchMemoryCommand(ctx context.Context, query string) {
 		return
 	}
 
-	searchKey := memory.SearchKey{
+	searchKey := memory.UserKey{
 		AppName: c.appName,
 		UserID:  c.userID,
 	}
@@ -373,11 +373,12 @@ func (c *memoryChat) searchMemoryCommand(ctx context.Context, query string) {
 			if mem.Content != nil && mem.Content.Response != nil && len(mem.Content.Response.Choices) > 0 {
 				content = mem.Content.Response.Choices[0].Message.Content
 			}
-			fmt.Printf("   %d. [%s] %s (Score: %.2f)\n",
+			fmt.Printf("   %d. [%s] %s (Score: %.2f, Timestamp: %s)\n",
 				i+1,
 				mem.Author,
 				content,
-				mem.Score)
+				mem.Score,
+				mem.Content.Timestamp.Format(time.RFC3339))
 		}
 	}
 	fmt.Println()
@@ -388,7 +389,7 @@ func (c *memoryChat) searchMemoryCommand(ctx context.Context, query string) {
 // searchMemory searches through stored memories.
 func (c *memoryChat) searchMemory(args searchArgs) searchResult {
 	ctx := context.Background()
-	searchKey := memory.SearchKey{
+	searchKey := memory.UserKey{
 		AppName: c.appName,
 		UserID:  c.userID,
 	}

@@ -33,10 +33,13 @@ import (
 const (
 	// Author types for events.
 	authorUser = "user"
-
-	// Memory service key.
-	MemoryServiceKey = "memory_service"
 )
+
+// SessionServiceKey is the key for the session service in the context.
+type SessionServiceKey struct{}
+
+// MemoryServiceKey is the key for the memory service in the context.
+type MemoryServiceKey struct{}
 
 // Option is a function that configures a Runner.
 type Option func(*Options)
@@ -115,7 +118,11 @@ func (r *runner) Run(
 
 	// Add memory service to context if available.
 	if r.memoryService != nil {
-		ctx = context.WithValue(ctx, MemoryServiceKey, r.memoryService)
+		ctx = context.WithValue(ctx, MemoryServiceKey{}, r.memoryService)
+	}
+	// Add session service to context for downstream tool use.
+	if r.sessionService != nil {
+		ctx = context.WithValue(ctx, SessionServiceKey{}, r.sessionService)
 	}
 
 	sessionKey := session.Key{
@@ -238,13 +245,6 @@ func (r *runner) Run(
 		select {
 		case processedEventCh <- runnerCompletionEvent:
 		case <-ctx.Done():
-		}
-
-		// If memory service is configured, automatically add session to memory after completion.
-		if r.memoryService != nil {
-			if err := r.memoryService.AddSessionToMemory(ctx, sess); err != nil {
-				log.Errorf("Failed to add session to memory: %v", err)
-			}
 		}
 	}()
 

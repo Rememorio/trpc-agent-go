@@ -70,7 +70,7 @@ func TestMemoryService_AddSessionToMemory(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify memories were added.
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 	resp, err := mem.SearchMemory(ctx, searchKey, "")
 	assert.NoError(t, err)
 	assert.Equal(t, 3, resp.TotalCount) // 2 original + 1 new
@@ -101,7 +101,7 @@ func TestMemoryService_SearchMemory(t *testing.T) {
 	err := mem.AddSessionToMemory(ctx, sess)
 	assert.NoError(t, err)
 
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 
 	// Search by keyword.
 	resp, err := mem.SearchMemory(ctx, searchKey, "foo")
@@ -148,7 +148,7 @@ func TestMemoryService_SearchMemory_Filters(t *testing.T) {
 	err = mem.AddSessionToMemory(ctx, sess2)
 	assert.NoError(t, err)
 
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 
 	// Filter by session ID.
 	resp, err := mem.SearchMemory(ctx, searchKey, "", memory.WithSessionID("sess1"))
@@ -189,7 +189,7 @@ func TestMemoryService_SearchMemory_Sorting(t *testing.T) {
 	err := mem.AddSessionToMemory(ctx, sess)
 	assert.NoError(t, err)
 
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 
 	// Sort by timestamp ascending.
 	resp, err := mem.SearchMemory(ctx, searchKey, "",
@@ -213,7 +213,7 @@ func TestMemoryService_SearchMemory_Sorting(t *testing.T) {
 func TestMemoryService_SearchMemory_NoResults(t *testing.T) {
 	mem := NewMemoryService()
 	ctx := context.Background()
-	searchKey := memory.SearchKey{AppName: "nonexistent", UserID: "user"}
+	searchKey := memory.UserKey{AppName: "nonexistent", UserID: "user"}
 
 	// Search with no data.
 	resp, err := mem.SearchMemory(ctx, searchKey, "anything")
@@ -236,19 +236,19 @@ func TestMemoryService_DeleteMemory(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Delete specific session.
-	deleteKey := memory.DeleteKey{AppName: appName, UserID: userID, SessionID: "sess1"}
+	deleteKey := memory.Key{AppName: appName, UserID: userID, SessionID: "sess1"}
 	err = mem.DeleteMemory(ctx, deleteKey)
 	assert.NoError(t, err)
 
 	// Verify only sess2 remains.
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 	resp, err := mem.SearchMemory(ctx, searchKey, "")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, resp.TotalCount)
 	assert.Equal(t, "sess2", resp.Memories[0].SessionID)
 
 	// Delete all sessions for user.
-	deleteKey = memory.DeleteKey{AppName: appName, UserID: userID}
+	deleteKey = memory.Key{AppName: appName, UserID: userID}
 	err = mem.DeleteMemory(ctx, deleteKey)
 	assert.NoError(t, err)
 
@@ -277,7 +277,7 @@ func TestMemoryService_DeleteUserMemories(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify no memories remain.
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 	resp, err := mem.SearchMemory(ctx, searchKey, "")
 	assert.NoError(t, err)
 	assert.Equal(t, 0, resp.TotalCount)
@@ -336,7 +336,7 @@ func TestMemoryService_Close(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify data is cleared.
-	searchKey := memory.SearchKey{AppName: appName, UserID: userID}
+	searchKey := memory.UserKey{AppName: appName, UserID: userID}
 	resp, err := mem.SearchMemory(ctx, searchKey, "")
 	assert.NoError(t, err)
 	assert.Equal(t, 0, resp.TotalCount)
@@ -369,4 +369,49 @@ func TestMemoryService_CalculateScore(t *testing.T) {
 	// Test empty query.
 	score = mem.calculateScore(memEntry, []string{})
 	assert.Equal(t, 1.0, score)
+}
+
+func TestAddSessionToMemory_AccumulatesEvents(t *testing.T) {
+	ms := NewMemoryService()
+	ctx := context.Background()
+
+	sess := &session.Session{
+		ID:      "sess1",
+		AppName: "app1",
+		UserID:  "user1",
+		Events:  []event.Event{},
+	}
+
+	// Add first event.
+	evt1 := event.Event{Author: "user", Timestamp: time.Now()}
+	sess.Events = append(sess.Events, evt1)
+	err := ms.AddSessionToMemory(ctx, sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ms.sessionMemories[sess.ID]) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(ms.sessionMemories[sess.ID]))
+	}
+
+	// Add second event.
+	evt2 := event.Event{Author: "user", Timestamp: time.Now().Add(time.Second)}
+	sess.Events = append(sess.Events, evt2)
+	err = ms.AddSessionToMemory(ctx, sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ms.sessionMemories[sess.ID]) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(ms.sessionMemories[sess.ID]))
+	}
+
+	// Add third event.
+	evt3 := event.Event{Author: "user", Timestamp: time.Now().Add(2 * time.Second)}
+	sess.Events = append(sess.Events, evt3)
+	err = ms.AddSessionToMemory(ctx, sess)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ms.sessionMemories[sess.ID]) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(ms.sessionMemories[sess.ID]))
+	}
 }
