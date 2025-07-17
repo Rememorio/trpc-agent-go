@@ -29,6 +29,7 @@ require (
 )
 
 require (
+	github.com/alicebob/miniredis/v2 v2.35.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/getkin/kin-openapi v0.132.0 // indirect
@@ -50,6 +51,7 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.37.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.7.0 // indirect

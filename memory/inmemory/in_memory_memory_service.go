@@ -16,7 +16,6 @@ package inmemory
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -62,11 +61,6 @@ func NewMemoryService() *MemoryService {
 	}
 }
 
-// getUserKey generates a user key string from app name and user ID.
-func getUserKey(appName, userID string) string {
-	return fmt.Sprintf("%s/%s", appName, userID)
-}
-
 // AddSessionToMemory adds a session's new events to the memory service (incremental append, full session merge).
 func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Session) error {
 	if sess == nil || sess.ID == "" {
@@ -76,7 +70,7 @@ func (m *MemoryService) AddSessionToMemory(ctx context.Context, sess *session.Se
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	userKeyStr := getUserKey(sess.AppName, sess.UserID)
+	userKeyStr := memoryutils.GetUserKey(sess.AppName, sess.UserID)
 	if m.userSessions[userKeyStr] == nil {
 		m.userSessions[userKeyStr] = make(map[string]struct{})
 	}
@@ -115,9 +109,18 @@ func (m *MemoryService) SearchMemory(ctx context.Context, userKey memory.UserKey
 		opt(opts)
 	}
 
-	userKeyStr := getUserKey(userKey.AppName, userKey.UserID)
+	userKeyStr := memoryutils.GetUserKey(userKey.AppName, userKey.UserID)
 	sessionIDs, exists := m.userSessions[userKeyStr]
 	if !exists {
+		return &memory.SearchMemoryResponse{
+			Memories:   []*memory.MemoryEntry{},
+			TotalCount: 0,
+			SearchTime: time.Since(startTime),
+		}, nil
+	}
+
+	// Validate time range if present.
+	if opts.TimeRange != nil && !memoryutils.IsValidTimeRange(opts.TimeRange.Start, opts.TimeRange.End) {
 		return &memory.SearchMemoryResponse{
 			Memories:   []*memory.MemoryEntry{},
 			TotalCount: 0,
@@ -238,7 +241,7 @@ func (m *MemoryService) DeleteMemory(ctx context.Context, key memory.Key) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	userKeyStr := getUserKey(key.AppName, key.UserID)
+	userKeyStr := memoryutils.GetUserKey(key.AppName, key.UserID)
 
 	if key.SessionID != "" {
 		// Delete specific session memories.
@@ -279,7 +282,7 @@ func (m *MemoryService) GetMemoryStats(ctx context.Context, uKey memory.UserKey)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	userKeyStr := getUserKey(uKey.AppName, uKey.UserID)
+	userKeyStr := memoryutils.GetUserKey(uKey.AppName, uKey.UserID)
 	sessions, exists := m.userSessions[userKeyStr]
 	if !exists {
 		return &memory.MemoryStats{

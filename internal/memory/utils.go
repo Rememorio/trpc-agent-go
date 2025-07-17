@@ -2,6 +2,7 @@
 package memory
 
 import (
+	"fmt"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -40,4 +41,9 @@ func GetTimeRangeFromDays(days int) *memory.TimeRange {
 // GetTimeRangeFromHours creates a time range from now minus the given number of hours.
 func GetTimeRangeFromHours(hours int) *memory.TimeRange {
 	return GetTimeRangeFromDuration(time.Duration(hours) * time.Hour)
+}
+
+// GetUserKey returns the user key for the given app name and user ID.
+func GetUserKey(appName, userID string) string {
+	return fmt.Sprintf("%s:%s", appName, userID)
 }
