@@ -119,6 +119,13 @@ const (
 	SortOrderDesc SortOrder = "desc"
 )
 
+const (
+	// DefaultScore is the default score for a memory.
+	DefaultScore = 1.0
+	// DefaultLimit is the default limit for the memory service.
+	DefaultLimit = 100
+)
+
 // Option is a function that can be used to configure search options.
 type Option func(*SearchOptions)
 

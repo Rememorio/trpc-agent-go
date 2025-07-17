@@ -27,13 +27,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
-const (
-	// defaultScore is the default score for a memory.
-	defaultScore = 1.0
-	// defaultLimit is the default limit for the memory service.
-	defaultLimit = 100
-)
-
 var (
 	// ErrSessionEmpty is returned when a session is nil or sessionID is empty.
 	ErrSessionEmpty = errors.New("session is nil or sessionID is empty")
@@ -104,7 +97,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, userKey memory.UserKey
 	defer m.mu.RUnlock()
 
 	// Build search options.
-	opts := &memory.SearchOptions{Limit: defaultLimit}
+	opts := &memory.SearchOptions{Limit: memory.DefaultLimit}
 	for _, opt := range options {
 		opt(opts)
 	}
@@ -189,7 +182,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, userKey memory.UserKey
 
 func (m *MemoryService) calculateScore(mem *memory.MemoryEntry, queryWords []string) float64 {
 	if len(queryWords) == 0 {
-		return defaultScore
+		return memory.DefaultScore
 	}
 
 	// Extract text from memory content.

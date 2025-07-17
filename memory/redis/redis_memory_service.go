@@ -40,6 +40,7 @@ type ServiceOpts struct {
 	url string
 }
 
+// ServiceOpt is a function that sets an option for the redis memory service.
 type ServiceOpt func(*ServiceOpts)
 
 // WithURL sets the redis url.
@@ -98,7 +99,7 @@ func (s *Service) AddSessionToMemory(ctx context.Context, sess *session.Session)
 func (s *Service) SearchMemory(ctx context.Context, userKey memory.UserKey, query string, options ...memory.Option) (*memory.SearchMemoryResponse, error) {
 	startTime := time.Now()
 
-	opt := &memory.SearchOptions{Limit: 100}
+	opt := &memory.SearchOptions{Limit: memory.DefaultLimit}
 	for _, o := range options {
 		o(opt)
 	}
@@ -171,7 +172,7 @@ func (s *Service) SearchMemory(ctx context.Context, userKey memory.UserKey, quer
 // calculateScore calculates the score for a memory entry based on the query words.
 func calculateScore(mem *memory.MemoryEntry, queryWords []string) float64 {
 	if len(queryWords) == 0 {
-		return 1.0
+		return memory.DefaultScore
 	}
 	var content strings.Builder
 	if mem.Content != nil && mem.Content.Response != nil {
