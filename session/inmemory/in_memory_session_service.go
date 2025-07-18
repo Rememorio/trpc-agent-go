@@ -14,7 +14,6 @@
 package inmemory
 
 import (
-	"maps"
 	"context"
 	"fmt"
 	"strings"
@@ -144,7 +143,9 @@ func (s *SessionService) CreateSession(
 	}
 
 	// Set initial state if provided
-	maps.Copy(sess.State, state)
+	for k, v := range state {
+		sess.State[k] = v
+	}
 
 	app.mu.Lock()
 	defer app.mu.Unlock()
@@ -192,7 +193,7 @@ func (s *SessionService) GetSession(
 
 	copiedSess := copySession(sess)
 
-	// Apply filtering options if provided.
+	// apply filtering options if provided
 	applyGetSessionOptions(copiedSess, opt)
 	return mergeState(app.appState, app.userState[key.UserID], copiedSess), nil
 }
@@ -470,19 +471,16 @@ func (s *SessionService) updateSessionState(sess *session.Session, event *event.
 	sess.UpdatedAt = time.Now()
 }
 
-// copySession creates a copy of a session.
+// copySession creates a  copy of a session.
 func copySession(sess *session.Session) *session.Session {
-	if sess == nil {
-		return nil
-	}
 	copiedSess := &session.Session{
 		ID:        sess.ID,
 		AppName:   sess.AppName,
 		UserID:    sess.UserID,
-		State:     make(session.StateMap), // Create new state to avoid reference sharing.
+		State:     make(session.StateMap), // Create new state to avoid reference sharing
 		Events:    make([]event.Event, len(sess.Events)),
 		UpdatedAt: sess.UpdatedAt,
-		CreatedAt: sess.CreatedAt, // Add missing CreatedAt field.
+		CreatedAt: sess.CreatedAt, // Add missing CreatedAt field
 	}
 
 	// copy state
