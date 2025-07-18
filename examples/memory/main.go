@@ -181,7 +181,6 @@ func (c *memoryChat) startChat(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("💡 Special commands:")
-	fmt.Println("   /memory         - List all memories")
 	fmt.Println("   /memory <query> - Search memories")
 	fmt.Println("   /stats          - Show memory statistics")
 	fmt.Println("   /new            - Start a new session")

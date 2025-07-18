@@ -30,8 +30,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
+// Author types for events.
 const (
-	// Author types for events.
 	authorUser = "user"
 )
 
