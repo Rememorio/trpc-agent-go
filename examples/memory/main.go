@@ -45,9 +45,6 @@ func main() {
 
 	fmt.Printf("🧠 Memory-Enhanced Chat with Automatic Memory Storage\n")
 	fmt.Printf("Model: %s\n", *modelName)
-	fmt.Printf("Type 'exit' to end the conversation\n")
-	fmt.Printf("Type '/memory' to search memories\n")
-	fmt.Printf("Type '/stats' to show memory statistics\n")
 	fmt.Println(strings.Repeat("=", 50))
 
 	// Create and run the memory chat.
@@ -337,9 +334,7 @@ func (c *memoryChat) showMemoryStats(ctx context.Context) {
 
 	fmt.Printf("📊 Memory Statistics:\n")
 	fmt.Printf("   Total memories: %d\n", stats.TotalMemories)
-	fmt.Printf("   Total sessions: %d\n", stats.TotalSessions)
 	if stats.TotalMemories > 0 {
-		fmt.Printf("   Average memories per session: %.2f\n", stats.AverageMemoriesPerSession)
 		fmt.Printf("   Oldest memory: %s\n", stats.OldestMemory.Format(time.RFC3339))
 		fmt.Printf("   Newest memory: %s\n", stats.NewestMemory.Format(time.RFC3339))
 	}

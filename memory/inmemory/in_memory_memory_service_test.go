@@ -300,9 +300,7 @@ func TestMemoryService_GetMemoryStats(t *testing.T) {
 	userKey := memory.UserKey{AppName: appName, UserID: userID}
 	stats, err := mem.GetMemoryStats(ctx, userKey)
 	assert.NoError(t, err)
-	assert.Equal(t, 2, stats.TotalSessions)
 	assert.Equal(t, 5, stats.TotalMemories) // 2 + 3
-	assert.Equal(t, 2.5, stats.AverageMemoriesPerSession)
 	assert.False(t, stats.OldestMemory.IsZero())
 	assert.False(t, stats.NewestMemory.IsZero())
 	assert.True(t, stats.OldestMemory.Before(stats.NewestMemory) || stats.OldestMemory.Equal(stats.NewestMemory))
@@ -316,9 +314,7 @@ func TestMemoryService_GetMemoryStats_NoData(t *testing.T) {
 	// Get stats with no data.
 	stats, err := mem.GetMemoryStats(ctx, userKey)
 	assert.NoError(t, err)
-	assert.Equal(t, 0, stats.TotalSessions)
 	assert.Equal(t, 0, stats.TotalMemories)
-	assert.Equal(t, 0.0, stats.AverageMemoriesPerSession)
 }
 
 func TestMemoryService_Close(t *testing.T) {

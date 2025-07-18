@@ -230,7 +230,8 @@ func (m *MemoryService) GetMemoryStats(ctx context.Context, uKey memory.UserKey)
 	if !exists {
 		return &memory.MemoryStats{
 			TotalMemories: 0,
-			TotalSessions: 0,
+			OldestMemory:  time.Time{},
+			NewestMemory:  time.Time{},
 		}, nil
 	}
 
@@ -252,17 +253,10 @@ func (m *MemoryService) GetMemoryStats(ctx context.Context, uKey memory.UserKey)
 		}
 	}
 
-	avgMemoriesPerSession := float64(0)
-	if len(sessions) > 0 {
-		avgMemoriesPerSession = float64(totalMemories) / float64(len(sessions))
-	}
-
 	return &memory.MemoryStats{
-		TotalMemories:             totalMemories,
-		TotalSessions:             len(sessions),
-		OldestMemory:              oldestTime,
-		NewestMemory:              newestTime,
-		AverageMemoriesPerSession: avgMemoriesPerSession,
+		TotalMemories: totalMemories,
+		OldestMemory:  oldestTime,
+		NewestMemory:  newestTime,
 	}, nil
 }
 

@@ -219,19 +219,14 @@ type Service interface {
 	Close() error
 }
 
-// MemoryStats represents statistics about the memory system.
+// MemoryStats represents statistics about the memory system (summary tool version).
 type MemoryStats struct {
 	// TotalMemories is the total number of memories.
 	TotalMemories int `json:"totalMemories"`
-	// TotalSessions is the total number of sessions.
-	TotalSessions int `json:"totalSessions"`
 	// OldestMemory is the oldest memory.
 	OldestMemory time.Time `json:"oldestMemory"`
 	// NewestMemory is the newest memory.
 	NewestMemory time.Time `json:"newestMemory"`
-
-	// AverageMemoriesPerSession is the average number of memories per session.
-	AverageMemoriesPerSession float64 `json:"averageMemoriesPerSession,omitempty"`
 }
 
 // CalculateScore calculates the similarity score for a memory entry based on the query words.

@@ -211,7 +211,6 @@ func (s *Service) GetMemoryStats(ctx context.Context, userKey memory.UserKey) (*
 	if err != nil && err != redis.Nil {
 		return nil, err
 	}
-	sessionSet := make(map[string]struct{})
 	for i, mstr := range memStrs {
 		entry := &memory.MemoryEntry{}
 		if err := json.Unmarshal([]byte(mstr), entry); err != nil {
@@ -227,16 +226,11 @@ func (s *Service) GetMemoryStats(ctx context.Context, userKey memory.UserKey) (*
 		if i == 0 || t.After(newest) {
 			newest = t
 		}
-		sessionSet[entry.SessionID] = struct{}{}
 	}
 	stats := &memory.MemoryStats{
 		TotalMemories: int(count),
-		TotalSessions: len(sessionSet),
 		OldestMemory:  oldest,
 		NewestMemory:  newest,
-	}
-	if len(sessionSet) > 0 {
-		stats.AverageMemoriesPerSession = float64(count) / float64(len(sessionSet))
 	}
 	return stats, nil
 }

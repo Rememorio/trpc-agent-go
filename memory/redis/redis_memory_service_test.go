@@ -155,7 +155,6 @@ func TestService_GetMemoryStats(t *testing.T) {
 
 	stats, err := svc.GetMemoryStats(ctx, memory.UserKey{AppName: app, UserID: user})
 	require.NoError(t, err)
-	require.Equal(t, 1, stats.TotalSessions)
 	require.Equal(t, 2, stats.TotalMemories)
 	require.True(t, stats.OldestMemory.Before(stats.NewestMemory) || stats.OldestMemory.Equal(stats.NewestMemory))
 }
