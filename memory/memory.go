@@ -15,6 +15,8 @@ package memory
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -230,4 +232,59 @@ type MemoryStats struct {
 
 	// AverageMemoriesPerSession is the average number of memories per session.
 	AverageMemoriesPerSession float64 `json:"averageMemoriesPerSession,omitempty"`
+}
+
+// CalculateScore calculates the similarity score for a memory entry based on the query words.
+// It performs simple keyword matching by counting occurrences of query words in the memory content.
+func CalculateScore(mem *MemoryEntry, queryWords []string) float64 {
+	if len(queryWords) == 0 {
+		return DefaultScore
+	}
+
+	// Extract text from memory content.
+	var content strings.Builder
+	if mem.Content != nil && mem.Content.Response != nil {
+		for _, choice := range mem.Content.Response.Choices {
+			content.WriteString(choice.Message.Content)
+			content.WriteString(" ")
+		}
+	}
+	contentText := strings.ToLower(content.String())
+
+	// Count total occurrences of all queryWords in contentText.
+	totalMatchCount := 0
+	for _, word := range queryWords {
+		totalMatchCount += strings.Count(contentText, word)
+	}
+
+	// Normalize by queryWords length to keep score in a reasonable range.
+	return float64(totalMatchCount) / float64(len(queryWords))
+}
+
+// SortMemories sorts memories based on the specified sort options.
+// It modifies the input slice in place.
+func SortMemories(memories []*MemoryEntry, opts *SearchOptions) {
+	if opts == nil {
+		opts = &SearchOptions{}
+	}
+	if opts.SortBy == "" {
+		opts.SortBy = SortByScore
+	}
+	if opts.SortOrder == "" {
+		opts.SortOrder = SortOrderDesc
+	}
+
+	sort.Slice(memories, func(i, j int) bool {
+		var less bool
+		switch opts.SortBy {
+		case SortByScore:
+			less = memories[i].Score < memories[j].Score
+		default: // Sort by timestamp by default.
+			less = memories[i].Content.Timestamp.Before(memories[j].Content.Timestamp)
+		}
+		if opts.SortOrder == SortOrderAsc {
+			return less
+		}
+		return !less
+	})
 }

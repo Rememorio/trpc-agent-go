@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -144,7 +143,7 @@ func (s *Service) SearchMemory(ctx context.Context, userKey memory.UserKey, quer
 			}
 		}
 		// Keyword matching and score calculation.
-		score := calculateScore(entry, queryWords)
+		score := memory.CalculateScore(entry, queryWords)
 		if len(queryWords) > 0 && score == 0 {
 			continue
 		}
@@ -157,7 +156,7 @@ func (s *Service) SearchMemory(ctx context.Context, userKey memory.UserKey, quer
 	}
 
 	totalCount := len(allMemories)
-	sortMemories(allMemories, opt)
+	memory.SortMemories(allMemories, opt)
 	start := min(opt.Offset, totalCount)
 	end := min(start+opt.Limit, totalCount)
 	result := allMemories[start:end]
@@ -167,49 +166,6 @@ func (s *Service) SearchMemory(ctx context.Context, userKey memory.UserKey, quer
 		TotalCount: totalCount,
 		SearchTime: time.Since(startTime),
 	}, nil
-}
-
-// calculateScore calculates the score for a memory entry based on the query words.
-func calculateScore(mem *memory.MemoryEntry, queryWords []string) float64 {
-	if len(queryWords) == 0 {
-		return memory.DefaultScore
-	}
-	var content strings.Builder
-	if mem.Content != nil && mem.Content.Response != nil {
-		for _, choice := range mem.Content.Response.Choices {
-			content.WriteString(strings.ToLower(choice.Message.Content))
-			content.WriteString(" ")
-		}
-	}
-	contentText := content.String()
-	totalMatchCount := 0
-	for _, word := range queryWords {
-		totalMatchCount += strings.Count(contentText, word)
-	}
-	return float64(totalMatchCount) / float64(len(queryWords))
-}
-
-// sortMemories sorts memories based on the specified sort options.
-func sortMemories(memories []*memory.MemoryEntry, opts *memory.SearchOptions) {
-	if opts.SortBy == "" {
-		opts.SortBy = memory.SortByScore
-	}
-	if opts.SortOrder == "" {
-		opts.SortOrder = memory.SortOrderDesc
-	}
-	sort.Slice(memories, func(i, j int) bool {
-		var less bool
-		switch opts.SortBy {
-		case memory.SortByScore:
-			less = memories[i].Score < memories[j].Score
-		default:
-			less = memories[i].Content.Timestamp.Before(memories[j].Content.Timestamp)
-		}
-		if opts.SortOrder == memory.SortOrderAsc {
-			return less
-		}
-		return !less
-	})
 }
 
 // DeleteMemory deletes all memories for a session.

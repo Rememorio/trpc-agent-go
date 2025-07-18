@@ -342,35 +342,6 @@ func TestMemoryService_Close(t *testing.T) {
 	assert.Equal(t, 0, resp.TotalCount)
 }
 
-func TestMemoryService_CalculateScore(t *testing.T) {
-	mem := NewMemoryService()
-
-	// Create test memory entry.
-	memEntry := &memory.MemoryEntry{
-		Content: &event.Event{
-			Response: &model.Response{
-				Choices: []model.Choice{{Message: model.Message{Content: "hello world test"}}},
-			},
-		},
-	}
-
-	// Test exact match.
-	score := mem.calculateScore(memEntry, []string{"hello"})
-	assert.Equal(t, 1.0, score)
-
-	// Test partial match.
-	score = mem.calculateScore(memEntry, []string{"hello", "nonexistent"})
-	assert.Equal(t, 0.5, score)
-
-	// Test no match.
-	score = mem.calculateScore(memEntry, []string{"nonexistent"})
-	assert.Equal(t, 0.0, score)
-
-	// Test empty query.
-	score = mem.calculateScore(memEntry, []string{})
-	assert.Equal(t, 1.0, score)
-}
-
 func TestAddSessionToMemory_AccumulatesEvents(t *testing.T) {
 	ms := NewMemoryService()
 	ctx := context.Background()
