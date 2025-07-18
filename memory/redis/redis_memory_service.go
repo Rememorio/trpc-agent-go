@@ -81,7 +81,7 @@ func (s *Service) AddSessionToMemory(ctx context.Context, sess *session.Session)
 		entry := &memory.MemoryEntry{
 			Content:   &evt,
 			Author:    evt.Author,
-			Timestamp: evt.Timestamp.Format(time.RFC3339),
+			Timestamp: memoryutils.FormatTimestamp(evt.Timestamp),
 			SessionID: sess.ID,
 			AppName:   sess.AppName,
 			UserID:    sess.UserID,
@@ -216,7 +216,7 @@ func (s *Service) GetMemoryStats(ctx context.Context, userKey memory.UserKey) (*
 		if err := json.Unmarshal([]byte(mstr), entry); err != nil {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339, entry.Timestamp)
+		t, err := memoryutils.ParseTimestamp(entry.Timestamp)
 		if err != nil {
 			continue
 		}
