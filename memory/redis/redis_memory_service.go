@@ -144,6 +144,7 @@ func (s *Service) SearchMemory(ctx context.Context, userKey memory.UserKey, quer
 		}
 		// Keyword matching and score calculation.
 		score := memory.CalculateScore(entry, queryWords)
+		// Only filter by score if there's a query and the score is 0.
 		if len(queryWords) > 0 && score == 0 {
 			continue
 		}

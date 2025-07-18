@@ -27,16 +27,22 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
+	memoryredis "trpc.group/trpc-go/trpc-agent-go/memory/redis"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	sessionredis "trpc.group/trpc-go/trpc-agent-go/session/redis"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
 
 var (
-	modelName = flag.String("model", "deepseek-chat", "Name of the model to use")
+	modelName          = flag.String("model", "deepseek-chat", "Name of the model to use")
+	redisAddr          = flag.String("redis-addr", "localhost:6379", "Redis address")
+	memoryServiceName  = flag.String("memory", "inmemory", "Name of the memory service to use, inmemory / redis")
+	sessionServiceName = flag.String("session", "inmemory", "Name of the session service to use, inmemory / redis")
 )
 
 func main() {
@@ -45,11 +51,19 @@ func main() {
 
 	fmt.Printf("🧠 Memory-Enhanced Chat with Automatic Memory Storage\n")
 	fmt.Printf("Model: %s\n", *modelName)
+	fmt.Printf("Memory Service: %s\n", *memoryServiceName)
+	fmt.Printf("Session Service: %s\n", *sessionServiceName)
+	if *memoryServiceName == "redis" || *sessionServiceName == "redis" {
+		fmt.Printf("Redis Address: %s\n", *redisAddr)
+	}
 	fmt.Println(strings.Repeat("=", 50))
 
 	// Create and run the memory chat.
 	chat := &memoryChat{
-		modelName: *modelName,
+		modelName:          *modelName,
+		redisAddr:          *redisAddr,
+		memoryServiceName:  *memoryServiceName,
+		sessionServiceName: *sessionServiceName,
 	}
 
 	if err := chat.run(); err != nil {
@@ -59,12 +73,15 @@ func main() {
 
 // memoryChat manages the memory-enhanced conversation.
 type memoryChat struct {
-	modelName     string
-	runner        runner.Runner
-	memoryService memory.Service
-	userID        string
-	sessionID     string
-	appName       string
+	modelName          string
+	redisAddr          string
+	memoryServiceName  string
+	sessionServiceName string
+	runner             runner.Runner
+	memoryService      memory.Service
+	userID             string
+	sessionID          string
+	appName            string
 }
 
 // run starts the interactive chat session.
@@ -87,8 +104,19 @@ func (c *memoryChat) setup(_ context.Context) error {
 		ChannelBufferSize: 512,
 	})
 
-	// Create memory service.
-	c.memoryService = memoryinmemory.NewMemoryService()
+	// Create memory service based on configuration.
+	var err error
+	switch c.memoryServiceName {
+	case "inmemory":
+		c.memoryService = memoryinmemory.NewMemoryService()
+	case "redis":
+		c.memoryService, err = memoryredis.NewService(memoryredis.WithURL(c.redisAddr))
+		if err != nil {
+			return fmt.Errorf("failed to create redis memory service: %w", err)
+		}
+	default:
+		return fmt.Errorf("invalid memory service name: %s", c.memoryServiceName)
+	}
 
 	// Create search tool.
 	searchTool := function.NewFunctionTool(
@@ -119,8 +147,20 @@ func (c *memoryChat) setup(_ context.Context) error {
 		llmagent.WithTools([]tool.Tool{searchTool}),
 	)
 
-	// Create session service.
-	sessionService := sessioninmemory.NewSessionService()
+	// Create session service based on configuration.
+	var sessionService session.Service
+	switch c.sessionServiceName {
+	case "inmemory":
+		sessionService = sessioninmemory.NewSessionService()
+	case "redis":
+		redisURL := fmt.Sprintf("redis://%s", c.redisAddr)
+		sessionService, err = sessionredis.NewService(sessionredis.WithRedisClientURL(redisURL))
+		if err != nil {
+			return fmt.Errorf("failed to create redis session service: %w", err)
+		}
+	default:
+		return fmt.Errorf("invalid session service name: %s", c.sessionServiceName)
+	}
 
 	// Create runner with memory service.
 	appName := "memory-chat"
@@ -141,6 +181,7 @@ func (c *memoryChat) startChat(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("💡 Special commands:")
+	fmt.Println("   /memory         - List all memories")
 	fmt.Println("   /memory <query> - Search memories")
 	fmt.Println("   /stats          - Show memory statistics")
 	fmt.Println("   /new            - Start a new session")
@@ -171,9 +212,8 @@ func (c *memoryChat) startChat(ctx context.Context) error {
 		case strings.ToLower(userInput) == "/stats":
 			c.showMemoryStats(ctx)
 			continue
-		case strings.HasPrefix(strings.ToLower(userInput), "/memory "):
-			query := strings.TrimSpace(userInput[8:])
-			c.searchMemoryCommand(ctx, query)
+		case strings.HasPrefix(strings.ToLower(userInput), "/memory"):
+			c.searchMemoryCommand(ctx, strings.TrimSpace(userInput[7:]))
 			continue
 		}
 
@@ -182,7 +222,7 @@ func (c *memoryChat) startChat(ctx context.Context) error {
 			fmt.Printf("❌ Error: %v\n", err)
 		}
 
-		fmt.Println() // Add spacing between turns
+		fmt.Println() // Add spacing between turns.
 	}
 
 	if err := scanner.Err(); err != nil {

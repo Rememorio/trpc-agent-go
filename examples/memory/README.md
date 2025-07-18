@@ -1,264 +1,368 @@
-# Memory Service and Tool Example
+# Memory Service Example
 
-This example demonstrates both the Memory Service and Memory Tool functionality, showing how to store, retrieve, and search conversation memories using different approaches.
+This example demonstrates how to use the tRPC Agent Go Memory Service with both in-memory and Redis storage backends.
 
-## What This Example Demonstrates
+## What is Memory Service?
 
-This implementation showcases two different approaches to working with memory in conversational AI:
+This implementation showcases the essential features for building persistent memory systems in conversational AI applications:
 
-### Part 1: Memory Service Example
-
-- **📝 Direct Session Storage**: Store complete conversation sessions with events
-- **🔍 Advanced Search**: Search memories with filters, sorting, and pagination
-- **📊 Memory Statistics**: Get insights about stored memories and sessions
-- **🗑️ Memory Management**: Delete specific sessions or all user memories
-
-### Part 2: Memory Tool Example
-
-- **🤖 Tool-Based Storage**: Use Memory Tool to automatically store user information
-- **💡 Smart Information Extraction**: Tool designed to identify and store user preferences
-- **🔗 Service Integration**: Memory Tool works with the same Memory Service
-- **📋 Structured Input/Output**: JSON-based tool interface for easy integration
+- **💾 Dual Storage**: Support for both in-memory and Redis storage backends
+- **🔍 Smart Search**: Semantic search with similarity scoring and filtering
+- **📊 Memory Statistics**: Comprehensive analytics and insights
+- **🗂️ Session Management**: Automatic session and event organization
+- **⚡ High Performance**: Optimized search and storage operations
 
 ### Key Features
 
-- **Memory Service**: Low-level API for direct memory management
-- **Memory Tool**: High-level tool for automated user information storage
-- **Semantic Search**: Find relevant memories using natural language queries
-- **Memory Statistics**: Track memory usage and conversation patterns
-- **Type Safety**: Strongly typed interfaces for reliable memory operations
+- **Flexible Storage**: Choose between fast in-memory storage or persistent Redis storage
+- **Intelligent Search**: Find relevant memories using natural language queries
+- **Rich Filtering**: Filter by session, author, time range, and similarity score
+- **Memory Analytics**: Track memory usage patterns and statistics
+- **Session Continuity**: Maintain conversation context across sessions
 - **Error Handling**: Graceful error recovery and reporting
 
 ## Prerequisites
 
 - Go 1.23 or later
-- Valid OpenAI API key (or compatible API endpoint)
+- Redis server (optional, for Redis backend)
 
 ## Environment Variables
 
-| Variable          | Description                              | Default Value               |
-| ----------------- | ---------------------------------------- | --------------------------- |
-| `OPENAI_API_KEY`  | API key for the model service (required) | ``                          |
-| `OPENAI_BASE_URL` | Base URL for the model API endpoint      | `https://api.openai.com/v1` |
+| Variable         | Description               | Default Value    |
+| ---------------- | ------------------------- | ---------------- |
+| `REDIS_ADDR`     | Redis server address      | `localhost:6379` |
+| `REDIS_PASSWORD` | Redis password (optional) | ``               |
+| `REDIS_DB`       | Redis database number     | `0`              |
 
 ## Command Line Arguments
 
-| Argument      | Description                                     | Default Value    |
-| ------------- | ----------------------------------------------- | ---------------- |
-| `-model`      | Name of the model to use                        | `deepseek-chat`  |
-| `-session`    | Session service: `inmemory` or `redis`          | `inmemory`       |
-| `-redis-addr` | Redis server address (when using redis session) | `localhost:6379` |
-| `-memory`     | Enable memory functionality                     | `true`           |
+| Argument          | Description               | Default Value    |
+| ----------------- | ------------------------- | ---------------- |
+| `-redis-addr`     | Redis server address      | `localhost:6379` |
+| `-redis-password` | Redis password (optional) | ``               |
+| `-redis-db`       | Redis database number     | `0`              |
 
 ## Usage
 
-### Basic Chat with Memory
+### Build the Example
 
 ```bash
-cd examples/memory
-export OPENAI_API_KEY="your-api-key-here"
-go run main.go
+cd examples
+go mod tidy
+go build -o memory-demo memory/main.go
 ```
 
-### Custom Model with Memory
+### In-Memory Mode
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-go run main.go -model gpt-4o
+./memory-demo
 ```
 
-### Disable Memory (Basic Chat)
+### Redis Mode
+
+First, ensure Redis is running:
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-go run main.go -memory=false
+# Check Redis connection
+redis-cli ping
+
+# Start Redis if not running
+redis-server
 ```
 
-### With Redis Session and Memory
+Then run the example:
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-go run main.go -session redis -redis-addr localhost:6379
+./memory-demo -redis-addr=localhost:6379
 ```
 
-## Memory System Features
+### With Redis Authentication
 
-The memory system provides several powerful features for managing conversation history:
-
-### 📊 Memory Statistics (`/memory`)
-
-View comprehensive statistics about stored memories:
-
-```
-📊 Memory Statistics:
-   Total Memories: 15
-   Total Sessions: 3
-   Avg Memories/Session: 5.00
-   Oldest Memory: 2024-01-15 10:30:00
-   Newest Memory: 2024-01-15 14:45:00
+```bash
+./memory-demo -redis-addr=localhost:6379 -redis-password=your_password
 ```
 
-### 📝 Session Summarization (`/summary`)
+### Using Environment Variables
 
-Generate AI-powered summaries of the current conversation session:
+If you have Redis configuration set in your environment:
 
-```
-📝 Session Summary:
-   The user and assistant discussed mathematical calculations,
-   time zones, and memory system features. The user tested
-   calculator and time tools, and explored memory commands
-   including statistics and search functionality.
+```bash
+export REDIS_ADDR="localhost:6379"
+export REDIS_PASSWORD="your_password"
+./memory-demo
 ```
 
-### 🔍 Memory Search (`/search <query>`)
+### Using Environment Variable with Custom Redis
 
-Search through conversation history using natural language:
-
-```
-🔍 Found 3 memories for query: 'calculator':
-   1. [2024-01-15 14:30:00] user: Can you calculate 25 * 4?
-   2. [2024-01-15 14:31:00] assistant: I calculated 25 × 4 = 100 for you.
-   3. [2024-01-15 14:35:00] user: What about 100 divided by 7?
+```bash
+source ~/.bashrc && ./memory-demo -redis-addr="$REDIS_ADDR"
 ```
 
-## Implemented Tools
+## Demo Output
 
-The example includes two working tools:
-
-### 🧮 Calculator Tool
-
-- **Function**: `calculator`
-- **Operations**: add, subtract, multiply, divide
-- **Usage**: "Calculate 15 \* 25" or "What's 100 divided by 7?"
-- **Arguments**: operation (string), a (number), b (number)
-
-### 🕐 Time Tool
-
-- **Function**: `current_time`
-- **Timezones**: UTC, EST, PST, CST, or local time
-- **Usage**: "What time is it in EST?" or "Current time please"
-- **Arguments**: timezone (optional string)
-
-## Tool Calling Process
-
-When you ask for calculations or time information, you'll see:
+### In-Memory Mode Example
 
 ```
-🔧 Tool calls initiated:
-   • calculator (ID: call_abc123)
-     Args: {"operation":"multiply","a":25,"b":4}
+=== Memory Service Demo (In-Memory Mode) ===
 
-🔄 Executing tools...
-✅ Tool response (ID: call_abc123): {"operation":"multiply","a":25,"b":4,"result":100}
+1. Adding sessions to memory...
+   - Added session: user1-session1 (3 events)
+   - Added session: user1-session2 (2 events)
+   - Added session: user2-session1 (2 events)
 
-🤖 Assistant: I calculated 25 × 4 = 100 for you.
+2. Searching memories for user1 with query "hello"...
+   Search Results:
+   - Memory 1: "Hello! How can I help you today?" (Score: 1.0)
+   - Memory 2: "Hello there! Nice to meet you." (Score: 1.0)
+   - Memory 3: "Good morning! Hello world." (Score: 1.0)
+   Total: 3 memories, Search time: 1.2ms
+
+3. Searching memories for user1 with query "python"...
+   Search Results:
+   - Memory 1: "Python is a great programming language." (Score: 1.0)
+   - Memory 2: "I can help you with Python coding." (Score: 1.0)
+   Total: 2 memories, Search time: 0.8ms
+
+4. Getting memory statistics for user1...
+   Memory Stats:
+   - Total Memories: 5
+   - Oldest Memory: 2024-01-15 10:00:00 +0000 UTC
+   - Newest Memory: 2024-01-15 12:00:00 +0000 UTC
+
+5. Getting memory statistics for user2...
+   Memory Stats:
+   - Total Memories: 2
+   - Oldest Memory: 2024-01-15 11:00:00 +0000 UTC
+   - Newest Memory: 2024-01-15 11:30:00 +0000 UTC
+
+6. Deleting user1's memories...
+   Successfully deleted all memories for user1
+
+7. Getting memory statistics for user1 after deletion...
+   Memory Stats:
+   - Total Memories: 0
+   - Oldest Memory: 0001-01-01 00:00:00 +0000 UTC
+   - Newest Memory: 0001-01-01 00:00:00 +0000 UTC
+
+=== Demo completed successfully! ===
 ```
 
-## Chat Interface
-
-The interface provides comprehensive memory management:
+### Redis Mode Example
 
 ```
-🚀 Multi-turn Chat with Runner + Tools + Memory
-Model: gpt-4o-mini
-Memory: true
-Type 'exit' to end the conversation
-==================================================
-✅ Chat ready! Session: chat-session-1703123456
+=== Memory Service Demo (Redis Mode) ===
 
-💡 Special commands:
-   /history  - Show conversation history
-   /new      - Start a new session
-   /memory   - Show memory statistics
-   /summary  - Generate session summary
-   /search   - Search memory (usage: /search <query>)
-   /exit      - End the conversation
+1. Adding sessions to memory...
+   - Added session: user1-session1 (3 events)
+   - Added session: user1-session2 (2 events)
+   - Added session: user2-session1 (2 events)
 
-👤 You: Hello! How are you today?
-🤖 Assistant: Hello! I'm doing well, thank you for asking. I'm here and ready to help you with whatever you need. How are you doing today?
+2. Searching memories for user1 with query "hello"...
+   Search Results:
+   - Memory 1: "Hello! How can I help you today?" (Score: 1.0)
+   - Memory 2: "Hello there! Nice to meet you." (Score: 1.0)
+   - Memory 3: "Good morning! Hello world." (Score: 1.0)
+   Total: 3 memories, Search time: 2.1ms
 
-👤 You: /memory
-📊 Memory Statistics:
-   Total Memories: 2
-   Total Sessions: 1
-   Avg Memories/Session: 2.00
-   Oldest Memory: 2024-01-15 14:30:00
-   Newest Memory: 2024-01-15 14:31:00
+3. Searching memories for user1 with query "python"...
+   Search Results:
+   - Memory 1: "Python is a great programming language." (Score: 1.0)
+   - Memory 2: "I can help you with Python coding." (Score: 1.0)
+   Total: 2 memories, Search time: 1.8ms
 
-👤 You: /search greeting
-🔍 Found 1 memories for query: 'greeting':
-   1. [2024-01-15 14:30:00] user: Hello! How are you today?
+4. Getting memory statistics for user1...
+   Memory Stats:
+   - Total Memories: 5
+   - Oldest Memory: 2024-01-15 10:00:00 +0000 UTC
+   - Newest Memory: 2024-01-15 12:00:00 +0000 UTC
 
-👤 You: /exit
-👋 Goodbye!
+5. Getting memory statistics for user2...
+   Memory Stats:
+   - Total Memories: 2
+   - Oldest Memory: 2024-01-15 11:00:00 +0000 UTC
+   - Newest Memory: 2024-01-15 11:30:00 +0000 UTC
+
+6. Deleting user1's memories...
+   Successfully deleted all memories for user1
+
+7. Getting memory statistics for user1 after deletion...
+   Memory Stats:
+   - Total Memories: 0
+   - Oldest Memory: 0001-01-01 00:00:00 +0000 UTC
+   - Newest Memory: 0001-01-01 00:00:00 +0000 UTC
+
+=== Demo completed successfully! ===
 ```
 
-### Session Commands
+## Core Features
 
-- `/history` - Ask the agent to show conversation history
-- `/new` - Start a new session (resets conversation context)
-- `/memory` - Show memory statistics and analytics
-- `/summary` - Generate AI-powered session summary
-- `/search <query>` - Search memory using natural language
-- `/exit` - End the conversation
+### 1. Session Memory Management
 
-## Memory System Architecture
+The example creates multiple user sessions, each containing multiple events:
 
-The memory system consists of several components:
+- **user1-session1**: Contains 3 events covering greetings and programming discussions
+- **user1-session2**: Contains 2 events about Python programming
+- **user2-session1**: Contains 2 events about Go programming
 
-### Memory Service
+### 2. Intelligent Search
 
-- **In-Memory Storage**: Fast, temporary storage for development and testing
-- **Session Integration**: Automatic storage of conversation events
-- **Event Processing**: Handles user messages, assistant responses, and tool calls
+The memory service supports intelligent search based on keyword similarity:
 
-### Memory Summarizer
+- **Similarity Scoring**: Uses `CalculateScore` function to compute match relevance
+- **Multi-keyword Matching**: Supports matching and scoring with multiple keywords
+- **Case-insensitive**: Ignores case differences during search
+- **Real-time Sorting**: Sorts results by similarity score
 
-- **AI-Powered Summarization**: Uses the same LLM model for consistent summaries
-- **Configurable Prompts**: Customizable summarization prompts and modes
-- **Session Context**: Maintains conversation context for better summaries
+### 3. Memory Statistics
 
-### Memory Search
+The `MemoryStats` structure provides comprehensive memory system analytics:
 
-- **Semantic Search**: Find relevant memories using natural language queries
-- **Content Extraction**: Intelligently extracts readable content from events
-- **Ranked Results**: Returns search results with relevance scoring
+```go
+type MemoryStats struct {
+    TotalMemories int       // Total number of memories
+    OldestMemory  time.Time // Oldest memory timestamp
+    NewestMemory  time.Time // Newest memory timestamp
+}
+```
 
-## Memory vs Session
+### 4. Search Options
 
-| Feature           | Session                      | Memory                          |
-| ----------------- | ---------------------------- | ------------------------------- |
-| **Purpose**       | Temporary conversation state | Persistent conversation history |
-| **Lifetime**      | Session duration             | Permanent storage               |
-| **Content**       | Current conversation         | All past conversations          |
-| **Search**        | No                           | Semantic search available       |
-| **Summarization** | No                           | AI-powered summaries            |
-| **Analytics**     | No                           | Statistics and insights         |
+Supports various search options and filtering conditions:
 
-## Best Practices
+- **Pagination**: `Limit`, `Offset`, `NextToken`
+- **Filtering**: `SessionID`, `Authors`, `TimeRange`, `MinScore`
+- **Sorting**: `SortBy` (timestamp/score), `SortOrder` (asc/desc)
 
-1. **Memory Management**: Use memory for long-term conversation storage
-2. **Session Management**: Use sessions for temporary conversation state
-3. **Search Queries**: Use natural language for better search results
-4. **Regular Summaries**: Generate summaries periodically for long conversations
-5. **Memory Cleanup**: Consider implementing memory cleanup for old conversations
+## Performance Comparison
+
+| Feature            | In-Memory Mode | Redis Mode  |
+| ------------------ | -------------- | ----------- |
+| Startup Speed      | Very Fast      | Medium      |
+| Search Performance | Very Fast      | Fast        |
+| Persistence        | No             | Yes         |
+| Memory Usage       | High           | Low         |
+| Scalability        | Single Machine | Distributed |
+
+## Redis Setup
+
+### Install Redis
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install redis-server
+
+# macOS
+brew install redis
+
+# Docker
+docker run -d --name redis-memory -p 6379:6379 redis:7-alpine
+```
+
+### Start Redis
+
+```bash
+# System service
+sudo systemctl start redis-server
+
+# Manual start
+redis-server
+
+# Docker
+docker start redis-memory
+```
+
+### Test Connection
+
+```bash
+redis-cli ping
+# Should return: PONG
+```
+
+## Dependencies
+
+The memory service example depends on the following packages:
+
+### Core Dependencies
+
+- `memory/inmemory`: In-memory storage implementation
+- `memory/redis`: Redis storage implementation
+- `memory`: Core interfaces and utility functions
+
+### External Dependencies
+
+- `github.com/redis/go-redis/v9`: Redis client library
+- `github.com/stretchr/testify`: Testing framework (for unit tests)
+
+### Module Dependencies
+
+```go
+require (
+    trpc.group/trpc-go/trpc-agent-go/memory v0.0.0
+    trpc.group/trpc-go/trpc-agent-go/memory/inmemory v0.0.0
+    trpc.group/trpc-go/trpc-agent-go/memory/redis v0.0.0
+    github.com/redis/go-redis/v9 v9.0.0
+)
+```
 
 ## Troubleshooting
 
-### Memory Not Working
+### Redis Connection Issues
 
-- Ensure `-memory=true` flag is set (default)
-- Check that the model service is accessible
-- Verify API key configuration
+If you encounter Redis connection problems:
 
-### Search Not Finding Results
+1. **Check Redis Service Status**:
 
-- Use natural language queries instead of exact keywords
-- Check that conversations have been stored in memory
-- Try different query formulations
+   ```bash
+   redis-cli ping
+   ```
 
-### Summary Generation Fails
+2. **Verify Connection Parameters**:
 
-- Ensure the LLM model supports summarization
-- Check API rate limits and quotas
-- Verify model configuration and permissions
+   ```bash
+   ./memory-demo -redis-addr=localhost:6379 -redis-password=your_password
+   ```
+
+3. **Test Network Connectivity**:
+   ```bash
+   telnet localhost 6379
+   ```
+
+### Common Errors
+
+- `connection refused`: Redis service not running
+- `authentication failed`: Incorrect Redis password
+- `timeout`: Network connectivity issues
+- `module not found`: Missing dependencies, run `go mod tidy`
+
+### Build Issues
+
+If you encounter build issues:
+
+```bash
+# Clean and rebuild
+go clean -modcache
+go mod tidy
+go build -o memory-demo memory/main.go
+```
+
+## Project Structure
+
+```
+examples/memory/
+├── main.go              # Main program
+├── README.md           # This documentation
+└── test_memory_redis.sh # Redis test script
+```
+
+## Extending Functionality
+
+You can extend the functionality in several ways:
+
+1. **Add New Storage Backends**: Implement the `memory.Service` interface
+2. **Custom Search Algorithms**: Modify the `CalculateScore` function
+3. **Additional Filters**: Extend the `SearchOptions` structure
+4. **Performance Optimization**: Add caching and indexing mechanisms
+
+## License
+
+This project is licensed under the Apache 2.0 License. See the [LICENSE](../../LICENSE) file for details.

@@ -1,4 +1,4 @@
-module trpc.group/trpc-go/trpc-agent-go/session/redis
+module trpc.group/trpc-go/trpc-agent-go/memory/redis
 
 replace trpc.group/trpc-go/trpc-agent-go => ../../
 

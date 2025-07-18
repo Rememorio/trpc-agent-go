@@ -148,6 +148,7 @@ func (m *MemoryService) SearchMemory(ctx context.Context, userKey memory.UserKey
 
 			// Simple keyword matching for search.
 			score := memory.CalculateScore(mem, queryWords)
+			// Only filter by score if there's a query and the score is 0.
 			if len(queryWords) > 0 && score == 0 {
 				continue // Skip if query doesn't match at all.
 			}
