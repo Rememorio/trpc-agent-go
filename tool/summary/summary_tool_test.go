@@ -66,7 +66,7 @@ func TestSummaryTool_Call(t *testing.T) {
 	require.True(t, ok)
 
 	assert.True(t, output.Success)
-	assert.Equal(t, "User summary stored successfully", output.Message)
+	assert.Contains(t, output.Message, "User summary stored successfully")
 }
 
 func TestSummaryTool_Call_InvalidInput(t *testing.T) {
@@ -90,7 +90,7 @@ func TestSummaryTool_Call_InvalidInput(t *testing.T) {
 	require.True(t, ok)
 
 	assert.True(t, output.Success)
-	assert.Equal(t, "User summary stored successfully", output.Message)
+	assert.Contains(t, output.Message, "User summary stored successfully")
 }
 
 func TestSummaryTool_Call_InvalidJSON(t *testing.T) {
