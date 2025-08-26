@@ -686,7 +686,9 @@ func (f *Flow) executeToolCall(
 	// Check if tool exists.
 	tl, exists := tools[toolCall.Function.Name]
 	if !exists {
-		// Compatibility: map sub-agent name calls to transfer_to_agent if present.
+		// Compatibility layer for models that call sub-agent names directly instead of using transfer_to_agent.
+		// Some models may interpret the tool schema incorrectly and call sub-agent names directly instead of
+		// using the proper transfer_to_agent tool.
 		if mapped := findCompatibleTool(toolCall.Function.Name, tools, invocation); mapped != nil {
 			tl = mapped
 			if newArgs := convertToolArguments(
