@@ -87,7 +87,11 @@ func (c *transferChat) run() error {
 // setup creates the runner with main agent and sub-agents.
 func (c *transferChat) setup(_ context.Context) error {
 	// Create OpenAI model.
-	modelInstance := openai.New(c.modelName)
+	modelInstance := openai.New(c.modelName,
+		openai.WithExtraFields(map[string]any{
+			"openai_infer": true,
+			"tool_choice":  "auto",
+		}))
 
 	// Create sub-agents.
 	mathAgent := c.createMathAgent(modelInstance)
