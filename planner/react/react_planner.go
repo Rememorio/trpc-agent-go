@@ -185,26 +185,7 @@ func (p *Planner) ProcessStreamingResponse(
 	}
 
 	// Extract content from delta or message.
-	var chunkContent string
-	choice := response.Choices[0]
-	if choice.Delta.Content != "" {
-		chunkContent = choice.Delta.Content
-	} else if choice.Message.Content != "" {
-		// For final response with Message.Content, extract only new content.
-		bufferStr := state.Buffer.String()
-		if strings.HasPrefix(choice.Message.Content, bufferStr) {
-			chunkContent = choice.Message.Content[len(bufferStr):]
-		} else {
-			// Message.Content doesn't start with buffer, use full content.
-			// Reset buffer and state positions to avoid index out of bounds.
-			chunkContent = choice.Message.Content
-			state.Buffer.Reset()
-			state.TagStartPos = 0
-			state.LastSentPos = 0
-			state.CurrentTag = ""
-		}
-	}
-
+	chunkContent := p.extractChunkContent(response, state)
 	if chunkContent == "" {
 		return nil, nil
 	}
@@ -218,146 +199,243 @@ func (p *Planner) ProcessStreamingResponse(
 	// Find all complete tags in buffer (for tag switching).
 	matches := tagPattern.FindAllStringSubmatchIndex(bufferStr, -1)
 	if len(matches) > 0 {
-		// Process all tags found in this chunk.
-		// For each tag after the current one, switch to it.
-		for _, match := range matches {
-			tagEnd := match[1] // End position of tag pattern (after */)
-			newTagName := bufferStr[match[2]:match[3]]
-
-			// Check if this is a new tag (after current tag position).
-			if match[0] >= state.TagStartPos && state.CurrentTag != newTagName {
-				// End current tag if exists: send remaining content that hasn't been sent yet.
-				if state.CurrentTag != "" {
-					// Ensure LastSentPos is valid and less than match[0].
-					if state.LastSentPos < match[0] && state.LastSentPos < len(bufferStr) && match[0] <= len(bufferStr) {
-						// Send content from LastSentPos to the new tag (excluding the new tag marker).
-						remainingContent := bufferStr[state.LastSentPos:match[0]]
-						remainingContent = strings.TrimPrefix(remainingContent, "*/")
-						// Remove any partial tag markers like /*ACTION (without closing */).
-						remainingContent = removePartialTags(remainingContent)
-						remainingContent = strings.TrimLeft(remainingContent, "\n\r")
-						if strings.TrimSpace(remainingContent) != "" {
-							evt := event.New(
-								invocation.InvocationID,
-								invocation.AgentName,
-								event.WithTag(state.CurrentTag),
-								event.WithResponse(&model.Response{
-									ID:        response.ID,
-									Object:    response.Object,
-									IsPartial: false,
-									Choices: []model.Choice{{
-										Message: model.Message{
-											Role:    model.RoleAssistant,
-											Content: remainingContent,
-										},
-									}},
-								}),
-							)
-							events = append(events, evt)
-						}
-					}
-					state.LastSentPos = match[0] // Update to the position of the new tag.
-				}
-
-				// Start new tag.
-				state.CurrentTag = newTagName
-				state.TagStartPos = tagEnd
-				// Ensure tagEnd is within buffer bounds.
-				if tagEnd > len(bufferStr) {
-					tagEnd = len(bufferStr)
-				}
-				state.LastSentPos = tagEnd // Reset last sent position for new tag.
-			}
-		}
+		// Process tag switches.
+		tagSwitchEvents := p.processTagSwitches(invocation, response, state, bufferStr, matches)
+		events = append(events, tagSwitchEvents...)
 	}
 
-	// If we have a current tag, emit incremental content immediately.
-	if state.CurrentTag != "" {
-		// Extract content from LastSentPos to end of buffer (excluding tag markers).
-		// This ensures we only send new content and don't include tag markers.
-		currentSectionEnd := len(bufferStr)
+	// Emit incremental content for current tag.
+	incrementalEvents := p.emitIncrementalContent(invocation, response, state, bufferStr, matches)
+	events = append(events, incrementalEvents...)
 
-		// Check if there's a new tag in the buffer after LastSentPos.
-		// If so, only send content up to that tag.
-		for _, match := range matches {
-			if match[0] > state.LastSentPos && match[0] >= state.TagStartPos {
-				// Found a new tag, only send content up to this tag.
-				currentSectionEnd = match[0]
-				break
-			}
-		}
-
-		// Extract new content to send (from LastSentPos to currentSectionEnd).
-		// Ensure all indices are within valid bounds.
-		if currentSectionEnd > state.LastSentPos &&
-			state.LastSentPos >= 0 &&
-			state.LastSentPos < len(bufferStr) &&
-			currentSectionEnd <= len(bufferStr) {
-			contentToSend := bufferStr[state.LastSentPos:currentSectionEnd]
-			// Remove any leading */ that might be left from tag markers.
-			contentToSend = strings.TrimPrefix(contentToSend, "*/")
-			// Remove any partial tag markers like /*ACTION (without closing */).
-			contentToSend = removePartialTags(contentToSend)
-			if strings.TrimSpace(contentToSend) != "" {
-				evt := event.New(
-					invocation.InvocationID,
-					invocation.AgentName,
-					event.WithTag(state.CurrentTag),
-					event.WithResponse(&model.Response{
-						ID:        response.ID,
-						Object:    response.Object,
-						IsPartial: response.IsPartial,
-						Choices: []model.Choice{{
-							Delta: model.Message{
-								Content: contentToSend,
-							},
-						}},
-					}),
-				)
-				events = append(events, evt)
-				state.LastSentPos = currentSectionEnd
-			}
-		}
-	}
-
-	// Clean up buffer when response is complete.
+	// Finalize response if complete.
 	if !response.IsPartial {
-		// Send final content for current tag if any.
-		if state.CurrentTag != "" {
-			finalContent := bufferStr[state.TagStartPos:]
-			finalContent = strings.TrimLeft(finalContent, "\n\r")
-			if strings.TrimSpace(finalContent) != "" {
-				// Check if we already sent this content in the last event.
-				// If the last event was a delta, we need to send the complete content.
-				if len(events) > 0 && events[len(events)-1].Response.Choices[0].Delta.Content != "" {
-					// Replace last delta event with complete content event.
-					events[len(events)-1] = event.New(
-						invocation.InvocationID,
-						invocation.AgentName,
-						event.WithTag(state.CurrentTag),
-						event.WithResponse(&model.Response{
-							ID:        response.ID,
-							Object:    response.Object,
-							IsPartial: false,
-							Choices: []model.Choice{{
-								Message: model.Message{
-									Role:    model.RoleAssistant,
-									Content: finalContent,
-								},
-							}},
-						}),
-					)
-				}
-			}
-		}
-		// Reset state for next response.
-		state.CurrentTag = ""
-		state.Buffer.Reset()
-		state.TagStartPos = 0
-		state.LastSentPos = 0
+		p.finalizeResponse(invocation, response, state, bufferStr, &events)
 	}
 
 	return events, nil
+}
+
+// extractChunkContent extracts content from delta or message, handling buffer reset if needed.
+func (p *Planner) extractChunkContent(response *model.Response, state *StreamingState) string {
+	choice := response.Choices[0]
+	if choice.Delta.Content != "" {
+		return choice.Delta.Content
+	}
+	if choice.Message.Content == "" {
+		return ""
+	}
+
+	// For final response with Message.Content, extract only new content.
+	bufferStr := state.Buffer.String()
+	if strings.HasPrefix(choice.Message.Content, bufferStr) {
+		return choice.Message.Content[len(bufferStr):]
+	}
+
+	// Message.Content doesn't start with buffer, use full content.
+	// Reset buffer and state positions to avoid index out of bounds.
+	state.Buffer.Reset()
+	state.TagStartPos = 0
+	state.LastSentPos = 0
+	state.CurrentTag = ""
+	return choice.Message.Content
+}
+
+// processTagSwitches handles tag switching logic, sending remaining content for old tag.
+func (p *Planner) processTagSwitches(
+	invocation *agent.Invocation,
+	response *model.Response,
+	state *StreamingState,
+	bufferStr string,
+	matches [][]int,
+) []*event.Event {
+	var events []*event.Event
+
+	for _, match := range matches {
+		tagEnd := match[1] // End position of tag pattern (after */)
+		newTagName := bufferStr[match[2]:match[3]]
+
+		// Check if this is a new tag (after current tag position).
+		if match[0] < state.TagStartPos || state.CurrentTag == newTagName {
+			continue
+		}
+
+		// End current tag if exists: send remaining content that hasn't been sent yet.
+		if state.CurrentTag != "" {
+			evt := p.createRemainingContentEvent(invocation, response, state, bufferStr, match[0])
+			if evt != nil {
+				events = append(events, evt)
+			}
+			state.LastSentPos = match[0] // Update to the position of the new tag.
+		}
+
+		// Start new tag.
+		state.CurrentTag = newTagName
+		state.TagStartPos = tagEnd
+		// Ensure tagEnd is within buffer bounds.
+		if tagEnd > len(bufferStr) {
+			tagEnd = len(bufferStr)
+		}
+		state.LastSentPos = tagEnd // Reset last sent position for new tag.
+	}
+
+	return events
+}
+
+// createRemainingContentEvent creates an event for remaining content when switching tags.
+func (p *Planner) createRemainingContentEvent(
+	invocation *agent.Invocation,
+	response *model.Response,
+	state *StreamingState,
+	bufferStr string,
+	newTagPos int,
+) *event.Event {
+	// Ensure LastSentPos is valid and less than newTagPos.
+	if state.LastSentPos >= newTagPos || state.LastSentPos >= len(bufferStr) || newTagPos > len(bufferStr) {
+		return nil
+	}
+
+	// Send content from LastSentPos to the new tag (excluding the new tag marker).
+	remainingContent := bufferStr[state.LastSentPos:newTagPos]
+	remainingContent = strings.TrimPrefix(remainingContent, "*/")
+	remainingContent = removePartialTags(remainingContent)
+	remainingContent = strings.TrimLeft(remainingContent, "\n\r")
+	if strings.TrimSpace(remainingContent) == "" {
+		return nil
+	}
+
+	return event.New(
+		invocation.InvocationID,
+		invocation.AgentName,
+		event.WithTag(state.CurrentTag),
+		event.WithResponse(&model.Response{
+			ID:        response.ID,
+			Object:    response.Object,
+			IsPartial: false,
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role:    model.RoleAssistant,
+					Content: remainingContent,
+				},
+			}},
+		}),
+	)
+}
+
+// emitIncrementalContent emits incremental content for the current tag.
+func (p *Planner) emitIncrementalContent(
+	invocation *agent.Invocation,
+	response *model.Response,
+	state *StreamingState,
+	bufferStr string,
+	matches [][]int,
+) []*event.Event {
+	if state.CurrentTag == "" {
+		return nil
+	}
+
+	// Extract content from LastSentPos to end of buffer (excluding tag markers).
+	currentSectionEnd := len(bufferStr)
+
+	// Check if there's a new tag in the buffer after LastSentPos.
+	// If so, only send content up to that tag.
+	for _, match := range matches {
+		if match[0] > state.LastSentPos && match[0] >= state.TagStartPos {
+			currentSectionEnd = match[0]
+			break
+		}
+	}
+
+	// Extract new content to send (from LastSentPos to currentSectionEnd).
+	// Ensure all indices are within valid bounds.
+	if currentSectionEnd <= state.LastSentPos ||
+		state.LastSentPos < 0 ||
+		state.LastSentPos >= len(bufferStr) ||
+		currentSectionEnd > len(bufferStr) {
+		return nil
+	}
+
+	contentToSend := bufferStr[state.LastSentPos:currentSectionEnd]
+	contentToSend = strings.TrimPrefix(contentToSend, "*/")
+	contentToSend = removePartialTags(contentToSend)
+	if strings.TrimSpace(contentToSend) == "" {
+		return nil
+	}
+
+	evt := event.New(
+		invocation.InvocationID,
+		invocation.AgentName,
+		event.WithTag(state.CurrentTag),
+		event.WithResponse(&model.Response{
+			ID:        response.ID,
+			Object:    response.Object,
+			IsPartial: response.IsPartial,
+			Choices: []model.Choice{{
+				Delta: model.Message{
+					Content: contentToSend,
+				},
+			}},
+		}),
+	)
+
+	state.LastSentPos = currentSectionEnd
+	return []*event.Event{evt}
+}
+
+// finalizeResponse handles finalization when response is complete.
+func (p *Planner) finalizeResponse(
+	invocation *agent.Invocation,
+	response *model.Response,
+	state *StreamingState,
+	bufferStr string,
+	events *[]*event.Event,
+) {
+	if state.CurrentTag == "" {
+		p.resetState(state)
+		return
+	}
+
+	finalContent := bufferStr[state.TagStartPos:]
+	finalContent = strings.TrimLeft(finalContent, "\n\r")
+	if strings.TrimSpace(finalContent) == "" {
+		p.resetState(state)
+		return
+	}
+
+	// Check if we already sent this content in the last event.
+	// If the last event was a delta, we need to send the complete content.
+	if len(*events) > 0 {
+		lastEvent := (*events)[len(*events)-1]
+		if len(lastEvent.Response.Choices) > 0 && lastEvent.Response.Choices[0].Delta.Content != "" {
+			// Replace last delta event with complete content event.
+			(*events)[len(*events)-1] = event.New(
+				invocation.InvocationID,
+				invocation.AgentName,
+				event.WithTag(state.CurrentTag),
+				event.WithResponse(&model.Response{
+					ID:        response.ID,
+					Object:    response.Object,
+					IsPartial: false,
+					Choices: []model.Choice{{
+						Message: model.Message{
+							Role:    model.RoleAssistant,
+							Content: finalContent,
+						},
+					}},
+				}),
+			)
+		}
+	}
+
+	p.resetState(state)
+}
+
+// resetState resets the streaming state for the next response.
+func (p *Planner) resetState(state *StreamingState) {
+	state.CurrentTag = ""
+	state.Buffer.Reset()
+	state.TagStartPos = 0
+	state.LastSentPos = 0
 }
 
 // ProcessNonStreamingResponse processes a complete non-streaming response and emits
