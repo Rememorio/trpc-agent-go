@@ -12,6 +12,7 @@ package processor
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -19,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/planner"
 	"trpc.group/trpc-go/trpc-agent-go/planner/builtin"
+	"trpc.group/trpc-go/trpc-agent-go/planner/react"
 )
 
 // PlanningRequestProcessor implements planning request processing logic.
@@ -114,6 +116,8 @@ func min(a, b int) int {
 type PlanningResponseProcessor struct {
 	// Planner is the planner to use for processing planning responses.
 	Planner planner.Planner
+	// Streaming states for React planner, keyed by invocation ID.
+	reactStates sync.Map // map[string]*react.StreamingState
 }
 
 // NewPlanningResponseProcessor creates a new planning response processor.
@@ -132,7 +136,7 @@ func (p *PlanningResponseProcessor) ProcessResponse(
 	rsp *model.Response,
 	ch chan<- *event.Event,
 ) {
-	if invocation == nil || rsp == nil || rsp.IsPartial {
+	if invocation == nil || rsp == nil {
 		return
 	}
 	if p.Planner == nil {
@@ -141,6 +145,17 @@ func (p *PlanningResponseProcessor) ProcessResponse(
 	}
 	if len(rsp.Choices) == 0 {
 		log.Debugf("Planning response processor: no choices in response")
+		return
+	}
+
+	// Handle React planner streaming/non-streaming responses.
+	if reactPlanner, ok := p.Planner.(*react.Planner); ok {
+		p.processReactPlannerResponse(ctx, invocation, rsp, ch, reactPlanner)
+		return
+	}
+
+	// Handle other planners (only process complete responses).
+	if rsp.IsPartial {
 		return
 	}
 
@@ -163,4 +178,81 @@ func (p *PlanningResponseProcessor) ProcessResponse(
 	)); err != nil {
 		log.Debugf("Planning response processor: context cancelled")
 	}
+}
+
+// processReactPlannerResponse handles React planner streaming and non-streaming responses.
+func (p *PlanningResponseProcessor) processReactPlannerResponse(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	rsp *model.Response,
+	ch chan<- *event.Event,
+	reactPlanner *react.Planner,
+) {
+	// Check if this is a non-streaming response.
+	// Non-streaming: not partial AND has Message.Content AND no Delta.Content.
+	// Streaming: partial OR has Delta.Content (even if also has Message.Content).
+	deltaContent := ""
+	if len(rsp.Choices) > 0 {
+		deltaContent = rsp.Choices[0].Delta.Content
+	}
+	isNonStreaming := !rsp.IsPartial && len(rsp.Choices) > 0 && rsp.Choices[0].Message.Content != "" && deltaContent == ""
+
+	if isNonStreaming {
+		// Process non-streaming response.
+		events, err := reactPlanner.ProcessNonStreamingResponse(ctx, invocation, rsp)
+		if err != nil {
+			log.Warnf("Planning response processor: failed to process React non-streaming response: %v", err)
+			return
+		}
+
+		// Emit tagged events.
+		for _, evt := range events {
+			if err := agent.EmitEvent(ctx, invocation, ch, evt); err != nil {
+				log.Debugf("Planning response processor: context cancelled")
+				return
+			}
+		}
+
+		// Clean up state.
+		p.cleanupState(invocation.InvocationID)
+		return
+	}
+
+	// Process streaming response with real-time tag tracking.
+	state := p.getState(invocation.InvocationID)
+	events, err := reactPlanner.ProcessStreamingResponse(ctx, invocation, rsp, state)
+	if err != nil {
+		log.Warnf("Planning response processor: failed to process React streaming response: %v", err)
+		return
+	}
+
+	// Emit tagged events immediately (true streaming).
+	for _, evt := range events {
+		if err := agent.EmitEvent(ctx, invocation, ch, evt); err != nil {
+			log.Debugf("Planning response processor: context cancelled")
+			return
+		}
+	}
+
+	// Clean up state when response is complete.
+	if !rsp.IsPartial {
+		p.cleanupState(invocation.InvocationID)
+	}
+}
+
+// getState gets or creates a streaming state for the given invocation ID.
+func (p *PlanningResponseProcessor) getState(invocationID string) *react.StreamingState {
+	if state, ok := p.reactStates.Load(invocationID); ok {
+		return state.(*react.StreamingState)
+	}
+	state := &react.StreamingState{
+		Buffer: &strings.Builder{},
+	}
+	p.reactStates.Store(invocationID, state)
+	return state
+}
+
+// cleanupState removes the streaming state for the given invocation ID.
+func (p *PlanningResponseProcessor) cleanupState(invocationID string) {
+	p.reactStates.Delete(invocationID)
 }

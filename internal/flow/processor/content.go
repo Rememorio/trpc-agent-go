@@ -272,6 +272,13 @@ func (p *ContentRequestProcessor) shouldIncludeEvent(evt event.Event, inv *agent
 		return false
 	}
 
+	// Filter out React planner tagged events to prevent duplicate content in history.
+	// These events are used for filtering/display purposes only and should not be
+	// included in the conversation history.
+	if evt.Tag != "" {
+		return false
+	}
+
 	if !isZeroTime && evt.Timestamp.Before(since) {
 		return false
 	}

@@ -341,3 +341,279 @@ func TestConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanner_ProcessStreamingResponse(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	invocation := &agent.Invocation{
+		AgentName:    "test-agent",
+		InvocationID: "test-001",
+	}
+
+	t.Run("single tag partial", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response := &model.Response{
+			ID:        "resp-1",
+			Object:    model.ObjectTypeChatCompletionChunk,
+			IsPartial: true,
+			Choices: []model.Choice{{
+				Delta: model.Message{
+					Content: PlanningTag + " Step 1",
+				},
+			}},
+		}
+
+		events, err := p.ProcessStreamingResponse(ctx, invocation, response, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should emit events immediately for streaming (true streaming).
+		// First event should be for the tag switch, then content chunks.
+		if len(events) == 0 {
+			t.Errorf("Expected at least 1 event for streaming response, got %d", len(events))
+		}
+
+		// Check that we have a PLANNING tag.
+		if state.CurrentTag != "PLANNING" {
+			t.Errorf("Expected current tag %q, got %q", "PLANNING", state.CurrentTag)
+		}
+	})
+
+	t.Run("single tag complete", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response := &model.Response{
+			ID:        "resp-2",
+			Object:    model.ObjectTypeChatCompletion,
+			IsPartial: false,
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Content: PlanningTag + " Step 1: Do something",
+				},
+			}},
+		}
+
+		events, err := p.ProcessStreamingResponse(ctx, invocation, response, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should emit at least one event (tag switch + content).
+		if len(events) == 0 {
+			t.Fatalf("Expected at least 1 event, got %d", len(events))
+		}
+
+		// Last event should have complete content.
+		lastEvt := events[len(events)-1]
+		if lastEvt.Tag != "PLANNING" {
+			t.Errorf("Expected tag %q, got %q", "PLANNING", lastEvt.Tag)
+		}
+		// Check if it's a complete message or delta.
+		content := lastEvt.Response.Choices[0].Message.Content
+		if content == "" {
+			content = lastEvt.Response.Choices[0].Delta.Content
+		}
+		if !strings.Contains(content, "Step 1: Do something") {
+			t.Errorf("Expected content to contain %q, got %q", "Step 1: Do something", content)
+		}
+		// State should be reset after complete response.
+		if state.CurrentTag != "" {
+			t.Errorf("Expected empty current tag after complete response, got %q", state.CurrentTag)
+		}
+	})
+
+	t.Run("multiple tags partial", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response1 := &model.Response{
+			ID:        "resp-3",
+			Object:    model.ObjectTypeChatCompletionChunk,
+			IsPartial: true,
+			Choices: []model.Choice{{
+				Delta: model.Message{
+					Content: PlanningTag + " Step 1\n" + ReasoningTag + " Reasoning",
+				},
+			}},
+		}
+
+		events1, err := p.ProcessStreamingResponse(ctx, invocation, response1, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should emit events immediately (true streaming).
+		// Should have events for PLANNING tag switch and content, then REASONING tag switch.
+		if len(events1) == 0 {
+			t.Fatalf("Expected at least 1 event, got %d", len(events1))
+		}
+
+		// Current tag should be REASONING (last tag).
+		if state.CurrentTag != "REASONING" {
+			t.Errorf("Expected current tag %q, got %q", "REASONING", state.CurrentTag)
+		}
+
+		// Complete the response.
+		response2 := &model.Response{
+			ID:        "resp-3",
+			Object:    model.ObjectTypeChatCompletion,
+			IsPartial: false,
+			Choices: []model.Choice{{
+				Delta: model.Message{
+					Content: " continues",
+				},
+			}},
+		}
+
+		events2, err := p.ProcessStreamingResponse(ctx, invocation, response2, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should emit event for the remaining content.
+		if len(events2) == 0 {
+			t.Fatalf("Expected at least 1 event, got %d", len(events2))
+		}
+
+		// State should be reset after complete response.
+		if state.CurrentTag != "" {
+			t.Errorf("Expected empty current tag after complete response, got %q", state.CurrentTag)
+		}
+	})
+
+	t.Run("multiple tags complete", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response := &model.Response{
+			ID:        "resp-4",
+			Object:    model.ObjectTypeChatCompletion,
+			IsPartial: false,
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Content: PlanningTag + " Plan\n" + ReasoningTag + " Reason\n" + FinalAnswerTag + " Answer",
+				},
+			}},
+		}
+
+		events, err := p.ProcessStreamingResponse(ctx, invocation, response, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should emit events for all tags (true streaming emits immediately).
+		// We should have events for tag switches and content.
+		if len(events) == 0 {
+			t.Fatalf("Expected at least 1 event, got %d", len(events))
+		}
+
+		// Check that we have events for all three tags.
+		tagsFound := make(map[string]bool)
+		for _, evt := range events {
+			if evt.Tag != "" {
+				tagsFound[evt.Tag] = true
+			}
+		}
+		expectedTags := []string{"PLANNING", "REASONING", "FINAL_ANSWER"}
+		for _, tag := range expectedTags {
+			if !tagsFound[tag] {
+				t.Errorf("Expected to find tag %q in events", tag)
+			}
+		}
+
+		// State should be reset after complete response.
+		if state.CurrentTag != "" {
+			t.Errorf("Expected empty current tag after complete response, got %q", state.CurrentTag)
+		}
+	})
+
+	t.Run("no tags", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response := &model.Response{
+			ID:        "resp-5",
+			Object:    model.ObjectTypeChatCompletionChunk,
+			IsPartial: true,
+			Choices: []model.Choice{{
+				Delta: model.Message{
+					Content: "Some content without tags",
+				},
+			}},
+		}
+
+		events, err := p.ProcessStreamingResponse(ctx, invocation, response, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should not emit events (no tags found, no current tag).
+		if len(events) != 0 {
+			t.Errorf("Expected 0 events, got %d", len(events))
+		}
+
+		// Buffer should contain the content.
+		if state.Buffer.String() != "Some content without tags" {
+			t.Errorf("Expected buffer %q, got %q", "Some content without tags", state.Buffer.String())
+		}
+	})
+
+	t.Run("empty content", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response := &model.Response{
+			ID:        "resp-6",
+			Object:    model.ObjectTypeChatCompletionChunk,
+			IsPartial: true,
+			Choices: []model.Choice{{
+				Delta: model.Message{
+					Content: "",
+				},
+			}},
+		}
+
+		events, err := p.ProcessStreamingResponse(ctx, invocation, response, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+
+		// Should not emit events (empty content).
+		if len(events) != 0 {
+			t.Errorf("Expected 0 events, got %d", len(events))
+		}
+	})
+
+	t.Run("nil response", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		events, err := p.ProcessStreamingResponse(ctx, invocation, nil, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+		if len(events) != 0 {
+			t.Errorf("Expected 0 events, got %d", len(events))
+		}
+	})
+
+	t.Run("empty choices", func(t *testing.T) {
+		state := &StreamingState{
+			Buffer: &strings.Builder{},
+		}
+		response := &model.Response{
+			Choices: []model.Choice{},
+		}
+		events, err := p.ProcessStreamingResponse(ctx, invocation, response, state)
+		if err != nil {
+			t.Fatalf("ProcessStreamingResponse() error = %v", err)
+		}
+		if len(events) != 0 {
+			t.Errorf("Expected 0 events, got %d", len(events))
+		}
+	})
+}
