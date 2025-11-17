@@ -207,6 +207,43 @@ var DefaultNewHTTPClient HTTPClientNewFunc = func(opts ...HTTPClientOption) HTTP
 	}
 }
 
+// logHTTPResponseMiddleware logs raw HTTP request and response in debug mode.
+func logHTTPResponseMiddleware(req *http.Request, next openaiopt.MiddlewareNext) (*http.Response, error) {
+	// Log HTTP request.
+	if req != nil && req.Body != nil {
+		reqBody, err := io.ReadAll(req.Body)
+		if err == nil {
+			req.Body = io.NopCloser(bytes.NewReader(reqBody))
+			log.Debugf("HTTP request: method=%s, url=%s, body=%s", req.Method, req.URL.String(), string(reqBody))
+		}
+	} else if req != nil {
+		log.Debugf("HTTP request: method=%s, url=%s", req.Method, req.URL.String())
+	}
+
+	// Call next middleware or actual request.
+	resp, err := next(req)
+	if err != nil {
+		log.Debugf("HTTP request error: %v", err)
+		return resp, err
+	}
+
+	// Log HTTP response.
+	if resp != nil && resp.Body != nil {
+		respBody, err := io.ReadAll(resp.Body)
+		if err == nil {
+			// Restore response body for downstream processing.
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			log.Debugf("HTTP response: status=%s, headers=%+v, body=%s", resp.Status, resp.Header, string(respBody))
+		} else {
+			log.Debugf("HTTP response: status=%s, headers=%+v, body read error=%v", resp.Status, resp.Header, err)
+		}
+	} else if resp != nil {
+		log.Debugf("HTTP response: status=%s, headers=%+v", resp.Status, resp.Header)
+	}
+
+	return resp, err
+}
+
 // HTTPClientOption is the option for the HTTP client.
 type HTTPClientOption func(*HTTPClientOptions)
 
@@ -606,6 +643,8 @@ func New(name string, opts ...Option) *Model {
 	}
 
 	clientOpts = append(clientOpts, openaiopt.WithHTTPClient(DefaultNewHTTPClient(o.HTTPClientOptions...)))
+	// Add built-in middleware to log raw HTTP responses in debug mode.
+	clientOpts = append(clientOpts, openaiopt.WithMiddleware(logHTTPResponseMiddleware))
 	clientOpts = append(clientOpts, o.OpenAIOptions...)
 
 	client := openai.NewClient(clientOpts...)

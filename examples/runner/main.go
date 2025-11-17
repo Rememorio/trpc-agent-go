@@ -16,7 +16,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -25,6 +24,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -68,6 +68,7 @@ var (
 func main() {
 	// Parse command line flags.
 	flag.Parse()
+	log.SetLevel(log.LevelDebug)
 
 	fmt.Printf("🚀 Multi-turn Chat with Runner + Tools\n")
 	fmt.Printf("Model: %s\n", *modelName)
