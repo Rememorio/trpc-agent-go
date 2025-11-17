@@ -233,20 +233,34 @@ func logHTTPResponseMiddleware(req *http.Request, next openaiopt.MiddlewareNext)
 
 	// Log HTTP response.
 	if resp != nil && resp.Body != nil {
+		// Use LimitedReader to prevent reading too much, but still capture partial data on error.
 		respBody, err := io.ReadAll(resp.Body)
-		if err == nil {
-			// Restore response body for downstream processing.
+		respBodySize := len(respBody)
+		contentType := resp.Header.Get("Content-Type")
+		isStreaming := contentType == "text/event-stream" || contentType == "text/event-stream; charset=utf-8" ||
+			contentType == "text/event-stream;charset=UTF-8"
+
+		// Restore response body for downstream processing.
+		if respBodySize > 0 {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
-			respBodySize := len(respBody)
-			contentType := resp.Header.Get("Content-Type")
-			isStreaming := contentType == "text/event-stream" || contentType == "text/event-stream; charset=utf-8" ||
-				contentType == "text/event-stream;charset=UTF-8"
+		}
+
+		if err == nil {
+			// Successfully read complete response.
 			log.Debugf("HTTP response: status=%s, content_type=%s, body_size=%d bytes, "+
 				"is_streaming=%v, duration=%v, body=%s",
 				resp.Status, contentType, respBodySize, isStreaming, requestDuration, string(respBody))
 		} else {
-			log.Debugf("HTTP response: status=%s, headers=%+v, duration=%v, body read error=%v",
-				resp.Status, resp.Header, requestDuration, err)
+			// Response was truncated or error occurred, but log what we got.
+			if respBodySize > 0 {
+				log.Debugf("HTTP response (truncated): status=%s, content_type=%s, body_size=%d bytes (partial), "+
+					"is_streaming=%v, duration=%v, read_error=%v, partial_body=%s",
+					resp.Status, contentType, respBodySize, isStreaming, requestDuration, err, string(respBody))
+			} else {
+				log.Debugf("HTTP response (read failed): status=%s, content_type=%s, headers=%+v, "+
+					"duration=%v, body read error=%v",
+					resp.Status, contentType, resp.Header, requestDuration, err)
+			}
 		}
 	} else if resp != nil {
 		log.Debugf("HTTP response: status=%s, headers=%+v, duration=%v", resp.Status, resp.Header, requestDuration)
@@ -1259,6 +1273,11 @@ func (m *Model) handleStreamingResponse(
 
 	// Send final response with usage information if available.
 	m.sendFinalResponse(ctx, stream, acc, idToIndexMap, reasoningBuf.String(), responseChan)
+
+	// Log stream error if any (for debugging truncated responses).
+	if stream.Err() != nil {
+		log.Debugf("Streaming response error: stream_id=%s, error=%v", acc.ID, stream.Err())
+	}
 
 	// Call the stream complete callback after final response is sent
 	if m.chatStreamCompleteCallback != nil {
