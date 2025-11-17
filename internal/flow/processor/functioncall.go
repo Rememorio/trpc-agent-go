@@ -584,12 +584,15 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		}
 	}
 
+	toolStartTime := time.Now()
 	log.Debugf("Executing tool %s with args: %s", toolCall.Function.Name, string(toolCall.Function.Arguments))
 
 	// Execute the tool with callbacks.
 	result, modifiedArgs, err := p.executeToolWithCallbacks(ctx, invocation, toolCall, tl, eventChan)
+	toolDuration := time.Since(toolStartTime)
 	// Only return error when it's a stop error
 	if err != nil {
+		log.Debugf("Tool %s execution failed: duration=%v, error=%v", toolCall.Function.Name, toolDuration, err)
 		if _, ok := agent.AsStopError(err); ok {
 			return nil, modifiedArgs, false, err
 		}
@@ -598,6 +601,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 	//  allow to return nil not provide function response.
 	if r, ok := tl.(function.LongRunner); ok && r.LongRunning() {
 		if result == nil {
+			log.Debugf("Tool %s (long-running) returned nil result: duration=%v", toolCall.Function.Name, toolDuration)
 			return nil, modifiedArgs, true, nil
 		}
 	}
@@ -608,13 +612,15 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 		// Marshal failures (for example, NaN in floats) do not
 		// affect the overall flow. Downgrade to warning to avoid
 		// noisy alerts while still surfacing the issue.
-		log.Warnf("Failed to marshal tool result for %s: %v",
-			toolCall.Function.Name, err)
+		log.Warnf("Failed to marshal tool result for %s: duration=%v, error=%v",
+			toolCall.Function.Name, toolDuration, err)
 		return nil, modifiedArgs, true,
 			fmt.Errorf("%s: %w", ErrorMarshalResult, err)
 	}
 
-	log.Debugf("CallableTool %s executed successfully, result: %s", toolCall.Function.Name, string(resultBytes))
+	resultSize := len(resultBytes)
+	log.Debugf("CallableTool %s executed successfully: duration=%v, result_size=%d bytes, result=%s",
+		toolCall.Function.Name, toolDuration, resultSize, string(resultBytes))
 
 	return &model.Choice{
 		Index: index,

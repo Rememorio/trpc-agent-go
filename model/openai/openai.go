@@ -210,11 +210,14 @@ var DefaultNewHTTPClient HTTPClientNewFunc = func(opts ...HTTPClientOption) HTTP
 // logHTTPResponseMiddleware logs raw HTTP request and response in debug mode.
 func logHTTPResponseMiddleware(req *http.Request, next openaiopt.MiddlewareNext) (*http.Response, error) {
 	// Log HTTP request.
+	requestStartTime := time.Now()
 	if req != nil && req.Body != nil {
 		reqBody, err := io.ReadAll(req.Body)
 		if err == nil {
 			req.Body = io.NopCloser(bytes.NewReader(reqBody))
-			log.Debugf("HTTP request: method=%s, url=%s, body=%s", req.Method, req.URL.String(), string(reqBody))
+			reqBodySize := len(reqBody)
+			log.Debugf("HTTP request: method=%s, url=%s, body_size=%d bytes, body=%s",
+				req.Method, req.URL.String(), reqBodySize, string(reqBody))
 		}
 	} else if req != nil {
 		log.Debugf("HTTP request: method=%s, url=%s", req.Method, req.URL.String())
@@ -222,8 +225,9 @@ func logHTTPResponseMiddleware(req *http.Request, next openaiopt.MiddlewareNext)
 
 	// Call next middleware or actual request.
 	resp, err := next(req)
+	requestDuration := time.Since(requestStartTime)
 	if err != nil {
-		log.Debugf("HTTP request error: %v", err)
+		log.Debugf("HTTP request error: duration=%v, error=%v", requestDuration, err)
 		return resp, err
 	}
 
@@ -233,12 +237,19 @@ func logHTTPResponseMiddleware(req *http.Request, next openaiopt.MiddlewareNext)
 		if err == nil {
 			// Restore response body for downstream processing.
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
-			log.Debugf("HTTP response: status=%s, headers=%+v, body=%s", resp.Status, resp.Header, string(respBody))
+			respBodySize := len(respBody)
+			contentType := resp.Header.Get("Content-Type")
+			isStreaming := contentType == "text/event-stream" || contentType == "text/event-stream; charset=utf-8" ||
+				contentType == "text/event-stream;charset=UTF-8"
+			log.Debugf("HTTP response: status=%s, content_type=%s, body_size=%d bytes, "+
+				"is_streaming=%v, duration=%v, body=%s",
+				resp.Status, contentType, respBodySize, isStreaming, requestDuration, string(respBody))
 		} else {
-			log.Debugf("HTTP response: status=%s, headers=%+v, body read error=%v", resp.Status, resp.Header, err)
+			log.Debugf("HTTP response: status=%s, headers=%+v, duration=%v, body read error=%v",
+				resp.Status, resp.Header, requestDuration, err)
 		}
 	} else if resp != nil {
-		log.Debugf("HTTP response: status=%s, headers=%+v", resp.Status, resp.Header)
+		log.Debugf("HTTP response: status=%s, headers=%+v, duration=%v", resp.Status, resp.Header, requestDuration)
 	}
 
 	return resp, err
