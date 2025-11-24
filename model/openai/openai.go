@@ -1239,7 +1239,15 @@ func (m *Model) handleStreamingResponse(
 	var reasoningBuf bytes.Buffer
 
 	for stream.Next() {
+		// Check for errors during stream parsing (e.g., incomplete JSON in SSE events).
+		// This handles cases where APIs like Venus may return non-JSON text or incomplete JSON fragments.
+		if err := stream.Err(); err != nil {
+			log.Warnf("Stream parsing error detected, stopping stream processing: %v", err)
+			break
+		}
+
 		chunk := stream.Current()
+		log.Infof("[Stream] Received chunk: ID=%s, Model=%s, Choices=%d", chunk.ID, chunk.Model, len(chunk.Choices))
 
 		// Skip empty chunks.
 		if m.shouldSkipEmptyChunk(chunk) {
@@ -1289,6 +1297,23 @@ func (m *Model) handleStreamingResponse(
 		case <-ctx.Done():
 			return
 		}
+	}
+
+	// Check for stream errors after loop ends.
+	streamErr := stream.Err()
+	if streamErr != nil {
+		log.Infof("[Stream] Stream ended with error: %v, error type: %T", streamErr, streamErr)
+		// Check if it's a JSON syntax error (incomplete JSON in SSE stream).
+		if jsonErr, ok := streamErr.(*json.SyntaxError); ok {
+			log.Warnf("[Stream] JSON syntax error detected: %v. This may be caused by incomplete JSON in SSE event data.", jsonErr)
+			// Try to recover by using accumulated data if available.
+			if len(acc.Choices) > 0 {
+				log.Infof("[Stream] Attempting to recover using accumulated data: %d choices available", len(acc.Choices))
+				// Continue to sendFinalResponse which will handle the error gracefully.
+			}
+		}
+	} else {
+		log.Infof("[Stream] Stream completed successfully. Accumulated choices: %d", len(acc.Choices))
 	}
 
 	// Send final response with usage information if available.
@@ -1456,10 +1481,12 @@ func (m *Model) createPartialResponse(chunk openai.ChatCompletionChunk) *model.R
 		var toolCalls []model.ToolCall
 		if m.showToolCallDelta &&
 			len(chunk.Choices[0].Delta.ToolCalls) > 0 {
+			log.Infof("[PartialResponse] Found tool calls in delta: count=%d", len(chunk.Choices[0].Delta.ToolCalls))
 			toolCalls = make(
 				[]model.ToolCall, 0,
 				len(chunk.Choices[0].Delta.ToolCalls))
-			for _, toolCall := range chunk.Choices[0].Delta.ToolCalls {
+			for idx, toolCall := range chunk.Choices[0].Delta.ToolCalls {
+				log.Infof("[PartialResponse] Tool call %d: Name=%s, ID=%s, Args=%q", idx, toolCall.Function.Name, toolCall.ID, toolCall.Function.Arguments)
 				var indexPtr *int
 				if toolCall.Index != 0 {
 					index := int(toolCall.Index)
@@ -1504,6 +1531,10 @@ func (m *Model) sendFinalResponse(
 	responseChan chan<- *model.Response,
 ) {
 	if stream.Err() == nil {
+		log.Infof("[FinalResponse] Stream completed without error. Accumulator: Choices=%d", len(acc.Choices))
+		if len(acc.Choices) > 0 {
+			log.Infof("[FinalResponse] First choice: ToolCalls=%d, Content=%q", len(acc.Choices[0].Message.ToolCalls), acc.Choices[0].Message.Content)
+		}
 		// Check accumulated tool calls (batch processing after streaming is complete).
 		var hasToolCall bool
 		var accumulatedToolCalls []model.ToolCall
@@ -1548,9 +1579,44 @@ func (m *Model) sendFinalResponse(
 		}
 	} else {
 		// Send error response.
+		streamErr := stream.Err()
+		log.Infof("[FinalResponse] Stream ended with error: %v, error type: %T", streamErr, streamErr)
+		if streamErr != nil {
+			log.Infof("[FinalResponse] Error message: %s", streamErr.Error())
+			// If it's a JSON syntax error, try to recover with accumulated data.
+			if jsonErr, ok := streamErr.(*json.SyntaxError); ok {
+				log.Warnf("[FinalResponse] JSON syntax error detected: offset=%d. Attempting recovery with accumulated data.", jsonErr.Offset)
+				// If we have accumulated data, try to send a partial response instead of error.
+				if len(acc.Choices) > 0 && acc.Choices[0].Message.Content != "" {
+					log.Infof("[FinalResponse] Recovering with accumulated content: %q", acc.Choices[0].Message.Content)
+					recoveryResponse := &model.Response{
+						ID:        acc.ID,
+						Object:    model.ObjectTypeChatCompletion,
+						Created:   acc.Created,
+						Model:     acc.Model,
+						Timestamp: time.Now(),
+						Done:      true,
+						IsPartial: false,
+						Choices: []model.Choice{{
+							Message: model.Message{
+								Role:    model.RoleAssistant,
+								Content: acc.Choices[0].Message.Content,
+							},
+						}},
+					}
+					select {
+					case responseChan <- recoveryResponse:
+						log.Infof("[FinalResponse] Successfully sent recovery response")
+						return
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
 		errorResponse := &model.Response{
 			Error: &model.ResponseError{
-				Message: stream.Err().Error(),
+				Message: streamErr.Error(),
 				Type:    model.ErrorTypeStreamError,
 			},
 			Timestamp: time.Now(),
@@ -1564,14 +1630,111 @@ func (m *Model) sendFinalResponse(
 	}
 }
 
+// sanitizeToolCallArguments cleans and validates tool call arguments from streaming responses.
+// It handles cases where SSE streams may contain incomplete JSON fragments or non-JSON text.
+// Returns cleaned JSON bytes that can be safely parsed.
+func sanitizeToolCallArguments(args string) []byte {
+	log.Infof("[ToolArgs] Sanitizing tool call arguments, length=%d, content=%q", len(args), args)
+	if args == "" {
+		log.Infof("[ToolArgs] Empty arguments, returning empty object")
+		return []byte("{}")
+	}
+	// First check if the arguments are valid JSON.
+	if json.Valid([]byte(args)) {
+		log.Infof("[ToolArgs] Arguments are valid JSON, returning as-is")
+		return []byte(args)
+	}
+	log.Infof("[ToolArgs] Arguments are not valid JSON, attempting to extract JSON object")
+	// Try to extract the first complete JSON object from the string.
+	// This handles cases where SSE streams contain non-JSON prefixes or incomplete JSON.
+	jsonStr, found := extractFirstJSONObjectFromString(args)
+	if found && json.Valid([]byte(jsonStr)) {
+		log.Infof("[ToolArgs] Successfully extracted JSON object, length=%d, content=%q", len(jsonStr), jsonStr)
+		return []byte(jsonStr)
+	}
+	// If extraction failed, log a warning and return empty object as fallback.
+	log.Warnf("[ToolArgs] Failed to parse tool call arguments as valid JSON, using empty object. Original args: %s", args)
+	return []byte("{}")
+}
+
+// extractFirstJSONObjectFromString extracts the first balanced top-level JSON object from a string.
+func extractFirstJSONObjectFromString(s string) (string, bool) {
+	start := findJSONStartInString(s)
+	if start == -1 {
+		return "", false
+	}
+	return scanBalancedJSONInString(s, start)
+}
+
+// findJSONStartInString finds the index of the first opening bracket in s.
+func findJSONStartInString(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' || s[i] == '[' {
+			return i
+		}
+	}
+	return -1
+}
+
+// scanBalancedJSONInString scans a string for a balanced JSON object.
+func scanBalancedJSONInString(s string, start int) (string, bool) {
+	stack := make([]byte, 0, 8)
+	inString := false
+	escaped := false
+
+	for i := start; i < len(s); i++ {
+		c := s[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if inString {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			default:
+			}
+			continue
+		}
+
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, c)
+		case '}', ']':
+			if len(stack) == 0 {
+				return "", false
+			}
+			top := stack[len(stack)-1]
+			if (top == '{' && c == '}') || (top == '[' && c == ']') {
+				stack = stack[:len(stack)-1]
+				if len(stack) == 0 {
+					return s[start : i+1], true
+				}
+			} else {
+				return "", false
+			}
+		default:
+		}
+	}
+	return "", false
+}
+
 // processAccumulatedToolCalls processes accumulated tool calls.
 func (m *Model) processAccumulatedToolCalls(
 	acc openai.ChatCompletionAccumulator,
 	idToIndexMap map[string]int,
 ) []model.ToolCall {
+	log.Infof("[ToolCalls] Processing accumulated tool calls, count=%d", len(acc.Choices[0].Message.ToolCalls))
 	accumulatedToolCalls := make([]model.ToolCall, 0, len(acc.Choices[0].Message.ToolCalls))
 
 	for i, toolCall := range acc.Choices[0].Message.ToolCalls {
+		log.Infof("[ToolCalls] Processing tool call %d: Name=%s, ID=%s, Args=%q", i, toolCall.Function.Name, toolCall.ID, toolCall.Function.Arguments)
 		// if openai return function tool call start with index 1 or more
 		// ChatCompletionAccumulator will return empty tool call for index like 0, skip it.
 		if toolCall.Function.Name == "" && toolCall.ID == "" {
@@ -1593,13 +1756,18 @@ func (m *Model) processAccumulatedToolCalls(
 			synthesizedID = fmt.Sprintf("auto_call_%d", originalIndex)
 		}
 
+		// Sanitize tool call arguments to handle incomplete JSON from streaming responses.
+		// This is especially important for APIs which may return non-JSON text or incomplete JSON fragments.
+		sanitizedArgs := sanitizeToolCallArguments(toolCall.Function.Arguments)
+		log.Infof("[ToolCalls] After sanitization: Args=%q", string(sanitizedArgs))
+
 		accumulatedToolCalls = append(accumulatedToolCalls, model.ToolCall{
 			Index: func() *int { idx := originalIndex; return &idx }(),
 			ID:    synthesizedID,
 			Type:  functionToolType, // OpenAI supports function tools for now.
 			Function: model.FunctionDefinitionParam{
 				Name:      toolCall.Function.Name,
-				Arguments: []byte(toolCall.Function.Arguments),
+				Arguments: sanitizedArgs,
 			},
 		})
 	}

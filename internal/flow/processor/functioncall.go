@@ -80,6 +80,97 @@ type subAgentCall struct {
 	Message string `json:"message,omitempty"`
 }
 
+// sanitizeToolCallArguments cleans and validates tool call arguments from streaming responses.
+// It handles cases where SSE streams may contain incomplete JSON fragments or non-JSON text.
+// Returns cleaned JSON bytes that can be safely parsed.
+func sanitizeToolCallArguments(args []byte) []byte {
+	if len(args) == 0 {
+		return []byte("{}")
+	}
+	// First check if the arguments are valid JSON.
+	if json.Valid(args) {
+		return args
+	}
+	// Try to extract the first complete JSON object from the string.
+	// This handles cases where SSE streams contain non-JSON prefixes or incomplete JSON.
+	argsStr := string(args)
+	jsonStr, found := extractFirstJSONObjectFromBytes(argsStr)
+	if found && json.Valid([]byte(jsonStr)) {
+		return []byte(jsonStr)
+	}
+	// If extraction failed, log a warning and return empty object as fallback.
+	log.Warnf("Failed to parse tool call arguments as valid JSON, using empty object. Original args: %s", argsStr)
+	return []byte("{}")
+}
+
+// extractFirstJSONObjectFromBytes extracts the first balanced top-level JSON object from a string.
+func extractFirstJSONObjectFromBytes(s string) (string, bool) {
+	start := findJSONStartInBytes(s)
+	if start == -1 {
+		return "", false
+	}
+	return scanBalancedJSONInBytes(s, start)
+}
+
+// findJSONStartInBytes finds the index of the first opening bracket in s.
+func findJSONStartInBytes(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' || s[i] == '[' {
+			return i
+		}
+	}
+	return -1
+}
+
+// scanBalancedJSONInBytes scans a string for a balanced JSON object.
+func scanBalancedJSONInBytes(s string, start int) (string, bool) {
+	stack := make([]byte, 0, 8)
+	inString := false
+	escaped := false
+
+	for i := start; i < len(s); i++ {
+		c := s[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if inString {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			default:
+			}
+			continue
+		}
+
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, c)
+		case '}', ']':
+			if len(stack) == 0 {
+				return "", false
+			}
+			top := stack[len(stack)-1]
+			if (top == '{' && c == '}') || (top == '[' && c == ']') {
+				stack = stack[:len(stack)-1]
+				if len(stack) == 0 {
+					return s[start : i+1], true
+				}
+			} else {
+				return "", false
+			}
+		default:
+		}
+	}
+	return "", false
+}
+
 // FunctionCallResponseProcessor handles agent transfer operations after LLM responses.
 type FunctionCallResponseProcessor struct {
 	enableParallelTools bool
@@ -788,7 +879,10 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 	toolCall model.ToolCall,
 	tl tool.CallableTool,
 ) (any, error) {
-	result, err := tl.Call(ctx, toolCall.Function.Arguments)
+	// Sanitize tool call arguments before execution to handle incomplete JSON
+	// from streaming responses (e.g., Venus API SSE streams).
+	sanitizedArgs := sanitizeToolCallArguments(toolCall.Function.Arguments)
+	result, err := tl.Call(ctx, sanitizedArgs)
 	if err != nil {
 		log.Errorf("CallableTool execution failed for %s: %v", toolCall.Function.Name, err)
 		return nil, fmt.Errorf("%s: %w", ErrorCallableToolExecution, err)
@@ -804,7 +898,10 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 	tl tool.StreamableTool,
 	eventChan chan<- *event.Event,
 ) (any, error) {
-	reader, err := tl.StreamableCall(ctx, toolCall.Function.Arguments)
+	// Sanitize tool call arguments before execution to handle incomplete JSON
+	// from streaming responses (e.g., Venus API SSE streams).
+	sanitizedArgs := sanitizeToolCallArguments(toolCall.Function.Arguments)
+	reader, err := tl.StreamableCall(ctx, sanitizedArgs)
 	if err != nil {
 		log.Errorf("StreamableTool execution failed for %s: %v", toolCall.Function.Name, err)
 		return nil, fmt.Errorf("%s: %w", ErrorStreamableToolExecution, err)
