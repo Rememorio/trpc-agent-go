@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
@@ -1824,6 +1826,10 @@ func (e *Executor) emitNodeErrorEvent(
 // handleNodeResult handles the result from node execution.
 func (e *Executor) handleNodeResult(ctx context.Context, invocation *agent.Invocation,
 	execCtx *ExecutionContext, t *Task, result any) (bool, error) {
+	ctx, span := trace.Tracer.Start(ctx, "handle_node_result")
+	defer span.End()
+	span.SetAttributes(attribute.String("trpc.go.agent.node_id", t.NodeID))
+
 	// Even if result is nil, static edge writes should still occur so that
 	// downstream nodes can be triggered. Only skip static writes when we
 	// have explicit routing (Command with GoTo) or fan-out ([]*Command).
@@ -1834,7 +1840,10 @@ func (e *Executor) handleNodeResult(ctx context.Context, invocation *agent.Invoc
 		// Handle node result by concrete type.
 		switch v := result.(type) {
 		case State: // State update.
+			_, updateSpan := trace.Tracer.Start(ctx, "update_state_from_result")
 			e.updateStateFromResult(execCtx, v)
+			updateSpan.SetAttributes(attribute.Int("trpc.go.agent.state_keys", len(v)))
+			updateSpan.End()
 		case *Command: // Single command.
 			if v != nil {
 				// Resolve GoTo via per-node ends if provided.
@@ -1873,7 +1882,10 @@ func (e *Executor) handleNodeResult(ctx context.Context, invocation *agent.Invoc
 	// nodes with nil results (e.g., pure routing/start nodes) still trigger
 	// their outgoing static edges.
 	if !routed && len(t.Writes) > 0 {
+		ctx, writeSpan := trace.Tracer.Start(ctx, "process_channel_writes")
+		writeSpan.SetAttributes(attribute.Int("trpc.go.agent.write_count", len(t.Writes)))
 		e.processChannelWrites(ctx, invocation, execCtx, t.TaskID, t.Writes)
+		writeSpan.End()
 	}
 
 	return routed, nil

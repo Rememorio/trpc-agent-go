@@ -1184,12 +1184,17 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 		}
 
 		// Process agent event stream and capture completion state.
+		ctx, processSpan := trace.Tracer.Start(ctx, "process_subgraph_event_stream")
+		processSpan.SetAttributes(attribute.String("trpc.go.agent.subgraph_name", agentName))
 		lastResponse, finalState, rawDelta, err := processAgentEventStream(
 			ctx, agentEventChan, nodeCallbacks, nodeID, state, eventChan, agentName,
 		)
 		if err != nil {
+			processSpan.SetAttributes(attribute.String("trpc.go.agent.error", err.Error()))
+			processSpan.End()
 			return nil, fmt.Errorf("failed to process agent event stream: %w", err)
 		}
+		processSpan.End()
 		// Emit agent execution complete event.
 		endTime := time.Now()
 		emitAgentCompleteEvent(ctx, eventChan, invocationID, nodeID, startTime, endTime)
@@ -1224,7 +1229,9 @@ func processAgentEventStream(
 	var finalState State
 	var rawDelta map[string][]byte
 
+	eventCount := 0
 	for agentEvent := range agentEventChan {
+		eventCount++
 		// Run node callbacks for this event.
 		if nodeCallbacks != nil {
 			for _, callback := range nodeCallbacks.AgentEvent {
@@ -1265,6 +1272,10 @@ func processAgentEventStream(
 			finalState = tmp
 			rawDelta = agentEvent.StateDelta
 		}
+	}
+
+	if span := oteltrace.SpanFromContext(ctx); span.IsRecording() {
+		span.SetAttributes(attribute.Int("trpc.go.agent.event_count", eventCount))
 	}
 
 	return lastResponse, finalState, rawDelta, nil
