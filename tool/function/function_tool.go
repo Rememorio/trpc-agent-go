@@ -173,10 +173,13 @@ func NewFunctionTool[I, O any](fn func(context.Context, I) (O, error), opts ...O
 // Returns:
 //   - The result of the function execution or an error if unmarshalling fails.
 func (ft *FunctionTool[I, O]) Call(ctx context.Context, jsonArgs []byte) (any, error) {
+	log.Infof("[FunctionTool.Call] RAW jsonArgs received: tool=%s, args_len=%d, args=%q", ft.name, len(jsonArgs), string(jsonArgs))
 	var input I
 	if err := ft.unmarshaler.Unmarshal(jsonArgs, &input); err != nil {
+		log.Errorf("[FunctionTool.Call] Unmarshal failed: tool=%s, error=%v, jsonArgs=%q", ft.name, err, string(jsonArgs))
 		return nil, err
 	}
+	log.Infof("[FunctionTool.Call] Unmarshal success: tool=%s, input=%+v", ft.name, input)
 	return ft.fn(ctx, input)
 }
 
