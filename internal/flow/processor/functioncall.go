@@ -80,10 +80,10 @@ type subAgentCall struct {
 	Message string `json:"message,omitempty"`
 }
 
-// sanitizeToolCallArguments cleans and validates tool call arguments from streaming responses.
+// SanitizeToolCallArguments cleans and validates tool call arguments from streaming responses.
 // It handles cases where SSE streams may contain incomplete JSON fragments or non-JSON text.
 // Returns cleaned JSON bytes that can be safely parsed.
-func sanitizeToolCallArguments(args []byte) []byte {
+func SanitizeToolCallArguments(args []byte) []byte {
 	if len(args) == 0 {
 		return []byte("{}")
 	}
@@ -879,14 +879,19 @@ func (p *FunctionCallResponseProcessor) executeCallableTool(
 	toolCall model.ToolCall,
 	tl tool.CallableTool,
 ) (any, error) {
+	log.Infof("[ToolExec] Executing callable tool: name=%s, raw_args_len=%d, raw_args=%q",
+		toolCall.Function.Name, len(toolCall.Function.Arguments), toolCall.Function.Arguments)
 	// Sanitize tool call arguments before execution to handle incomplete JSON
 	// from streaming responses (e.g., Venus API SSE streams).
-	sanitizedArgs := sanitizeToolCallArguments(toolCall.Function.Arguments)
+	sanitizedArgs := SanitizeToolCallArguments(toolCall.Function.Arguments)
+	log.Infof("[ToolExec] Sanitized args: sanitized_len=%d, sanitized_args=%q",
+		len(sanitizedArgs), string(sanitizedArgs))
 	result, err := tl.Call(ctx, sanitizedArgs)
 	if err != nil {
-		log.Errorf("CallableTool execution failed for %s: %v", toolCall.Function.Name, err)
+		log.Errorf("[ToolExec] CallableTool execution failed for %s: %v", toolCall.Function.Name, err)
 		return nil, fmt.Errorf("%s: %w", ErrorCallableToolExecution, err)
 	}
+	log.Infof("[ToolExec] CallableTool execution succeeded for %s", toolCall.Function.Name)
 	return result, nil
 }
 
@@ -900,7 +905,7 @@ func (f *FunctionCallResponseProcessor) executeStreamableTool(
 ) (any, error) {
 	// Sanitize tool call arguments before execution to handle incomplete JSON
 	// from streaming responses (e.g., Venus API SSE streams).
-	sanitizedArgs := sanitizeToolCallArguments(toolCall.Function.Arguments)
+	sanitizedArgs := SanitizeToolCallArguments(toolCall.Function.Arguments)
 	reader, err := tl.StreamableCall(ctx, sanitizedArgs)
 	if err != nil {
 		log.Errorf("StreamableTool execution failed for %s: %v", toolCall.Function.Name, err)

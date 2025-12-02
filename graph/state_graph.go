@@ -25,6 +25,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
+	iprocessor "trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	stateinject "trpc.group/trpc-go/trpc-agent-go/internal/state"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
@@ -1361,7 +1362,10 @@ func runTool(
 		}
 	}
 	if callableTool, ok := t.(tool.CallableTool); ok {
-		result, err := callableTool.Call(ctx, toolCall.Function.Arguments)
+		// Sanitize tool call arguments before execution to handle incomplete JSON
+		// from streaming responses (e.g., Venus API SSE streams).
+		sanitizedArgs := iprocessor.SanitizeToolCallArguments(toolCall.Function.Arguments)
+		result, err := callableTool.Call(ctx, sanitizedArgs)
 		// Run after tool callbacks if they exist.
 		// If the tool returns an error, the callback function will still execute to allow the user to handle the error.
 		if toolCallbacks != nil {

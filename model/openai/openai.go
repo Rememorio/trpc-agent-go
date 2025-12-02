@@ -1529,7 +1529,7 @@ func (m *Model) createPartialResponse(chunk openai.ChatCompletionChunk) *model.R
 				[]model.ToolCall, 0,
 				len(chunk.Choices[0].Delta.ToolCalls))
 			for idx, toolCall := range chunk.Choices[0].Delta.ToolCalls {
-				log.Infof("[PartialResponse] Tool call %d: Name=%s, ID=%s, Args=%q, ArgsLen=%d", 
+				log.Infof("[PartialResponse] Tool call %d: Name=%s, ID=%s, Args=%q, ArgsLen=%d",
 					idx, toolCall.Function.Name, toolCall.ID, toolCall.Function.Arguments, len(toolCall.Function.Arguments))
 				var indexPtr *int
 				if toolCall.Index != 0 {
@@ -1778,7 +1778,7 @@ func (m *Model) processAccumulatedToolCalls(
 	accumulatedToolCalls := make([]model.ToolCall, 0, len(acc.Choices[0].Message.ToolCalls))
 
 	for i, toolCall := range acc.Choices[0].Message.ToolCalls {
-		log.Infof("[ToolCalls] Processing tool call %d: Name=%s, ID=%s, Args=%q, ArgsLen=%d", 
+		log.Infof("[ToolCalls] Processing tool call %d: Name=%s, ID=%s, Args=%q, ArgsLen=%d",
 			i, toolCall.Function.Name, toolCall.ID, toolCall.Function.Arguments, len(toolCall.Function.Arguments))
 		// if openai return function tool call start with index 1 or more
 		// ChatCompletionAccumulator will return empty tool call for index like 0, skip it.
@@ -1803,7 +1803,7 @@ func (m *Model) processAccumulatedToolCalls(
 
 		// Sanitize tool call arguments to handle incomplete JSON from streaming responses.
 		// This is especially important for APIs which may return non-JSON text or incomplete JSON fragments.
-		log.Infof("[ToolCalls] RAW arguments from LLM (before sanitization): tool=%s, id=%s, args_len=%d, args=%q", 
+		log.Infof("[ToolCalls] RAW arguments from LLM (before sanitization): tool=%s, id=%s, args_len=%d, args=%q",
 			toolCall.Function.Name, toolCall.ID, len(toolCall.Function.Arguments), toolCall.Function.Arguments)
 		sanitizedArgs := sanitizeToolCallArguments(toolCall.Function.Arguments)
 		log.Infof("[ToolCalls] After sanitization: Args=%q", string(sanitizedArgs))

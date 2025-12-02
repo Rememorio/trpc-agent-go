@@ -49,18 +49,20 @@ func newMCPTool(mcpToolData mcp.Tool, sessionManager *mcpSessionManager) *mcpToo
 
 // Call implements the Tool interface.
 func (t *mcpTool) Call(ctx context.Context, jsonArgs []byte) (any, error) {
-	log.Debug("Calling MCP tool", "name", t.mcpToolRef.Name)
+	log.Debugf("[MCPTool] Call: name=%s, jsonArgs_len=%d, jsonArgs=%q", t.mcpToolRef.Name, len(jsonArgs), string(jsonArgs))
 
 	// Parse raw arguments.
 	var rawArguments map[string]any
 	if len(jsonArgs) > 0 {
 		if err := json.Unmarshal(jsonArgs, &rawArguments); err != nil {
+			log.Errorf("[MCPTool] Unmarshal failed for %s: %v, jsonArgs=%q", t.mcpToolRef.Name, err, string(jsonArgs))
 			return nil, fmt.Errorf("failed to parse tool arguments: %w", err)
 		}
 	} else {
 		rawArguments = make(map[string]any)
 	}
 
+	log.Debugf("[MCPTool] Unmarshal succeeded for %s", t.mcpToolRef.Name)
 	return t.callOnce(ctx, rawArguments)
 }
 
