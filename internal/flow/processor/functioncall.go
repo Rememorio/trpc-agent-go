@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,11 +92,24 @@ func SanitizeToolCallArguments(args []byte) []byte {
 	if json.Valid(args) {
 		return args
 	}
+
+	argsStr := string(args)
+	log.Debugf("[SanitizeToolCallArguments] Arguments are not valid JSON, attempting to fix common issues: %s", argsStr)
+
+	// Fix common JSON issues from streaming responses
+	fixedArgs := fixCommonJSONIssues(argsStr)
+
+	// Check if the fixed arguments are now valid JSON.
+	if json.Valid([]byte(fixedArgs)) {
+		log.Debugf("[SanitizeToolCallArguments] Fixed JSON successfully: %s", fixedArgs)
+		return []byte(fixedArgs)
+	}
+
 	// Try to extract the first complete JSON object from the string.
 	// This handles cases where SSE streams contain non-JSON prefixes or incomplete JSON.
-	argsStr := string(args)
-	jsonStr, found := extractFirstJSONObjectFromBytes(argsStr)
+	jsonStr, found := extractFirstJSONObjectFromBytes(fixedArgs)
 	if found && json.Valid([]byte(jsonStr)) {
+		log.Debugf("[SanitizeToolCallArguments] Extracted valid JSON object: %s", jsonStr)
 		return []byte(jsonStr)
 	}
 	// If extraction failed, log a warning and return empty object as fallback.
@@ -169,6 +183,29 @@ func scanBalancedJSONInBytes(s string, start int) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// fixCommonJSONIssues attempts to fix common JSON parsing issues from streaming responses.
+func fixCommonJSONIssues(jsonStr string) string {
+	jsonStr = strings.TrimSpace(jsonStr)
+
+	// Count braces and brackets to check if they're balanced
+	openBraces := strings.Count(jsonStr, "{")
+	closeBraces := strings.Count(jsonStr, "}")
+	openBrackets := strings.Count(jsonStr, "[")
+	closeBrackets := strings.Count(jsonStr, "]")
+
+	// Fix missing closing brace
+	if openBraces > closeBraces && strings.HasPrefix(jsonStr, "{") && !strings.HasSuffix(jsonStr, "}") {
+		jsonStr += strings.Repeat("}", openBraces-closeBraces)
+	}
+
+	// Fix missing closing bracket
+	if openBrackets > closeBrackets && strings.HasPrefix(jsonStr, "[") && !strings.HasSuffix(jsonStr, "]") {
+		jsonStr += strings.Repeat("]", openBrackets-closeBrackets)
+	}
+
+	return jsonStr
 }
 
 // FunctionCallResponseProcessor handles agent transfer operations after LLM responses.
