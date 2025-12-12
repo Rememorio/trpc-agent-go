@@ -44,6 +44,7 @@ type Session struct {
 	AppName  string                 `json:"appName"` // AppName is the app name.
 	UserID   string                 `json:"userID"`  // UserID is the user id.
 	State    StateMap               `json:"state"`   // State is the session state with delta support.
+	StateMu  sync.RWMutex           `json:"-"`       // StateMu is the read-write mutex for State.
 	Events   []event.Event          `json:"events"`  // Events is the session events.
 	EventMu  sync.RWMutex           `json:"-"`
 	Tracks   map[Track]*TrackEvents `json:"tracks,omitempty"` // Tracks stores track events.
@@ -96,6 +97,7 @@ func (sess *Session) Clone() *Session {
 	sess.TracksMu.RUnlock()
 
 	// Copy state.
+	sess.StateMu.RLock()
 	if sess.State != nil {
 		for k, v := range sess.State {
 			copiedValue := make([]byte, len(v))
@@ -103,6 +105,7 @@ func (sess *Session) Clone() *Session {
 			copiedSess.State[k] = copiedValue
 		}
 	}
+	sess.StateMu.RUnlock()
 
 	// Copy summaries.
 	sess.SummariesMu.RLock()
@@ -202,6 +205,51 @@ func (sess *Session) GetEventCount() int {
 	return len(sess.Events)
 }
 
+// GetState returns a copy of the session state.
+func (sess *Session) GetState() StateMap {
+	sess.StateMu.RLock()
+	defer sess.StateMu.RUnlock()
+
+	if sess.State == nil {
+		return make(StateMap)
+	}
+	copied := make(StateMap, len(sess.State))
+	for k, v := range sess.State {
+		copiedValue := make([]byte, len(v))
+		copy(copiedValue, v)
+		copied[k] = copiedValue
+	}
+	return copied
+}
+
+// GetStateValue returns a copy of the value for the given key.
+func (sess *Session) GetStateValue(key string) ([]byte, bool) {
+	sess.StateMu.RLock()
+	defer sess.StateMu.RUnlock()
+
+	if sess.State == nil {
+		return nil, false
+	}
+	v, ok := sess.State[key]
+	if !ok {
+		return nil, false
+	}
+	copied := make([]byte, len(v))
+	copy(copied, v)
+	return copied, true
+}
+
+// SetStateValue sets a value in the session state.
+func (sess *Session) SetStateValue(key string, value []byte) {
+	sess.StateMu.Lock()
+	defer sess.StateMu.Unlock()
+
+	if sess.State == nil {
+		sess.State = make(StateMap)
+	}
+	sess.State[key] = value
+}
+
 // AppendTrackEvent appends a track event to the session.
 func (sess *Session) AppendTrackEvent(event *TrackEvent, opts ...Option) error {
 	if sess == nil {
@@ -210,12 +258,16 @@ func (sess *Session) AppendTrackEvent(event *TrackEvent, opts ...Option) error {
 	if event == nil {
 		return fmt.Errorf("track event is nil")
 	}
+	sess.StateMu.Lock()
 	if sess.State == nil {
 		sess.State = make(StateMap)
 	}
 	if err := ensureTrackExists(sess.State, event.Track); err != nil {
+		sess.StateMu.Unlock()
 		return fmt.Errorf("ensure track indexed: %w", err)
 	}
+	sess.StateMu.Unlock()
+
 	sess.TracksMu.Lock()
 	defer sess.TracksMu.Unlock()
 	if sess.Tracks == nil {
@@ -289,16 +341,18 @@ func (sess *Session) UpdateUserSession(event *event.Event, opts ...Option) {
 		sess.EventMu.Lock()
 		sess.Events = append(sess.Events, *event)
 
-		// Apply filtering options
+		// Apply filtering options.
 		sess.ApplyEventFiltering(opts...)
 		sess.EventMu.Unlock()
 	}
 
+	sess.StateMu.Lock()
 	sess.UpdatedAt = time.Now()
 	if sess.State == nil {
 		sess.State = make(StateMap)
 	}
-	sess.ApplyEventStateDelta(event)
+	sess.applyEventStateDeltaLocked(event)
+	sess.StateMu.Unlock()
 }
 
 // ApplyEventFiltering applies event number and time filtering to session events
@@ -352,13 +406,27 @@ func (sess *Session) ApplyEventFiltering(opts ...Option) {
 }
 
 // ApplyEventStateDelta merges the state delta of the event into the session state.
+// This method acquires StateMu lock internally.
 func (sess *Session) ApplyEventStateDelta(e *event.Event) {
 	if sess == nil || e == nil {
 		log.Info("session or event is nil")
 		return
 	}
+	sess.StateMu.Lock()
+	defer sess.StateMu.Unlock()
 	if sess.State == nil {
 		sess.State = make(StateMap)
+	}
+	for key, value := range e.StateDelta {
+		sess.State[key] = value
+	}
+}
+
+// applyEventStateDeltaLocked merges the state delta without acquiring lock.
+// Caller must hold sess.StateMu.
+func (sess *Session) applyEventStateDeltaLocked(e *event.Event) {
+	if e == nil {
+		return
 	}
 	for key, value := range e.StateDelta {
 		sess.State[key] = value
