@@ -254,6 +254,7 @@ func (r *runner) Run(
 	message model.Message,
 	runOpts ...agent.RunOption,
 ) (<-chan *event.Event, error) {
+	startTime := time.Now()
 	ro := agent.RunOptions{RequestID: uuid.NewString()}
 	for _, opt := range runOpts {
 		opt(&ro)
@@ -263,6 +264,7 @@ func (r *runner) Run(
 	}
 
 	execCtx, execCancel := r.newExecutionContext(ctx, ro)
+	costCtx := time.Since(startTime)
 
 	// Resolve or create the session for this user and conversation.
 	sessionKey := session.Key{
@@ -271,18 +273,23 @@ func (r *runner) Run(
 		SessionID: sessionID,
 	}
 
+	sessionStart := time.Now()
 	sess, err := r.getOrCreateSession(execCtx, sessionKey)
+	costSession := time.Since(sessionStart)
 	if err != nil {
 		execCancel()
 		return nil, err
 	}
 
+	agentStart := time.Now()
 	ag, err := r.selectAgent(execCtx, ro)
+	costSelectAgent := time.Since(agentStart)
 	if err != nil {
 		execCancel()
 		return nil, fmt.Errorf("select agent: %w", err)
 	}
 
+	invocationStart := time.Now()
 	invocation := agent.NewInvocation(
 		agent.WithInvocationSession(sess),
 		agent.WithInvocationMessage(message),
@@ -293,7 +300,9 @@ func (r *runner) Run(
 		agent.WithInvocationEventFilterKey(r.appName),
 		agent.WithInvocationPlugins(r.pluginManager),
 	)
+	costInvocation := time.Since(invocationStart)
 
+	registerStart := time.Now()
 	handle, err := r.registerRun(
 		ro.RequestID,
 		RunStatus{
@@ -305,15 +314,18 @@ func (r *runner) Run(
 		},
 		execCancel,
 	)
+	costRegister := time.Since(registerStart)
 	if err != nil {
 		execCancel()
 		return nil, err
 	}
 
+	var costSeed time.Duration
 	// If caller provided a history via RunOptions and the session is empty,
 	// persist that history into the session exactly once, so subsequent turns
 	// and tool calls build on the same canonical transcript.
 	if len(ro.Messages) > 0 && sess.GetEventCount() == 0 {
+		seedStart := time.Now()
 		for _, msg := range ro.Messages {
 			author := ag.Info().Name
 			if msg.Role == model.RoleUser {
@@ -338,10 +350,13 @@ func (r *runner) Run(
 				return nil, appendErr
 			}
 		}
+		costSeed = time.Since(seedStart)
 	}
 
+	var costAppendUser time.Duration
 	// Append the incoming user message to the session if it has content.
 	if message.Content != "" && shouldAppendUserMessage(message, ro.Messages) {
+		appendStart := time.Now()
 		evt := event.NewResponseEvent(
 			invocation.InvocationID,
 			authorUser,
@@ -354,7 +369,15 @@ func (r *runner) Run(
 			execCancel()
 			return nil, err
 		}
+		costAppendUser = time.Since(appendStart)
 	}
+
+	log.InfofContext(execCtx,
+		"runner run prepare cost_total=%s, cost_ctx=%s, cost_session=%s, "+
+			"cost_select_agent=%s, cost_invocation=%s, cost_register=%s, "+
+			"cost_seed=%s, cost_append_user=%s",
+		time.Since(startTime), costCtx, costSession, costSelectAgent, costInvocation,
+		costRegister, costSeed, costAppendUser)
 
 	// Ensure the invocation can be accessed by downstream components (e.g., tools)
 	// by embedding it into the context. This is necessary for tools like
