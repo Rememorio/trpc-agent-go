@@ -228,6 +228,7 @@ func (s *Service) GetSession(
 	}
 	opt := applyOptions(opts...)
 
+	startTime := time.Now()
 	hctx := &session.GetSessionContext{
 		Context: ctx,
 		Key:     key,
@@ -240,6 +241,12 @@ func (s *Service) GetSession(
 	if err != nil {
 		return nil, fmt.Errorf("redis session service get session state failed: %w", err)
 	}
+	status := "hit"
+	if sess == nil {
+		status = "miss"
+	}
+	log.InfofContext(ctx, "redis session get session done, key=%s, status=%s, cost=%s",
+		s.getSessionStateKey(key), status, time.Since(startTime))
 	return sess, nil
 }
 
@@ -865,16 +872,23 @@ func (s *Service) getSession(
 	limit int,
 	afterTime time.Time,
 ) (*session.Session, error) {
+	startTime := time.Now()
+	metaStart := time.Now()
 	sessState, summariesCmd, appState, userState, err := s.fetchSessionMeta(
 		ctx, key)
+	metaCost := time.Since(metaStart)
 	if err != nil {
 		return nil, err
 	}
 	if sessState == nil {
+		log.InfofContext(ctx, "redis session fetch meta done, key=%s, status=miss, cost=%s",
+			s.getSessionStateKey(key), metaCost)
 		return nil, nil
 	}
 
+	eventsStart := time.Now()
 	events, err := s.getEventsList(ctx, []session.Key{key}, limit, afterTime)
+	eventsCost := time.Since(eventsStart)
 	if err != nil {
 		return nil, fmt.Errorf("get events failed: %w", err)
 	}
@@ -887,12 +901,18 @@ func (s *Service) getSession(
 		session.WithSessionUpdatedAt(sessState.UpdatedAt),
 	)
 
+	tracksStart := time.Now()
 	trackEvents, err := s.getTrackEvents(ctx, []session.Key{key}, []*SessionState{sessState}, limit, afterTime)
+	tracksCost := time.Since(tracksStart)
 	if err != nil {
 		return nil, fmt.Errorf("get track events failed: %w", err)
 	}
 	attachTrackEvents(sess, trackEvents)
 	attachSummaries(sess, summariesCmd)
+	log.InfofContext(ctx,
+		"redis session get session detail, key=%s, cost_total=%s, cost_meta=%s, "+
+			"cost_events=%s, cost_tracks=%s",
+		s.getSessionStateKey(key), time.Since(startTime), metaCost, eventsCost, tracksCost)
 	return mergeState(appState, userState, sess), nil
 }
 
