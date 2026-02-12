@@ -68,7 +68,7 @@ import (
 
 var (
 	modelName      = flag.String("model", "deepseek-chat", "Name of the model to use")
-	memServiceName = flag.String("memory", "inmemory", "Name of the memory service to use, inmemory / redis / mysql / postgres / pgvector")
+	memServiceName = flag.String("memory", "inmemory", "Name of the memory service to use, inmemory / redis / mysql / postgres / pgvector / mem0")
 	streaming      = flag.Bool("streaming", true, "Enable streaming mode for responses")
 	softDelete     = flag.Bool("soft-delete", false, "Enable soft delete for MySQL/PostgreSQL memory service")
 )

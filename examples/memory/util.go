@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
+	memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
 	memorymysql "trpc.group/trpc-go/trpc-agent-go/memory/mysql"
 	memorypgvector "trpc.group/trpc-go/trpc-agent-go/memory/pgvector"
 	memorypostgres "trpc.group/trpc-go/trpc-agent-go/memory/postgres"
@@ -42,6 +43,7 @@ const (
 	MemoryPostgres MemoryType = "postgres"
 	MemoryPGVector MemoryType = "pgvector"
 	MemoryMySQL    MemoryType = "mysql"
+	MemoryMem0     MemoryType = "mem0"
 )
 
 // MemoryServiceConfig holds configuration for creating a memory service.
@@ -111,6 +113,8 @@ func NewMemoryServiceByType(memoryType MemoryType, cfg MemoryServiceConfig) (mem
 		return newPGVectorMemoryService(cfg)
 	case MemoryMySQL:
 		return newMySQLMemoryService(cfg)
+	case MemoryMem0:
+		return newMem0MemoryService(cfg)
 	case MemoryInMemory:
 		fallthrough
 	default:
@@ -309,6 +313,46 @@ func newMySQLMemoryService(cfg MemoryServiceConfig) (memory.Service, error) {
 	return memorymysql.NewService(opts...)
 }
 
+func newMem0MemoryService(cfg MemoryServiceConfig) (memory.Service, error) {
+	apiKey := os.Getenv("MEM0_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("MEM0_API_KEY is required")
+	}
+
+	host := GetEnvOrDefault("MEM0_HOST", "")
+	orgID := GetEnvOrDefault("MEM0_ORG_ID", "")
+	projectID := GetEnvOrDefault("MEM0_PROJECT_ID", "")
+
+	opts := []memorymem0.ServiceOpt{
+		memorymem0.WithAPIKey(apiKey),
+	}
+	if host != "" {
+		opts = append(opts, memorymem0.WithHost(host))
+	}
+	if orgID != "" || projectID != "" {
+		opts = append(opts, memorymem0.WithOrgProject(orgID, projectID))
+	}
+
+	// Configure extractor for auto memory mode if provided.
+	if cfg.Extractor != nil {
+		opts = append(opts, memorymem0.WithExtractor(cfg.Extractor))
+		if cfg.AsyncMemoryNum > 0 {
+			opts = append(opts, memorymem0.WithAsyncMemoryNum(cfg.AsyncMemoryNum))
+		}
+		if cfg.MemoryQueueSize > 0 {
+			opts = append(opts, memorymem0.WithMemoryQueueSize(cfg.MemoryQueueSize))
+		}
+		if cfg.MemoryJobTimeout > 0 {
+			opts = append(opts, memorymem0.WithMemoryJobTimeout(cfg.MemoryJobTimeout))
+		}
+	} else {
+		// Keep manual memory demo behavior consistent with other backends.
+		opts = append(opts, memorymem0.WithIngestEnabled(false))
+	}
+
+	return memorymem0.NewService(opts...)
+}
+
 // NewRunner creates a runner with the given memory service and configuration.
 func NewRunner(memoryService memory.Service, cfg RunnerConfig) runner.Runner {
 	modelInstance := openai.New(cfg.ModelName)
@@ -380,6 +424,9 @@ func PrintMemoryInfo(memoryType MemoryType, softDelete bool) {
 		database := GetEnvOrDefault("MYSQL_DATABASE", "trpc_agent_go")
 		fmt.Printf("MySQL: %s:%s/%s\n", host, port, database)
 		fmt.Printf("Soft delete: %t\n", softDelete)
+	case MemoryMem0:
+		host := GetEnvOrDefault("MEM0_HOST", "https://api.mem0.ai")
+		fmt.Printf("mem0: %s\n", host)
 	default:
 		fmt.Printf("In-memory\n")
 	}
