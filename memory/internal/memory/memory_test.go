@@ -11,6 +11,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -119,10 +120,10 @@ func TestBuildSearchTokens(t *testing.T) {
 		{"english with numbers", "test123 abc456", []string{"test123", "abc456"}},
 		{"mixed case", "Hello World", []string{"hello", "world"}},
 		{"chinese single character", "中", []string{"中"}},
-		{"chinese bigrams", "中文测试", []string{"中文", "文测", "测试"}},
-		{"chinese with punctuation", "中文，测试！", []string{"中文", "文测", "测试"}},
-		{"chinese with spaces", "中文 测试", []string{"中文", "文测", "测试"}},
-		{"mixed chinese and english", "hello中文world", []string{"he", "el", "ll", "lo", "o中", "中文", "文w", "wo", "or", "rl", "ld"}},
+		{"chinese bigrams", "中文测试", []string{"中文测试", "中文", "文测", "测试"}},
+		{"chinese with punctuation", "中文，测试！", []string{"中文", "测试"}},
+		{"chinese with spaces", "中文 测试", []string{"中文", "测试"}},
+		{"mixed chinese and english", "hello中文world", []string{"hello", "中文", "world"}},
 		{"only punctuation", "!@#$%", []string{}},
 		{"only stopwords", "the and or", []string{}},
 	}
@@ -158,7 +159,8 @@ func TestBuildSearchTokens_EdgeCases(t *testing.T) {
 
 	t.Run("mixed CJK and punctuation", func(t *testing.T) {
 		result := BuildSearchTokens("中文，测试！")
-		expected := []string{"中文", "文测", "测试"}
+		// Punctuation splits into "中文" and "测试" segments.
+		expected := []string{"中文", "测试"}
 		assert.Equal(t, expected, result)
 	})
 }
@@ -491,9 +493,10 @@ func TestBuildSearchTokens_Duplicates(t *testing.T) {
 	// Test deduplication in bigrams.
 	result := BuildSearchTokens("中中中中")
 	assert.NotNil(t, result)
-	// Should have deduplicated "中中" bigram.
-	assert.Len(t, result, 1)
-	assert.Equal(t, "中中", result[0])
+	// Should have the whole segment plus deduplicated bigram.
+	assert.Len(t, result, 2)
+	assert.Equal(t, "中中中中", result[0])
+	assert.Equal(t, "中中", result[1])
 }
 
 func TestMatchMemoryEntry_EmptyTokensWithTopics(t *testing.T) {
@@ -876,6 +879,189 @@ func TestShouldIncludeAutoMemoryTool(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := shouldIncludeAutoMemoryTool(tt.toolName, tt.enabledTools)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestRankSearchResults(t *testing.T) {
+	now := time.Now()
+	earlier := now.Add(-time.Hour)
+
+	// Create test entries that simulate the "用户姓名" problem.
+	entryUserName := &memory.Entry{
+		ID:      "1",
+		Memory:  &memory.Memory{Memory: "用户姓名是张三", Topics: []string{"姓名"}},
+		UserID:  "u1",
+		AppName: "app",
+		// Older entry but more relevant.
+		CreatedAt: earlier,
+		UpdatedAt: earlier,
+	}
+	entryUserGeneric := &memory.Entry{
+		ID:      "2",
+		Memory:  &memory.Memory{Memory: "用户喜欢喝咖啡", Topics: []string{"偏好"}},
+		UserID:  "u1",
+		AppName: "app",
+		// Newer entry but less relevant.
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	entryUserGeneric2 := &memory.Entry{
+		ID:      "3",
+		Memory:  &memory.Memory{Memory: "用户在北京工作", Topics: []string{"工作"}},
+		UserID:  "u1",
+		AppName: "app",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	entryUnrelated := &memory.Entry{
+		ID:      "4",
+		Memory:  &memory.Memory{Memory: "天气预报显示明天晴", Topics: []string{"天气"}},
+		UserID:  "u1",
+		AppName: "app",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	entries := []*memory.Entry{
+		entryUserGeneric, entryUserGeneric2,
+		entryUserName, entryUnrelated,
+	}
+
+	t.Run("exact phrase ranks first", func(t *testing.T) {
+		results := RankSearchResults(entries, "用户姓名", 10)
+		require.NotEmpty(t, results)
+		// The entry containing "用户姓名" phrase should rank
+		// first.
+		assert.Equal(t, "1", results[0].ID,
+			"entry with exact phrase '用户姓名' should rank first")
+	})
+
+	t.Run("unrelated entry not returned", func(t *testing.T) {
+		results := RankSearchResults(entries, "用户姓名", 10)
+		for _, r := range results {
+			assert.NotEqual(t, "4", r.ID,
+				"unrelated entry should not be in results")
+		}
+	})
+
+	t.Run("max results truncation", func(t *testing.T) {
+		results := RankSearchResults(entries, "用户", 2)
+		assert.LessOrEqual(t, len(results), 2)
+	})
+
+	t.Run("empty query returns nil", func(t *testing.T) {
+		results := RankSearchResults(entries, "", 10)
+		assert.Nil(t, results)
+	})
+
+	t.Run("empty entries returns nil", func(t *testing.T) {
+		results := RankSearchResults(nil, "test", 10)
+		assert.Nil(t, results)
+	})
+
+	t.Run("no match returns nil", func(t *testing.T) {
+		results := RankSearchResults(entries, "zzzznotexist", 10)
+		assert.Nil(t, results)
+	})
+
+	t.Run("english query scoring", func(t *testing.T) {
+		engEntries := []*memory.Entry{
+			{
+				ID:        "e1",
+				Memory:    &memory.Memory{Memory: "User prefers dark mode for coding", Topics: []string{"preferences"}},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "e2",
+				Memory:    &memory.Memory{Memory: "User likes coffee in the morning", Topics: []string{"food"}},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "e3",
+				Memory:    &memory.Memory{Memory: "User coding style follows Go conventions", Topics: []string{"coding"}},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		}
+
+		results := RankSearchResults(engEntries, "coding preferences", 10)
+		require.NotEmpty(t, results)
+		// Entry matching both "coding" and "preferences"
+		// should rank first.
+		assert.Equal(t, "e1", results[0].ID)
+	})
+
+	t.Run("topic match boost", func(t *testing.T) {
+		topicEntries := []*memory.Entry{
+			{
+				ID:        "t1",
+				Memory:    &memory.Memory{Memory: "some content", Topics: []string{"姓名"}},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				ID:        "t2",
+				Memory:    &memory.Memory{Memory: "姓名在内容里但不在 topic", Topics: []string{"other"}},
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		}
+
+		results := RankSearchResults(topicEntries, "姓名", 10)
+		require.Len(t, results, 2)
+		// Topic match should rank higher.
+		assert.Equal(t, "t1", results[0].ID)
+	})
+}
+
+func TestRankSearchResults_HighDFPenalty(t *testing.T) {
+	now := time.Now()
+
+	// Create many entries that all contain "用户" but only one
+	// contains "姓名".
+	entries := make([]*memory.Entry, 10)
+	for i := range entries {
+		entries[i] = &memory.Entry{
+			ID:        fmt.Sprintf("%d", i),
+			Memory:    &memory.Memory{Memory: fmt.Sprintf("用户记录 %d", i)},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+	}
+	// Add one entry that specifically has "姓名".
+	entries[5].Memory.Memory = "用户姓名是李四"
+
+	results := RankSearchResults(entries, "用户姓名", 50)
+	require.NotEmpty(t, results)
+	// The entry with "用户姓名" should be first due to exact
+	// phrase match + "姓名" being a rare token.
+	assert.Equal(t, "5", results[0].ID,
+		"entry with '姓名' should rank first due to IDF boost")
+	// Total results should be significantly less than 10 because
+	// entries matching only the common "用户" get low scores,
+	// but they should still appear (with lower rank).
+}
+
+func TestNormalizeForPhrase(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"plain text", "hello world", "helloworld"},
+		{"with punctuation", "hello, world!", "helloworld"},
+		{"chinese", "用户 姓名", "用户姓名"},
+		{"mixed", "用户，姓名！", "用户姓名"},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeForPhrase(tt.input)
 			assert.Equal(t, tt.expected, result)
 		})
 	}

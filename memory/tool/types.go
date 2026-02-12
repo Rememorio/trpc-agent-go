@@ -76,6 +76,7 @@ type ClearMemoryResponse struct {
 // SearchMemoryRequest represents the input for the search memory tool.
 type SearchMemoryRequest struct {
 	Query string `json:"query" jsonschema:"description=The search query to find relevant memories"`
+	Limit int    `json:"limit,omitempty" jsonschema:"description=Maximum number of results to return (default: 50)"`
 }
 
 // SearchMemoryResponse represents the response from memory_search tool.

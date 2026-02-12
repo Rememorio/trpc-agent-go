@@ -220,6 +220,11 @@ func NewSearchTool() tool.CallableTool {
 			return nil, fmt.Errorf("failed to search memories: %v", err)
 		}
 
+		// Apply limit if specified.
+		if req.Limit > 0 && len(memories) > req.Limit {
+			memories = memories[:req.Limit]
+		}
+
 		// Convert MemoryEntry to MemoryResult.
 		results := make([]Result, len(memories))
 		for i, memory := range memories {

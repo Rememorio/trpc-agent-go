@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
-	"sort"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -341,7 +340,7 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		selectQuery += " AND deleted_at IS NULL"
 	}
 
-	results := make([]*memory.Entry, 0)
+	all := make([]*memory.Entry, 0)
 	err := s.db.Query(ctx, func(rows *sql.Rows) error {
 		var memoryData []byte
 		if err := rows.Scan(&memoryData); err != nil {
@@ -353,9 +352,7 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 			return fmt.Errorf("unmarshal memory entry failed: %w", err)
 		}
 
-		if imemory.MatchMemoryEntry(e, query) {
-			results = append(results, e)
-		}
+		all = append(all, e)
 		return nil
 	}, selectQuery, userKey.AppName, userKey.UserID)
 
@@ -363,14 +360,10 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		return nil, fmt.Errorf("search memories failed: %w", err)
 	}
 
-	// Stable sort by updated time desc.
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].UpdatedAt.Equal(results[j].UpdatedAt) {
-			return results[i].CreatedAt.After(results[j].CreatedAt)
-		}
-		return results[i].UpdatedAt.After(results[j].UpdatedAt)
-	})
-
+	// Relevance-ranked search with scoring and truncation.
+	results := imemory.RankSearchResults(
+		all, query, imemory.DefaultSearchMaxResults,
+	)
 	return results, nil
 }
 
