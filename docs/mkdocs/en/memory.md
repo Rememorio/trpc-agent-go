@@ -799,6 +799,14 @@ redisService, err := memoryredis.NewService(
 
 **Note**: `WithRedisClientURL` takes priority over `WithRedisInstance`
 
+**Redis key format (Redis Cluster hashtag)**:
+
+- Per-user memories are stored in a Redis Hash keyed by:
+  - `mem:{<appName>:<userID>}`
+- The substring inside `{...}` is the *Redis Cluster hashtag* (hash slot key). Including both `appName` and `userID` helps distribute memory keys across users instead of concentrating by app.
+
+**Compatibility note**: Changing the hashtag/key format is a breaking change for existing Redis-stored memories. If you upgrade from a version that used `mem:{<appName>}:<userID>`, old keys will not be read unless you migrate/rehydrate.
+
 ### MySQL Storage
 
 **Use case**: Production, ACID guarantees, complex queries

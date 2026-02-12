@@ -890,6 +890,14 @@ redisService, err := memoryredis.NewService(
 
 **注意**：`WithRedisClientURL` 优先级高于 `WithRedisInstance`
 
+**Redis Key 格式（Redis Cluster hashtag）**：
+
+- 每个用户的 memories 存在一个 Hash 里，对应 key：
+  - `mem:{<appName>:<userID>}`
+- `{...}` 内部是 Redis Cluster 的 *hashtag*（决定 hash slot）。把 `appName` 和 `userID` 都放进去可以避免按 app 聚集造成热点，让 key 更均匀分布到各个 slot。
+
+**兼容性提示**：hashtag/key 格式变更属于 breaking change。如果你从旧版本（使用 `mem:{<appName>}:<userID>`）升级，旧 key 不会被自动读取，除非你做迁移/重新写入。
+
 ### MySQL 存储
 
 **适用场景**：生产环境、需要 ACID 保证、复杂查询
