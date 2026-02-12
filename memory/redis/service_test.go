@@ -40,7 +40,7 @@ func TestGetUserMemKey(t *testing.T) {
 				AppName: "test-app",
 				UserID:  "test-user",
 			},
-			expected: "mem:{test-app}:test-user",
+			expected: "mem:{test-app:test-user}",
 		},
 		{
 			name: "user key with special characters",
@@ -48,7 +48,7 @@ func TestGetUserMemKey(t *testing.T) {
 				AppName: "my-app-123",
 				UserID:  "user_456",
 			},
-			expected: "mem:{my-app-123}:user_456",
+			expected: "mem:{my-app-123:user_456}",
 		},
 	}
 
@@ -79,6 +79,8 @@ func TestServiceOpts_WithMemoryLimit(t *testing.T) {
 
 	assert.Equal(t, limit, opts.memoryLimit)
 }
+
+// NOTE: keyPrefix tests live in a separate PR.
 
 func TestServiceOpts_WithRedisClientURL(t *testing.T) {
 	opts := ServiceOpts{}
@@ -565,6 +567,8 @@ func TestNewService_ConnectionSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, entries)
 }
+
+// NOTE: keyPrefix tests live in a separate PR.
 
 func TestNewService_InstanceName_ConnectionFailure(t *testing.T) {
 	// Register an instance with invalid Redis address that will fail on ping.

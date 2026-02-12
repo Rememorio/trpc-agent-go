@@ -312,7 +312,11 @@ func (s *Service) Close() error {
 	return nil
 }
 
+// NOTE: keyPrefix support is intentionally not included in this PR.
+
 // getUserMemKey builds the Redis key for a user's memories.
+// NOTE: in Redis Cluster, only the substring inside `{...}` determines the hash slot.
+// We include both appName and userID in the hashtag to distribute keys across users.
 func getUserMemKey(userKey memory.UserKey) string {
-	return fmt.Sprintf("mem:{%s}:%s", userKey.AppName, userKey.UserID)
+	return fmt.Sprintf("mem:{%s:%s}", userKey.AppName, userKey.UserID)
 }
