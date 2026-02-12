@@ -31,6 +31,10 @@ type ServiceOpts struct {
 	url          string
 	instanceName string
 	memoryLimit  int
+	// keyPrefix is the prefix for all redis keys.
+	// If set, all keys will be prefixed with this value followed by a colon.
+	// For example, if keyPrefix is "myapp", key "mem:{app:user}" becomes "myapp:mem:{app:user}".
+	keyPrefix string
 
 	// Tool related settings.
 	toolCreators      map[string]memory.ToolCreator
@@ -89,6 +93,15 @@ func WithRedisInstance(instanceName string) ServiceOpt {
 func WithMemoryLimit(limit int) ServiceOpt {
 	return func(opts *ServiceOpts) {
 		opts.memoryLimit = limit
+	}
+}
+
+// WithKeyPrefix sets the prefix for all redis keys.
+// If set, all keys will be prefixed with this value followed by a colon.
+// For example, if keyPrefix is "myapp", key "mem:{app:user}" becomes "myapp:mem:{app:user}".
+func WithKeyPrefix(prefix string) ServiceOpt {
+	return func(opts *ServiceOpts) {
+		opts.keyPrefix = prefix
 	}
 }
 

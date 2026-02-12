@@ -40,7 +40,7 @@ func TestGetUserMemKey(t *testing.T) {
 				AppName: "test-app",
 				UserID:  "test-user",
 			},
-			expected: "mem:{test-app}:test-user",
+			expected: "mem:{test-app:test-user}",
 		},
 		{
 			name: "user key with special characters",
@@ -48,7 +48,7 @@ func TestGetUserMemKey(t *testing.T) {
 				AppName: "my-app-123",
 				UserID:  "user_456",
 			},
-			expected: "mem:{my-app-123}:user_456",
+			expected: "mem:{my-app-123:user_456}",
 		},
 	}
 
@@ -78,6 +78,12 @@ func TestServiceOpts_WithMemoryLimit(t *testing.T) {
 	WithMemoryLimit(limit)(&opts)
 
 	assert.Equal(t, limit, opts.memoryLimit)
+}
+
+func TestServiceOpts_WithKeyPrefix(t *testing.T) {
+	opts := ServiceOpts{}
+	WithKeyPrefix("testprefix")(&opts)
+	assert.Equal(t, "testprefix", opts.keyPrefix)
 }
 
 func TestServiceOpts_WithRedisClientURL(t *testing.T) {
@@ -564,6 +570,25 @@ func TestNewService_ConnectionSuccess(t *testing.T) {
 	entries, err := svc.ReadMemories(ctx, userKey, 10)
 	require.NoError(t, err)
 	assert.NotNil(t, entries)
+}
+
+func TestService_KeyPrefix_AppliesToStorageKey(t *testing.T) {
+	url, cleanup := setupTestRedis(t)
+	defer cleanup()
+
+	svc, err := NewService(WithRedisClientURL(url), WithKeyPrefix("pfx"))
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	userKey := memory.UserKey{AppName: "app", UserID: "user"}
+	require.NoError(t, svc.AddMemory(ctx, userKey, "hello", []string{"t"}))
+
+	baseKey := getUserMemKey(userKey)
+	prefixedKey := svc.prefixedKey(baseKey)
+
+	cnt, err := svc.redisClient.HLen(ctx, prefixedKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), cnt)
 }
 
 func TestNewService_InstanceName_ConnectionFailure(t *testing.T) {
