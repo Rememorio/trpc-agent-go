@@ -916,18 +916,18 @@ func TestRankSearchResults(t *testing.T) {
 		UpdatedAt: now,
 	}
 	entryUserGeneric2 := &memory.Entry{
-		ID:      "3",
-		Memory:  &memory.Memory{Memory: "用户在北京工作", Topics: []string{"工作"}},
-		UserID:  "u1",
-		AppName: "app",
+		ID:        "3",
+		Memory:    &memory.Memory{Memory: "用户在北京工作", Topics: []string{"工作"}},
+		UserID:    "u1",
+		AppName:   "app",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
 	entryUnrelated := &memory.Entry{
-		ID:      "4",
-		Memory:  &memory.Memory{Memory: "天气预报显示明天晴", Topics: []string{"天气"}},
-		UserID:  "u1",
-		AppName: "app",
+		ID:        "4",
+		Memory:    &memory.Memory{Memory: "天气预报显示明天晴", Topics: []string{"天气"}},
+		UserID:    "u1",
+		AppName:   "app",
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

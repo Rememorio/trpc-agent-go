@@ -427,9 +427,9 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		return nil, fmt.Errorf("search memories failed: %w", err)
 	}
 
-	// Relevance-ranked search with scoring and truncation.
+	// Relevance-ranked search without service-level truncation.
 	results := imemory.RankSearchResults(
-		all, query, imemory.DefaultSearchMaxResults,
+		all, query, 0,
 	)
 	return results, nil
 }

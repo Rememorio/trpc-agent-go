@@ -276,9 +276,9 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey, qu
 		entries = append(entries, e)
 	}
 
-	// Relevance-ranked search with scoring and truncation.
+	// Relevance-ranked search without service-level truncation.
 	results := imemory.RankSearchResults(
-		entries, query, imemory.DefaultSearchMaxResults,
+		entries, query, 0,
 	)
 	return results, nil
 }

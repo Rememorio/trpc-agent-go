@@ -295,7 +295,7 @@ func (s *MemoryService) SearchMemories(ctx context.Context, userKey memory.UserK
 
 	userMemories := app.memories[userKey.UserID]
 	if userMemories == nil {
-		return nil, nil
+		return []*memory.Entry{}, nil
 	}
 
 	all := make([]*memory.Entry, 0, len(userMemories))
@@ -303,9 +303,9 @@ func (s *MemoryService) SearchMemories(ctx context.Context, userKey memory.UserK
 		all = append(all, memoryEntry)
 	}
 
-	// Relevance-ranked search with scoring and truncation.
+	// Relevance-ranked search without service-level truncation.
 	results := imemory.RankSearchResults(
-		all, query, imemory.DefaultSearchMaxResults,
+		all, query, 0,
 	)
 	return results, nil
 }

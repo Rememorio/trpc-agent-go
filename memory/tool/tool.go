@@ -21,6 +21,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
 
+const defaultSearchLimit = 50
+
 // Memory function implementations using function.NewFunctionTool.
 
 // NewAddTool creates a function tool for adding memories.
@@ -220,9 +222,12 @@ func NewSearchTool() tool.CallableTool {
 			return nil, fmt.Errorf("failed to search memories: %v", err)
 		}
 
-		// Apply limit if specified.
-		if req.Limit > 0 && len(memories) > req.Limit {
-			memories = memories[:req.Limit]
+		limit := req.Limit
+		if limit <= 0 {
+			limit = defaultSearchLimit
+		}
+		if len(memories) > limit {
+			memories = memories[:limit]
 		}
 
 		// Convert MemoryEntry to MemoryResult.
