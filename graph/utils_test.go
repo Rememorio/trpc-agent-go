@@ -195,9 +195,9 @@ func TestDeepCopyAny(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			copied := deepCopyAny(tt.input)
-			if !reflect.DeepEqual(copied, tt.want) {
-				t.Errorf("deepCopyAny(%v) = %v, want %v", tt.input, copied, tt.want)
-			}
+			assert.True(t, reflect.DeepEqual(copied, tt.want),
+				"deepCopyAny(%v) = %v, want %v", tt.input, copied,
+				tt.want)
 		})
 	}
 }
@@ -213,26 +213,17 @@ func TestDeepCopyUnexportedFields(t *testing.T) {
 		privateField: "private",
 	}
 
-	rv := reflect.ValueOf(&original).Elem()
-	privateField := rv.FieldByName("privateField")
-	if privateField.IsValid() && privateField.CanSet() {
-		privateField.SetString("private")
-	}
-
 	copied := deepCopyAny(original)
 
 	originalPublic := reflect.ValueOf(original).FieldByName("PublicField").String()
 	copiedPublic := reflect.ValueOf(copied).FieldByName("PublicField").String()
 
-	if originalPublic != copiedPublic {
-		t.Errorf("Public field not copied correctly: original %s, copied %s",
-			originalPublic, copiedPublic)
-	}
+	assert.Equal(t, originalPublic, copiedPublic,
+		"Public field not copied correctly")
 
 	copiedPrivate := reflect.ValueOf(copied).FieldByName("privateField")
-	if copiedPrivate.String() != "" {
-		t.Errorf("Private field should not be copied, but got: %s", copiedPrivate.String())
-	}
+	assert.Equal(t, "", copiedPrivate.String(),
+		"Private field should not be copied")
 }
 
 func TestCopyTimeType(t *testing.T) {
@@ -249,32 +240,25 @@ func TestCopyTimeType(t *testing.T) {
 			input: reflect.ValueOf(now),
 			validate: func(t *testing.T, result any) {
 				resultTime, ok := result.(time.Time)
-				if !ok {
-					t.Errorf("Expected time.Time, got %T", result)
-					return
-				}
-				if !resultTime.Equal(now) {
-					t.Errorf("Times should be equal: original %v, result %v", now, resultTime)
-				}
+				require.True(t, ok, "Expected time.Time, got %T", result)
+				assert.True(t, resultTime.Equal(now),
+					"Times should be equal: original %v, result %v",
+					now, resultTime)
 				modified := now.Add(time.Hour)
-				if resultTime.Equal(modified) {
-					t.Error("Modifying original time affected the result")
-				}
+				assert.False(t, resultTime.Equal(modified),
+					"Modifying original time affected the result")
 			},
 		},
 		{
 			name:  "custom time type (convertible to time.Time)",
 			input: reflect.ValueOf(dTime),
 			validate: func(t *testing.T, result any) {
-				_, ok := result.(DataTime)
-				if !ok {
-					t.Errorf("Expected MyTime, got %T", result)
-					return
-				}
-				resultTime := time.Time(result.(DataTime))
-				if !resultTime.Equal(time.Time(dTime)) {
-					t.Errorf("Times should be equal: original %v, result %v", dTime, resultTime)
-				}
+				rt, ok := result.(DataTime)
+				require.True(t, ok, "Expected DataTime, got %T", result)
+				resultTime := time.Time(rt)
+				assert.True(t, resultTime.Equal(time.Time(dTime)),
+					"Times should be equal: original %v, result %v",
+					dTime, resultTime)
 			},
 		},
 		{
@@ -282,13 +266,8 @@ func TestCopyTimeType(t *testing.T) {
 			input: reflect.ValueOf("not a time"),
 			validate: func(t *testing.T, result any) {
 				resultStr, ok := result.(string)
-				if !ok {
-					t.Errorf("Expected string, got %T", result)
-					return
-				}
-				if resultStr != "not a time" {
-					t.Errorf("Expected 'not a time', got '%s'", resultStr)
-				}
+				require.True(t, ok, "Expected string, got %T", result)
+				assert.Equal(t, "not a time", resultStr)
 			},
 		},
 		{
@@ -296,13 +275,8 @@ func TestCopyTimeType(t *testing.T) {
 			input: reflect.ValueOf(42),
 			validate: func(t *testing.T, result any) {
 				resultInt, ok := result.(int)
-				if !ok {
-					t.Errorf("Expected int, got %T", result)
-					return
-				}
-				if resultInt != 42 {
-					t.Errorf("Expected 42, got %d", resultInt)
-				}
+				require.True(t, ok, "Expected int, got %T", result)
+				assert.Equal(t, 42, resultInt)
 			},
 		},
 		{
@@ -310,31 +284,25 @@ func TestCopyTimeType(t *testing.T) {
 			input: reflect.ValueOf(time.Time{}),
 			validate: func(t *testing.T, result any) {
 				resultTime, ok := result.(time.Time)
-				if !ok {
-					t.Errorf("Expected time.Time, got %T", result)
-					return
-				}
-				if !resultTime.IsZero() {
-					t.Error("Expected zero time")
-				}
+				require.True(t, ok, "Expected time.Time, got %T", result)
+				assert.True(t, resultTime.IsZero(), "Expected zero time")
 			},
 		},
 		{
-			name:  "time with location",
-			input: reflect.ValueOf(time.Date(2023, 12, 25, 10, 30, 0, 0, time.UTC)),
+			name: "time with location",
+			input: reflect.ValueOf(
+				time.Date(2023, 12, 25, 10, 30, 0, 0, time.UTC),
+			),
 			validate: func(t *testing.T, result any) {
 				resultTime, ok := result.(time.Time)
-				if !ok {
-					t.Errorf("Expected time.Time, got %T", result)
-					return
-				}
-				expected := time.Date(2023, 12, 25, 10, 30, 0, 0, time.UTC)
-				if !resultTime.Equal(expected) {
-					t.Errorf("Times should be equal: expected %v, result %v", expected, resultTime)
-				}
-				if resultTime.Location() != time.UTC {
-					t.Error("Location should be preserved")
-				}
+				require.True(t, ok, "Expected time.Time, got %T", result)
+				expected := time.Date(2023, 12, 25, 10, 30, 0, 0,
+					time.UTC)
+				assert.True(t, resultTime.Equal(expected),
+					"Times should be equal: expected %v, result %v",
+					expected, resultTime)
+				assert.Equal(t, time.UTC, resultTime.Location(),
+					"Location should be preserved")
 			},
 		},
 	}
@@ -367,9 +335,9 @@ func TestDeepCopyAny_DeepCopier(t *testing.T) {
 
 	copied := deepCopyAny(original).(deepCopoerStruct)
 
-	if !reflect.DeepEqual(copied, *original) {
-		t.Errorf("Copied value should be equal to original. Got %v, expected %v", copied, *original)
-	}
+	assert.True(t, reflect.DeepEqual(copied, *original),
+		"Copied value should be equal to original. Got %v, expected %v",
+		copied, *original)
 
 	tests := map[string]any{
 		"simple": deepCopoerStruct{
@@ -388,9 +356,8 @@ func TestDeepCopyAny_DeepCopier(t *testing.T) {
 		},
 	}
 	copyMap := deepCopyAny(tests)
-	if !reflect.DeepEqual(copyMap, tests) {
-		t.Errorf("Copied value should be equal to original")
-	}
+	assert.True(t, reflect.DeepEqual(copyMap, tests),
+		"Copied value should be equal to original")
 }
 
 // structWithChan contains a channel field to verify that deepCopyAny
@@ -417,26 +384,16 @@ func TestDeepCopyAny_ChannelAndFuncFields(t *testing.T) {
 		ch := make(chan int, 1)
 		orig := structWithChan{Name: "test", Ch: ch}
 		copied := deepCopyAny(orig).(structWithChan)
-		if copied.Name != "test" {
-			t.Errorf("Name = %q, want %q", copied.Name, "test")
-		}
-		if copied.Ch != nil {
-			t.Errorf("Ch should be nil after deep copy, got %v",
-				copied.Ch)
-		}
+		assert.Equal(t, "test", copied.Name)
+		assert.Nil(t, copied.Ch)
 	})
 
 	t.Run("pointer to struct with chan field", func(t *testing.T) {
 		ch := make(chan int, 1)
 		orig := &structWithChan{Name: "ptr", Ch: ch}
 		copied := deepCopyAny(orig).(*structWithChan)
-		if copied.Name != "ptr" {
-			t.Errorf("Name = %q, want %q", copied.Name, "ptr")
-		}
-		if copied.Ch != nil {
-			t.Errorf("Ch should be nil after deep copy, got %v",
-				copied.Ch)
-		}
+		assert.Equal(t, "ptr", copied.Name)
+		assert.Nil(t, copied.Ch)
 	})
 
 	t.Run("struct with func field", func(t *testing.T) {
@@ -445,12 +402,8 @@ func TestDeepCopyAny_ChannelAndFuncFields(t *testing.T) {
 			Action: func() string { return "hello" },
 		}
 		copied := deepCopyAny(orig).(structWithFunc)
-		if copied.Name != "fn" {
-			t.Errorf("Name = %q, want %q", copied.Name, "fn")
-		}
-		if copied.Action != nil {
-			t.Error("Action should be nil after deep copy")
-		}
+		assert.Equal(t, "fn", copied.Name)
+		assert.Nil(t, copied.Action)
 	})
 
 	t.Run("nested struct with chan", func(t *testing.T) {
@@ -460,18 +413,9 @@ func TestDeepCopyAny_ChannelAndFuncFields(t *testing.T) {
 			Inner: structWithChan{Name: "inner", Ch: ch},
 		}
 		copied := deepCopyAny(orig).(structWithNestedChan)
-		if copied.Label != "outer" {
-			t.Errorf("Label = %q, want %q",
-				copied.Label, "outer")
-		}
-		if copied.Inner.Name != "inner" {
-			t.Errorf("Inner.Name = %q, want %q",
-				copied.Inner.Name, "inner")
-		}
-		if copied.Inner.Ch != nil {
-			t.Errorf("Inner.Ch should be nil, got %v",
-				copied.Inner.Ch)
-		}
+		assert.Equal(t, "outer", copied.Label)
+		assert.Equal(t, "inner", copied.Inner.Name)
+		assert.Nil(t, copied.Inner.Ch)
 	})
 
 	t.Run("map containing struct with chan", func(t *testing.T) {
@@ -482,16 +426,9 @@ func TestDeepCopyAny_ChannelAndFuncFields(t *testing.T) {
 		}
 		copied := deepCopyAny(orig).(map[string]any)
 		inner := copied["data"].(structWithChan)
-		if inner.Name != "m" {
-			t.Errorf("Name = %q, want %q", inner.Name, "m")
-		}
-		if inner.Ch != nil {
-			t.Error("Ch should be nil in copied map value")
-		}
-		if copied["text"] != "hello" {
-			t.Errorf("text = %v, want %q",
-				copied["text"], "hello")
-		}
+		assert.Equal(t, "m", inner.Name)
+		assert.Nil(t, inner.Ch)
+		assert.Equal(t, "hello", copied["text"])
 	})
 
 	t.Run("bare channel value", func(t *testing.T) {
