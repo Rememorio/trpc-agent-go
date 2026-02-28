@@ -176,7 +176,7 @@ func copyStruct(rv reflect.Value, visited map[uintptr]any) any {
 	if copier, ok := rv.Interface().(DeepCopier); ok {
 		return copier.DeepCopy()
 	}
-	if isTimeType(rv) {
+	if isTimeType(rv.Type()) {
 		return copyTime(rv)
 	}
 	newStruct := reflect.New(rv.Type()).Elem()
@@ -207,16 +207,13 @@ func copyStruct(rv reflect.Value, visited map[uintptr]any) any {
 	return newStruct.Interface()
 }
 
-func isTimeType(value reflect.Value) bool {
-	rt := value.Type()
+func isTimeType(rt reflect.Type) bool {
 	if rt == timeType {
 		return true
 	}
-
 	if rt.ConvertibleTo(timeType) {
 		return true
 	}
-
 	return false
 }
 
@@ -265,37 +262,54 @@ func valueIsJSONUnsafe(value any) bool {
 	return mapValueIsJSONUnsafe(reflect.ValueOf(value))
 }
 
-// hasJSONUnsafeField returns true when at least one exported field
-// of a struct type has a kind that encoding/json cannot serialize.
+// hasJSONUnsafeField returns true when a struct type contains exported
+// fields that encoding/json cannot serialize.
 func hasJSONUnsafeField(rt reflect.Type) bool {
+	visiting := make(map[reflect.Type]bool)
+	return hasJSONUnsafeType(rt, visiting)
+}
+
+func hasJSONUnsafeType(rt reflect.Type, visiting map[reflect.Type]bool) bool {
 	for rt.Kind() == reflect.Ptr {
 		rt = rt.Elem()
 	}
-	if rt.Kind() != reflect.Struct {
+	if isJSONUnsafeKind(rt.Kind()) {
+		return true
+	}
+	if isTimeType(rt) {
 		return false
 	}
-	for i := 0; i < rt.NumField(); i++ {
-		ft := rt.Field(i)
-		if shouldSkipJSONField(ft) {
-			continue
+
+	switch rt.Kind() {
+	case reflect.Struct:
+		if visiting[rt] {
+			return false
 		}
-		fk := ft.Type.Kind()
-		if isJSONUnsafeKind(fk) {
-			return true
-		}
-		// Recurse into nested structs and pointer-to-struct.
-		inner := ft.Type
-		for inner.Kind() == reflect.Ptr {
-			inner = inner.Elem()
-		}
-		if inner.Kind() == reflect.Struct &&
-			!isTimeType(reflect.New(inner).Elem()) {
-			if hasJSONUnsafeField(inner) {
+		visiting[rt] = true
+		defer delete(visiting, rt)
+
+		for i := 0; i < rt.NumField(); i++ {
+			ft := rt.Field(i)
+			if shouldSkipJSONField(ft) {
+				continue
+			}
+			if hasJSONUnsafeType(ft.Type, visiting) {
 				return true
 			}
 		}
+		return false
+	case reflect.Slice, reflect.Array:
+		return hasJSONUnsafeType(rt.Elem(), visiting)
+	case reflect.Map:
+		if hasJSONUnsafeType(rt.Key(), visiting) {
+			return true
+		}
+		return hasJSONUnsafeType(rt.Elem(), visiting)
+	case reflect.Interface:
+		return false
+	default:
+		return false
 	}
-	return false
 }
 
 // jsonSafeCopy produces a deep copy of value that is safe for
@@ -495,7 +509,7 @@ func jsonSafeCopyStruct(
 	rv reflect.Value,
 	visited map[uintptr]any,
 ) any {
-	if isTimeType(rv) {
+	if isTimeType(rv.Type()) {
 		return copyTime(rv)
 	}
 	unsafe := hasJSONUnsafeField(rv.Type())

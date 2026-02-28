@@ -706,9 +706,30 @@ func TestHasJSONUnsafeField(t *testing.T) {
 		A  string
 		Ch chan int `json:"-"`
 	}
+	type selfRef struct {
+		Name string
+		Next *selfRef
+	}
+	type withSliceChan struct {
+		Items []chan int
+	}
+	type withArrayChan struct {
+		Items [2]chan int
+	}
+	type withMapChanValue struct {
+		Items map[string]chan int
+	}
+	type withMapChanKey struct {
+		Items map[chan int]string
+	}
 
 	assert.False(t, hasJSONUnsafeField(reflect.TypeOf(safe{})))
 	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(withChan{})))
 	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(nested{})))
 	assert.False(t, hasJSONUnsafeField(reflect.TypeOf(ignoredUnsafe{})))
+	assert.False(t, hasJSONUnsafeField(reflect.TypeOf(selfRef{})))
+	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(withSliceChan{})))
+	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(withArrayChan{})))
+	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(withMapChanValue{})))
+	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(withMapChanKey{})))
 }
