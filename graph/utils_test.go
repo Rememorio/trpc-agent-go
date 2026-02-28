@@ -13,6 +13,9 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type testStruct struct {
@@ -390,6 +393,126 @@ func TestDeepCopyAny_DeepCopier(t *testing.T) {
 	}
 }
 
+// structWithChan contains a channel field to verify that deepCopyAny
+// replaces non-serializable channel values with nil during deep copy.
+type structWithChan struct {
+	Name string
+	Ch   chan int
+}
+
+// structWithFunc contains a function field.
+type structWithFunc struct {
+	Name   string
+	Action func() string
+}
+
+// structWithNestedChan nests a channel inside a sub-struct.
+type structWithNestedChan struct {
+	Label string
+	Inner structWithChan
+}
+
+func TestDeepCopyAny_ChannelAndFuncFields(t *testing.T) {
+	t.Run("struct with chan field", func(t *testing.T) {
+		ch := make(chan int, 1)
+		orig := structWithChan{Name: "test", Ch: ch}
+		copied := deepCopyAny(orig).(structWithChan)
+		if copied.Name != "test" {
+			t.Errorf("Name = %q, want %q", copied.Name, "test")
+		}
+		if copied.Ch != nil {
+			t.Errorf("Ch should be nil after deep copy, got %v",
+				copied.Ch)
+		}
+	})
+
+	t.Run("pointer to struct with chan field", func(t *testing.T) {
+		ch := make(chan int, 1)
+		orig := &structWithChan{Name: "ptr", Ch: ch}
+		copied := deepCopyAny(orig).(*structWithChan)
+		if copied.Name != "ptr" {
+			t.Errorf("Name = %q, want %q", copied.Name, "ptr")
+		}
+		if copied.Ch != nil {
+			t.Errorf("Ch should be nil after deep copy, got %v",
+				copied.Ch)
+		}
+	})
+
+	t.Run("struct with func field", func(t *testing.T) {
+		orig := structWithFunc{
+			Name:   "fn",
+			Action: func() string { return "hello" },
+		}
+		copied := deepCopyAny(orig).(structWithFunc)
+		if copied.Name != "fn" {
+			t.Errorf("Name = %q, want %q", copied.Name, "fn")
+		}
+		if copied.Action != nil {
+			t.Error("Action should be nil after deep copy")
+		}
+	})
+
+	t.Run("nested struct with chan", func(t *testing.T) {
+		ch := make(chan int)
+		orig := structWithNestedChan{
+			Label: "outer",
+			Inner: structWithChan{Name: "inner", Ch: ch},
+		}
+		copied := deepCopyAny(orig).(structWithNestedChan)
+		if copied.Label != "outer" {
+			t.Errorf("Label = %q, want %q",
+				copied.Label, "outer")
+		}
+		if copied.Inner.Name != "inner" {
+			t.Errorf("Inner.Name = %q, want %q",
+				copied.Inner.Name, "inner")
+		}
+		if copied.Inner.Ch != nil {
+			t.Errorf("Inner.Ch should be nil, got %v",
+				copied.Inner.Ch)
+		}
+	})
+
+	t.Run("map containing struct with chan", func(t *testing.T) {
+		ch := make(chan int)
+		orig := map[string]any{
+			"data": structWithChan{Name: "m", Ch: ch},
+			"text": "hello",
+		}
+		copied := deepCopyAny(orig).(map[string]any)
+		inner := copied["data"].(structWithChan)
+		if inner.Name != "m" {
+			t.Errorf("Name = %q, want %q", inner.Name, "m")
+		}
+		if inner.Ch != nil {
+			t.Error("Ch should be nil in copied map value")
+		}
+		if copied["text"] != "hello" {
+			t.Errorf("text = %v, want %q",
+				copied["text"], "hello")
+		}
+	})
+
+	t.Run("bare channel value", func(t *testing.T) {
+		ch := make(chan string, 1)
+		copied := deepCopyAny(ch)
+		assert.Nil(t, copied)
+	})
+
+	t.Run("bare func value", func(t *testing.T) {
+		fn := func() {}
+		copied := deepCopyAny(fn)
+		assert.Nil(t, copied)
+	})
+
+	t.Run("send-only channel", func(t *testing.T) {
+		ch := make(chan<- int)
+		copied := deepCopyAny(ch)
+		assert.Nil(t, copied)
+	})
+}
+
 func BenchmarkDeepCopyAny(b *testing.B) {
 	complexData := map[string]any{
 		"users": []map[string]any{
@@ -414,4 +537,217 @@ func BenchmarkDeepCopyAny(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		deepCopyAny(complexData)
 	}
+}
+
+// ---------- jsonSafeCopy tests ----------
+
+func TestJSONSafeCopy_Nil(t *testing.T) {
+	assert.Nil(t, jsonSafeCopy(nil))
+}
+
+func TestJSONSafeCopy_Primitives(t *testing.T) {
+	assert.Equal(t, "hello", jsonSafeCopy("hello"))
+	assert.Equal(t, 42, jsonSafeCopy(42))
+	assert.Equal(t, 3.14, jsonSafeCopy(3.14))
+	assert.Equal(t, true, jsonSafeCopy(true))
+}
+
+func TestJSONSafeCopy_MapDeepCopy(t *testing.T) {
+	orig := map[string]any{"k": []string{"a", "b"}}
+	copied := jsonSafeCopy(orig).(map[string]any)
+	orig["k"].([]string)[0] = "mutated"
+	// jsonSafeFastPath handles []string natively.
+	assert.Equal(t, "a", copied["k"].([]string)[0])
+}
+
+func TestJSONSafeCopy_StructWithChan(t *testing.T) {
+	type s struct {
+		Name string
+		Ch   chan int
+	}
+	orig := s{Name: "x", Ch: make(chan int)}
+	result := jsonSafeCopy(orig)
+
+	m, ok := result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "x", m["Name"])
+	_, has := m["Ch"]
+	assert.False(t, has)
+}
+
+func TestJSONSafeCopy_StructWithoutUnsafeFields(t *testing.T) {
+	type safe struct {
+		A string
+		B int
+	}
+	orig := safe{A: "ok", B: 1}
+	result := jsonSafeCopy(orig)
+
+	// Struct without unsafe fields should be preserved as-is.
+	s, ok := result.(safe)
+	require.True(t, ok)
+	assert.Equal(t, safe{A: "ok", B: 1}, s)
+}
+
+func TestJSONSafeCopy_IgnoresUnsafeFieldByJSONTag(t *testing.T) {
+	type taggedSafe struct {
+		Name string
+		Ch   chan int `json:"-"`
+	}
+	orig := taggedSafe{Name: "ok", Ch: make(chan int)}
+	result := jsonSafeCopy(orig)
+
+	copied, ok := result.(taggedSafe)
+	require.True(t, ok)
+	assert.Equal(t, "ok", copied.Name)
+	assert.Nil(t, copied.Ch)
+}
+
+func TestJSONSafeCopy_PointerToStructWithChan(t *testing.T) {
+	type s struct {
+		Name string
+		Ch   chan int
+	}
+	orig := &s{Name: "ptr", Ch: make(chan int)}
+	result := jsonSafeCopy(orig)
+
+	// Pointer dereferences to map since struct has chan.
+	m, ok := result.(*map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "ptr", (*m)["Name"])
+}
+
+func TestJSONSafeCopy_NestedStructsWithChan(t *testing.T) {
+	type inner struct {
+		Val int
+		Ch  chan string
+	}
+	type outer struct {
+		Label string
+		Inner inner
+	}
+	orig := outer{
+		Label: "o",
+		Inner: inner{Val: 5, Ch: make(chan string)},
+	}
+	result := jsonSafeCopy(orig)
+
+	m, ok := result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "o", m["Label"])
+
+	innerMap, ok := m["Inner"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, 5, innerMap["Val"])
+	_, has := innerMap["Ch"]
+	assert.False(t, has)
+}
+
+func TestJSONSafeCopy_BareChan(t *testing.T) {
+	ch := make(chan int, 1)
+	assert.Nil(t, jsonSafeCopy(ch))
+}
+
+func TestJSONSafeCopy_BareFunc(t *testing.T) {
+	fn := func() {}
+	assert.Nil(t, jsonSafeCopy(fn))
+}
+
+func TestJSONSafeCopy_JSONTagRespected(t *testing.T) {
+	type tagged struct {
+		Exported string `json:"exported_name"`
+		Ignored  string `json:"-"`
+		Ch       chan int
+	}
+	orig := tagged{Exported: "v", Ignored: "skip"}
+	result := jsonSafeCopy(orig)
+
+	m, ok := result.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "v", m["exported_name"])
+	_, hasIgnored := m["Ignored"]
+	assert.False(t, hasIgnored)
+}
+
+func TestJSONSafeCopy_MapWithNilAndUnsafeValues(t *testing.T) {
+	t.Run("fast path map[string]any keeps keys with nil values", func(t *testing.T) {
+		orig := map[string]any{
+			"keep_nil":  nil,
+			"drop_chan": make(chan int),
+			"drop_func": func() {},
+		}
+
+		copied := jsonSafeCopy(orig).(map[string]any)
+		val, ok := copied["keep_nil"]
+		require.True(t, ok)
+		assert.Nil(t, val)
+		val, ok = copied["drop_chan"]
+		require.True(t, ok)
+		assert.Nil(t, val)
+		val, ok = copied["drop_func"]
+		require.True(t, ok)
+		assert.Nil(t, val)
+	})
+
+	t.Run("reflect map path handles nil interface and drops unsafe", func(t *testing.T) {
+		orig := map[int]any{
+			1: nil,
+			2: make(chan int),
+			3: func() {},
+			4: "ok",
+		}
+
+		copied := jsonSafeCopy(orig).(map[string]any)
+		// Key 1 should exist with nil and must not panic.
+		val, ok := copied["1"]
+		require.True(t, ok)
+		assert.Nil(t, val)
+		// Unsafe values should be removed on reflect-map path.
+		_, hasChan := copied["2"]
+		assert.False(t, hasChan)
+		_, hasFunc := copied["3"]
+		assert.False(t, hasFunc)
+		assert.Equal(t, "ok", copied["4"])
+	})
+}
+
+func TestJSONSafeCopy_TimePreserved(t *testing.T) {
+	now := time.Now()
+	result := jsonSafeCopy(now)
+	rt, ok := result.(time.Time)
+	require.True(t, ok)
+	assert.True(t, rt.Equal(now))
+}
+
+func TestJSONSafeCopy_SliceWithMixed(t *testing.T) {
+	ch := make(chan int)
+	orig := []any{"a", 1, ch}
+	result := jsonSafeCopy(orig).([]any)
+	assert.Equal(t, "a", result[0])
+	assert.Equal(t, 1, result[1])
+	// Channel element becomes nil.
+	assert.Nil(t, result[2])
+}
+
+func TestHasJSONUnsafeField(t *testing.T) {
+	type safe struct {
+		A string
+		B int
+	}
+	type withChan struct {
+		A  string
+		Ch chan int
+	}
+	type nested struct {
+		Inner withChan
+	}
+	type ignoredUnsafe struct {
+		A  string
+		Ch chan int `json:"-"`
+	}
+
+	assert.False(t, hasJSONUnsafeField(reflect.TypeOf(safe{})))
+	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(withChan{})))
+	assert.True(t, hasJSONUnsafeField(reflect.TypeOf(nested{})))
+	assert.False(t, hasJSONUnsafeField(reflect.TypeOf(ignoredUnsafe{})))
 }
