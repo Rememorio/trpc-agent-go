@@ -607,7 +607,7 @@ func TestJSONSafeCopy_JSONTagRespected(t *testing.T) {
 }
 
 func TestJSONSafeCopy_MapWithNilAndUnsafeValues(t *testing.T) {
-	t.Run("fast path map[string]any keeps keys with nil values", func(t *testing.T) {
+	t.Run("fast path map[string]any keeps nil and drops unsafe", func(t *testing.T) {
 		orig := map[string]any{
 			"keep_nil":  nil,
 			"drop_chan": make(chan int),
@@ -618,12 +618,10 @@ func TestJSONSafeCopy_MapWithNilAndUnsafeValues(t *testing.T) {
 		val, ok := copied["keep_nil"]
 		require.True(t, ok)
 		assert.Nil(t, val)
-		val, ok = copied["drop_chan"]
-		require.True(t, ok)
-		assert.Nil(t, val)
-		val, ok = copied["drop_func"]
-		require.True(t, ok)
-		assert.Nil(t, val)
+		_, hasChan := copied["drop_chan"]
+		assert.False(t, hasChan)
+		_, hasFunc := copied["drop_func"]
+		assert.False(t, hasFunc)
 	})
 
 	t.Run("reflect map path handles nil interface and drops unsafe", func(t *testing.T) {
@@ -645,6 +643,32 @@ func TestJSONSafeCopy_MapWithNilAndUnsafeValues(t *testing.T) {
 		_, hasFunc := copied["3"]
 		assert.False(t, hasFunc)
 		assert.Equal(t, "ok", copied["4"])
+	})
+}
+
+func TestJSONSafeCopy_Cycles(t *testing.T) {
+	t.Run("map[string]any self cycle", func(t *testing.T) {
+		orig := map[string]any{}
+		orig["self"] = orig
+
+		copied := jsonSafeCopy(orig).(map[string]any)
+		self, ok := copied["self"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t,
+			reflect.ValueOf(copied).Pointer(),
+			reflect.ValueOf(self).Pointer(),
+		)
+	})
+
+	t.Run("[]any self cycle", func(t *testing.T) {
+		orig := make([]any, 1)
+		orig[0] = orig
+
+		copied := jsonSafeCopy(orig).([]any)
+		require.Len(t, copied, 1)
+		inner, ok := copied[0].([]any)
+		require.True(t, ok)
+		require.Len(t, inner, 1)
 	})
 }
 

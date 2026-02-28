@@ -241,6 +241,30 @@ func isJSONUnsafeKind(k reflect.Kind) bool {
 	}
 }
 
+func deepCopyByInterface(value any) (any, bool) {
+	if copier, ok := value.(DeepCopier); ok {
+		return copier.DeepCopy(), true
+	}
+	return nil, false
+}
+
+func deepCopyByReflectValue(value reflect.Value) (any, bool) {
+	if !value.IsValid() || !value.CanInterface() {
+		return nil, false
+	}
+	if copier, ok := value.Interface().(DeepCopier); ok {
+		return copier.DeepCopy(), true
+	}
+	return nil, false
+}
+
+func valueIsJSONUnsafe(value any) bool {
+	if value == nil {
+		return false
+	}
+	return mapValueIsJSONUnsafe(reflect.ValueOf(value))
+}
+
 // hasJSONUnsafeField returns true when at least one exported field
 // of a struct type has a kind that encoding/json cannot serialize.
 func hasJSONUnsafeField(rt reflect.Type) bool {
@@ -278,33 +302,55 @@ func hasJSONUnsafeField(rt reflect.Type) bool {
 // encoding/json.Marshal. Structs containing chan/func fields are
 // converted to map[string]any with those fields omitted.
 func jsonSafeCopy(value any) any {
+	visited := make(map[uintptr]any)
+	return jsonSafeCopyWithVisited(value, visited)
+}
+
+func jsonSafeCopyWithVisited(value any, visited map[uintptr]any) any {
 	if value == nil {
 		return nil
 	}
-	if copier, ok := value.(DeepCopier); ok {
-		return copier.DeepCopy()
-	}
-	if out, ok := jsonSafeFastPath(value); ok {
+	if out, ok := deepCopyByInterface(value); ok {
 		return out
 	}
-	visited := make(map[uintptr]any)
+	if out, ok := jsonSafeFastPath(value, visited); ok {
+		return out
+	}
 	return jsonSafeReflect(reflect.ValueOf(value), visited)
 }
 
 // jsonSafeFastPath handles common JSON-friendly types without
-// reflection, delegating nested values to jsonSafeCopy.
-func jsonSafeFastPath(value any) (any, bool) {
+// reflection, delegating nested values to jsonSafeCopyWithVisited.
+// For maps, unsafe values are dropped to match jsonSafeCopyMap behavior.
+func jsonSafeFastPath(value any, visited map[uintptr]any) (any, bool) {
 	switch v := value.(type) {
 	case map[string]any:
+		ptr := reflect.ValueOf(v).Pointer()
+		if cached, ok := visited[ptr]; ok {
+			return cached, true
+		}
 		copied := make(map[string]any, len(v))
+		visited[ptr] = copied
 		for k, vv := range v {
-			copied[k] = jsonSafeCopy(vv)
+			copiedVal := jsonSafeCopyWithVisited(vv, visited)
+			if copiedVal == nil && valueIsJSONUnsafe(vv) {
+				continue // Skip non-serializable values.
+			}
+			copied[k] = copiedVal
 		}
 		return copied, true
 	case []any:
+		if v == nil {
+			return nil, true
+		}
+		ptr := reflect.ValueOf(v).Pointer()
+		if cached, ok := visited[ptr]; ok {
+			return cached, true
+		}
 		copied := make([]any, len(v))
+		visited[ptr] = copied
 		for i := range v {
-			copied[i] = jsonSafeCopy(v[i])
+			copied[i] = jsonSafeCopyWithVisited(v[i], visited)
 		}
 		return copied, true
 	case []string:
@@ -335,13 +381,13 @@ func jsonSafeReflect(
 	if !rv.IsValid() {
 		return nil
 	}
+	if out, ok := deepCopyByReflectValue(rv); ok {
+		return out
+	}
 	switch rv.Kind() {
 	case reflect.Interface:
 		if rv.IsNil() {
 			return nil
-		}
-		if copier, ok := rv.Interface().(DeepCopier); ok {
-			return copier.DeepCopy()
 		}
 		return jsonSafeReflect(rv.Elem(), visited)
 	case reflect.Ptr:
@@ -373,12 +419,11 @@ func jsonSafeCopyPointer(
 	if cached, ok := visited[ptr]; ok {
 		return cached
 	}
-	if copier, ok := rv.Interface().(DeepCopier); ok {
-		return copier.DeepCopy()
-	}
+
+	// Cache a placeholder before descending to break pointer cycles.
+	visited[ptr] = nil
 	inner := jsonSafeReflect(rv.Elem(), visited)
 	if inner == nil {
-		visited[ptr] = nil
 		return nil
 	}
 	newPtr := reflect.New(reflect.TypeOf(inner))
@@ -450,9 +495,6 @@ func jsonSafeCopyStruct(
 	rv reflect.Value,
 	visited map[uintptr]any,
 ) any {
-	if copier, ok := rv.Interface().(DeepCopier); ok {
-		return copier.DeepCopy()
-	}
 	if isTimeType(rv) {
 		return copyTime(rv)
 	}
