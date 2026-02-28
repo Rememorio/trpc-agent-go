@@ -754,7 +754,20 @@ func (p *ContentRequestProcessor) shouldIncludeEvent(evt event.Event, inv *agent
 		return false, false
 	}
 
-	// check is invocation message
+	// Always keep user messages from the current request
+	// so mid-turn summary cannot swallow the original
+	// user request even when UpdatedAt covers its
+	// timestamp. Uses RequestID + Role matching instead
+	// of content equality to be robust against event
+	// plugins that may modify message content.
+	if inv.RunOptions.RequestID != "" &&
+		inv.RunOptions.RequestID == evt.RequestID &&
+		len(evt.Choices) > 0 &&
+		evt.Choices[0].Message.Role == model.RoleUser {
+		return true, true
+	}
+
+	// Check exact invocation message match as fallback.
 	if inv.RunOptions.RequestID == evt.RequestID &&
 		len(evt.Choices) > 0 &&
 		invocationMessageEqual(inv.Message, evt.Choices[0].Message) {
