@@ -2655,8 +2655,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 				}
 				return p, evt, inv, "", true, baseTime
 			},
-			expected:            true,
-			isInvocationMessage: true,
+			expected: false,
 		},
 		{
 			name: "TimelineFilterCurrentInvocation with different invocation ID, user message, matching request ID and content",
@@ -2799,8 +2798,9 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
 				p := &ContentRequestProcessor{}
 				evt := event.Event{
-					RequestID: "req1",
-					Version:   event.CurrentVersion,
+					RequestID:    "req1",
+					InvocationID: "inv1",
+					Version:      event.CurrentVersion,
 					Response: &model.Response{
 						Choices: []model.Choice{
 							{Message: model.Message{
@@ -2812,6 +2812,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 					Timestamp: sinceTime.Add(-time.Hour),
 				}
 				inv := &agent.Invocation{
+					InvocationID: "inv1",
 					RunOptions: agent.RunOptions{
 						RequestID: "req1",
 					},
@@ -2824,6 +2825,38 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			},
 			expected:            true,
 			isInvocationMessage: true,
+		},
+		{
+			name: "mid-turn summary: same invocation user message with modified content preserved",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{}
+				evt := event.Event{
+					RequestID:    "req1",
+					InvocationID: "inv1",
+					Version:      event.CurrentVersion,
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{
+								Content: "modified by plugin",
+								Role:    model.RoleUser,
+							}},
+						},
+					},
+					Timestamp: sinceTime.Add(-time.Hour),
+				}
+				inv := &agent.Invocation{
+					InvocationID: "inv1",
+					RunOptions: agent.RunOptions{
+						RequestID: "req1",
+					},
+					Message: model.Message{
+						Content: "original content",
+						Role:    model.RoleUser,
+					},
+				}
+				return p, evt, inv, "", false, sinceTime
+			},
+			expected: true,
 		},
 		{
 			name: "mid-turn summary: user message before since with different request ID excluded",
@@ -2856,7 +2889,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "mid-turn summary: user message with modified content still preserved via role match",
+			name: "mid-turn summary: user message with modified content without invocation ID excluded",
 			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
 				p := &ContentRequestProcessor{}
 				evt := event.Event{
@@ -2883,8 +2916,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 				}
 				return p, evt, inv, "", false, sinceTime
 			},
-			expected:            true,
-			isInvocationMessage: true,
+			expected: false,
 		},
 		{
 			name: "mid-turn summary: assistant event before since with same request ID excluded",

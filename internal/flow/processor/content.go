@@ -754,24 +754,26 @@ func (p *ContentRequestProcessor) shouldIncludeEvent(evt event.Event, inv *agent
 		return false, false
 	}
 
-	// Always keep user messages from the current request
-	// so mid-turn summary cannot swallow the original
-	// user request even when UpdatedAt covers its
-	// timestamp. Uses RequestID + Role matching instead
-	// of content equality to be robust against event
-	// plugins that may modify message content.
-	if inv.RunOptions.RequestID != "" &&
-		inv.RunOptions.RequestID == evt.RequestID &&
-		len(evt.Choices) > 0 &&
-		evt.Choices[0].Message.Role == model.RoleUser {
-		return true, true
-	}
-
-	// Check exact invocation message match as fallback.
+	// Check exact invocation message match first.
 	if inv.RunOptions.RequestID == evt.RequestID &&
 		len(evt.Choices) > 0 &&
 		invocationMessageEqual(inv.Message, evt.Choices[0].Message) {
 		return true, true
+	}
+
+	// Keep user messages from the current request and
+	// current invocation so mid-turn summary cannot
+	// swallow the original user request even when
+	// UpdatedAt covers its timestamp. This is an
+	// inclusion-only path and does not mark the event as
+	// the invocation message.
+	if inv.RunOptions.RequestID != "" &&
+		inv.RunOptions.RequestID == evt.RequestID &&
+		inv.InvocationID != "" &&
+		inv.InvocationID == evt.InvocationID &&
+		len(evt.Choices) > 0 &&
+		evt.Choices[0].Message.Role == model.RoleUser {
+		return true, false
 	}
 
 	// Use strict After so events stamped exactly at summary UpdatedAt are

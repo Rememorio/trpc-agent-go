@@ -222,7 +222,16 @@ func (d *sameTurnDemo) runSingleTurn(ctx context.Context, input string) error {
 
 func (d *sameTurnDemo) waitSummary(ctx context.Context, wait time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
+	const pollInterval = 300 * time.Millisecond
 	for {
+		if time.Now().After(deadline) {
+			return "", nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(pollInterval):
+		}
 		text, err := d.readSummary(ctx)
 		if err != nil {
 			return "", err
@@ -230,10 +239,6 @@ func (d *sameTurnDemo) waitSummary(ctx context.Context, wait time.Duration) (str
 		if text != "" {
 			return text, nil
 		}
-		if time.Now().After(deadline) {
-			return "", nil
-		}
-		time.Sleep(300 * time.Millisecond)
 	}
 }
 
@@ -317,10 +322,11 @@ func preview(s string, max int) string {
 	if clean == "" {
 		return "<empty>"
 	}
-	if len(clean) <= max {
+	runes := []rune(clean)
+	if len(runes) <= max {
 		return clean
 	}
-	return clean[:max] + "..."
+	return string(runes[:max]) + "..."
 }
 
 func sortedSetKeys(m map[string]struct{}) []string {

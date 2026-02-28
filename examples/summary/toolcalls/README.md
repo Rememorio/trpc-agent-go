@@ -55,7 +55,7 @@ Use this checklist to validate behavior:
 4. **Context compaction after summary.**
    - After summary appears, older tool interactions are represented by the
      summary text instead of being sent as full raw history.
-   - Only recent assistant/tool increments are kept as raw messages.
+   - Only recent assistant/tool interactions are kept as raw messages.
 
 5. **No orphan tool context.**
    - Tool messages shown in `BeforeModel` are accompanied by matching recent
