@@ -14,10 +14,14 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -32,6 +36,8 @@ import (
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+
+	openaiopt "github.com/openai/openai-go/option"
 )
 
 var (
@@ -90,7 +96,19 @@ func (c *multiTurnChat) run() error {
 
 // setup builds the runner with a model, tools, and the in-memory session store.
 func (c *multiTurnChat) setup(_ context.Context) error {
-	modelInstance := openai.New(c.modelName, openai.WithVariant(openai.Variant(c.variant)))
+	modelInstance := openai.New(c.modelName,
+		openai.WithAPIKey("xxx"),
+		openai.WithBaseURL("xxx"),
+		openai.WithHeaders(map[string]string{
+			"Wsid":  "xxx",
+			"model": c.modelName,
+		}),
+		openai.WithExtraFields(map[string]any{
+			"query_id": "test",
+		}),
+		openai.WithOpenAIOptions(openaiopt.WithMiddleware(
+			streamServerMiddleware)),
+	)
 
 	sessionService := sessioninmemory.NewSessionService()
 
@@ -268,9 +286,17 @@ func (c *multiTurnChat) handleContent(
 
 func (c *multiTurnChat) extractContent(choice model.Choice) string {
 	if c.streaming {
-		return choice.Delta.Content
+		content := choice.Delta.Content
+		if content == "" {
+			content = choice.Delta.ReasoningContent
+		}
+		return content
 	}
-	return choice.Message.Content
+	content := choice.Message.Content
+	if content == "" {
+		content = choice.Message.ReasoningContent
+	}
+	return content
 }
 
 func (c *multiTurnChat) displayContent(
@@ -287,4 +313,78 @@ func (c *multiTurnChat) displayContent(
 	}
 	fmt.Print(content)
 	*fullContent += content
+}
+
+// streamServerMiddleware adapts requests/responses for backends that
+// are not fully OpenAI-compatible. Specifically it handles:
+//  1. The backend defaults to streaming when the "stream" field is
+//     absent from the body. The openai-go SDK does not include it for
+//     non-streaming calls, so we inject "stream":false into the
+//     request body.
+//  2. The backend does not emit the SSE "data: [DONE]" sentinel and
+//     sends trailing blank lines that produce empty SSE events. The
+//     SDK's json.Unmarshal on empty data yields
+//     "unexpected end of JSON input". We preprocess the response body
+//     to strip extra blank lines and append the sentinel.
+func streamServerMiddleware(
+	req *http.Request,
+	next openaiopt.MiddlewareNext,
+) (*http.Response, error) {
+	// Inject "stream":false when the SDK omits the field
+	// (non-streaming path). Read body, check, and rewrite.
+	if req.Body != nil {
+		bodyBytes, err := io.ReadAll(req.Body)
+		req.Body.Close()
+		if err == nil {
+			var obj map[string]json.RawMessage
+			if json.Unmarshal(bodyBytes, &obj) == nil {
+				if _, ok := obj["stream"]; !ok {
+					obj["stream"] = json.RawMessage("false")
+					if newBody, err := json.Marshal(obj); err == nil {
+						bodyBytes = newBody
+					}
+				}
+			}
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			req.ContentLength = int64(len(bodyBytes))
+		}
+	}
+
+	resp, err := next(req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if strings.Contains(ct, "text/event-stream") {
+		resp.Body = newSSESanitizer(resp.Body)
+	}
+	return resp, nil
+}
+
+// newSSESanitizer reads the upstream SSE body in the background,
+// strips consecutive empty lines (which cause the SDK to parse empty
+// JSON), and appends "data: [DONE]\n\n" before closing.
+func newSSESanitizer(src io.ReadCloser) io.ReadCloser {
+	pr, pw := io.Pipe()
+	go func() {
+		scanner := bufio.NewScanner(src)
+		scanner.Buffer(nil, bufio.MaxScanTokenSize)
+		prevEmpty := false
+		for scanner.Scan() {
+			line := scanner.Text()
+			isEmpty := len(strings.TrimSpace(line)) == 0
+			// Allow at most one consecutive empty line (to
+			// dispatch the preceding event).
+			if isEmpty && prevEmpty {
+				continue
+			}
+			prevEmpty = isEmpty
+			fmt.Fprintf(pw, "%s\n", line)
+		}
+		// Append the sentinel that the backend omits.
+		fmt.Fprintf(pw, "data: [DONE]\n\n")
+		src.Close()
+		pw.Close()
+	}()
+	return pr
 }
