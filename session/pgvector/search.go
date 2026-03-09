@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pgvector/pgvector-go"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -73,6 +74,7 @@ func (s *Service) SearchEvents(
 			`AND user_id = $3 `+
 			`AND session_id = $4 `+
 			`AND embedding IS NOT NULL `+
+			`AND (expires_at IS NULL OR expires_at > $5) `+
 			`AND deleted_at IS NULL `+
 			`ORDER BY embedding <=> $1 `+
 			`LIMIT %d`,
@@ -114,6 +116,7 @@ func (s *Service) SearchEvents(
 		searchSQL,
 		vector,
 		key.AppName, key.UserID, key.SessionID,
+		time.Now(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -123,19 +126,43 @@ func (s *Service) SearchEvents(
 	return results, nil
 }
 
-// updateLatestEventEmbedding updates the most recently
-// inserted event row for a session with embedding data.
-func (s *Service) updateLatestEventEmbedding(
+// updateEventEmbedding updates the matching persisted
+// event row with embedding data. Matching by event
+// identity avoids writing an embedding back to the wrong
+// row when multiple events are persisted concurrently.
+func (s *Service) updateEventEmbedding(
 	ctx context.Context,
 	sess *session.Session,
+	evt *event.Event,
 	contentText string,
 	role string,
 	emb []float64,
 ) error {
 	vector := pgvector.NewVector(toFloat32(emb))
 
-	// Update the latest event row that does not have an
-	// embedding yet.
+	matchExpr := `event = $7::jsonb`
+	matchValue := any("")
+	if evt != nil {
+		switch {
+		case evt.ID != "":
+			matchExpr = `event->>'id' = $7`
+			matchValue = evt.ID
+		case evt.InvocationID != "":
+			matchExpr = `event->>'invocationId' = $7`
+			matchValue = evt.InvocationID
+		}
+	}
+	if matchValue == "" {
+		eventBytes, err := json.Marshal(evt)
+		if err != nil {
+			return fmt.Errorf(
+				"marshal event matcher failed: %w",
+				err,
+			)
+		}
+		matchValue = string(eventBytes)
+	}
+
 	updateSQL := fmt.Sprintf(
 		`UPDATE %s SET `+
 			`content_text = $1, `+
@@ -148,6 +175,7 @@ func (s *Service) updateLatestEventEmbedding(
 			`  AND session_id = $6 `+
 			`  AND embedding IS NULL `+
 			`  AND deleted_at IS NULL `+
+			`  AND `+matchExpr+` `+
 			`  ORDER BY created_at DESC `+
 			`  LIMIT 1`+
 			`)`,
@@ -159,6 +187,7 @@ func (s *Service) updateLatestEventEmbedding(
 		ctx, updateSQL,
 		contentText, role, vector,
 		sess.AppName, sess.UserID, sess.ID,
+		matchValue,
 	)
 	if err != nil {
 		return fmt.Errorf(

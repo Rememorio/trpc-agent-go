@@ -661,10 +661,12 @@ func TestAsyncIndexEvent_Success(t *testing.T) {
 			string(model.RoleAssistant),
 			anyVectorArg{},
 			"app", "user", "sess-1",
+			"inv-1",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	evt := &event.Event{
+		InvocationID: "inv-1",
 		Response: &model.Response{
 			Choices: []model.Choice{
 				{Message: model.Message{
@@ -696,10 +698,12 @@ func TestAsyncIndexEvent_UpdateError(t *testing.T) {
 			string(model.RoleUser),
 			anyVectorArg{},
 			"app", "user", "sess-1",
+			"inv-1",
 		).
 		WillReturnError(fmt.Errorf("db down"))
 
 	evt := &event.Event{
+		InvocationID: "inv-1",
 		Response: &model.Response{
 			Choices: []model.Choice{
 				{Message: model.Message{
@@ -3161,6 +3165,7 @@ func TestAppendEventInternal_SyncWithAsyncIndex(
 	sess := session.NewSession("app", "user", "sess")
 
 	evt := &event.Event{
+		InvocationID: "inv-sync",
 		Response: &model.Response{
 			Choices: []model.Choice{
 				{Message: model.Message{
@@ -3196,6 +3201,7 @@ func TestAppendEventInternal_SyncWithAsyncIndex(
 			string(model.RoleAssistant),
 			anyVectorArg{},
 			"app", "user", "sess",
+			"inv-sync",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

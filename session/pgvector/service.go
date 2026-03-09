@@ -916,7 +916,7 @@ func (s *Service) appendEventInternal(
 				"failed: %w", err,
 		)
 	}
-	go s.asyncIndexEvent(ctx, sess, e)
+	s.triggerAsyncIndexEvent(sess, e)
 	return nil
 }
 
@@ -1009,14 +1009,21 @@ func (s *Service) Close() error {
 	return nil
 }
 
+// shouldPersistEvent reports whether the event will be
+// stored in `session_events` and can therefore be
+// indexed safely.
+func shouldPersistEvent(evt *event.Event) bool {
+	return evt != nil && evt.Response != nil &&
+		!evt.IsPartial && evt.IsValidContent()
+}
+
 // extractEventText extracts indexable text and role from
 // an event. Returns empty string for events that should
 // not be indexed (tool calls, partials, empty content).
 func extractEventText(
 	evt *event.Event,
 ) (string, model.Role) {
-	if evt == nil || evt.Response == nil ||
-		evt.IsPartial || !evt.IsValidContent() {
+	if !shouldPersistEvent(evt) {
 		return "", ""
 	}
 	if len(evt.Response.Choices) == 0 {
@@ -1050,9 +1057,29 @@ func extractEventText(
 	return content, role
 }
 
+// triggerAsyncIndexEvent detaches indexing work from the
+// request context so request cancellation does not skip
+// embedding write-back.
+func (s *Service) triggerAsyncIndexEvent(
+	sess *session.Session,
+	evt *event.Event,
+) {
+	if !shouldPersistEvent(evt) {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			defaultAsyncPersistTimeout,
+		)
+		defer cancel()
+		s.asyncIndexEvent(ctx, sess, evt)
+	}()
+}
+
 // asyncIndexEvent generates embedding and updates the
-// most recently inserted event row. Non-blocking: errors
-// are logged but do not affect the main path.
+// matching persisted event row. Non-blocking: errors are
+// logged but do not affect the main path.
 func (s *Service) asyncIndexEvent(
 	ctx context.Context,
 	sess *session.Session,
@@ -1079,8 +1106,8 @@ func (s *Service) asyncIndexEvent(
 		)
 		return
 	}
-	if err := s.updateLatestEventEmbedding(
-		ctx, sess, text, string(role), emb,
+	if err := s.updateEventEmbedding(
+		ctx, sess, evt, text, string(role), emb,
 	); err != nil {
 		log.WarnfContext(ctx,
 			"pgvector session: update embedding "+

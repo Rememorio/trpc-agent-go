@@ -187,6 +187,7 @@ func TestSearchEvents_Success(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -227,6 +228,7 @@ func TestSearchEvents_MultipleResults(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -261,6 +263,7 @@ func TestSearchEvents_NoResults(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -288,6 +291,7 @@ func TestSearchEvents_QueryError(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("db connection lost"))
 
@@ -323,6 +327,7 @@ func TestSearchEvents_WithTopK(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -359,6 +364,7 @@ func TestSearchEvents_DefaultTopK(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -390,6 +396,7 @@ func TestSearchEvents_InvalidEventJSON(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -406,9 +413,9 @@ func TestSearchEvents_InvalidEventJSON(t *testing.T) {
 	assert.Nil(t, results)
 }
 
-// --- Tests for updateLatestEventEmbedding ---
+// --- Tests for updateEventEmbedding ---
 
-func TestUpdateLatestEventEmbedding_Success(t *testing.T) {
+func TestUpdateEventEmbedding_Success(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()
 
@@ -417,6 +424,7 @@ func TestUpdateLatestEventEmbedding_Success(t *testing.T) {
 		AppName: "app",
 		UserID:  "user",
 	}
+	evt := &event.Event{InvocationID: "inv-1"}
 
 	mock.ExpectExec("UPDATE session_events SET").
 		WithArgs(
@@ -424,11 +432,12 @@ func TestUpdateLatestEventEmbedding_Success(t *testing.T) {
 			"assistant",
 			anyVectorArg{},
 			"app", "user", "sess-1",
+			"inv-1",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	err := s.updateLatestEventEmbedding(
-		context.Background(), sess,
+	err := s.updateEventEmbedding(
+		context.Background(), sess, evt,
 		"test content", "assistant",
 		[]float64{0.1, 0.2, 0.3},
 	)
@@ -436,7 +445,7 @@ func TestUpdateLatestEventEmbedding_Success(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestUpdateLatestEventEmbedding_DBError(t *testing.T) {
+func TestUpdateEventEmbedding_DBError(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()
 
@@ -445,6 +454,7 @@ func TestUpdateLatestEventEmbedding_DBError(t *testing.T) {
 		AppName: "app",
 		UserID:  "user",
 	}
+	evt := &event.Event{InvocationID: "inv-1"}
 
 	mock.ExpectExec("UPDATE session_events SET").
 		WithArgs(
@@ -452,11 +462,12 @@ func TestUpdateLatestEventEmbedding_DBError(t *testing.T) {
 			"user",
 			anyVectorArg{},
 			"app", "user", "sess-1",
+			"inv-1",
 		).
 		WillReturnError(fmt.Errorf("db error"))
 
-	err := s.updateLatestEventEmbedding(
-		context.Background(), sess,
+	err := s.updateEventEmbedding(
+		context.Background(), sess, evt,
 		"content", "user",
 		[]float64{0.1, 0.2, 0.3},
 	)
@@ -508,6 +519,7 @@ func TestSearchEvents_SQLContainsTableName(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -540,6 +552,7 @@ func TestSearchEvents_TrimmedQuery(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -573,6 +586,7 @@ func TestSearchEvents_QueryPassedToEmbedder(
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -649,6 +663,7 @@ func TestSearchEvents_ScanError(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
+			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 

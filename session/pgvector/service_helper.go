@@ -723,7 +723,7 @@ func (s *Service) startAsyncPersistWorker() {
 							"async persist event "+
 							"failed: %v", err,
 					)
-				} else {
+				} else if shouldPersistEvent(pair.event) {
 					sess := &session.Session{
 						ID:      pair.key.SessionID,
 						AppName: pair.key.AppName,
