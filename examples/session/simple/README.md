@@ -7,7 +7,7 @@ This example demonstrates advanced session management capabilities using the `Ru
 This implementation highlights the power of session management in conversational AI:
 
 - **Multiple Sessions**: Create and switch between multiple independent conversation contexts
-- **Persistent Storage**: Support for SQLite, Redis, PostgreSQL, MySQL, and ClickHouse backends
+- **Persistent Storage**: Support for SQLite, Redis, PostgreSQL, pgvector, MySQL, and ClickHouse backends
 - **Session Discovery**: List and switch between existing sessions
 
 
@@ -56,6 +56,16 @@ This implementation highlights the power of session management in conversational
 | `PG_PASSWORD` | PostgreSQL password   | ``                |
 | `PG_DATABASE` | PostgreSQL database   | `trpc-agent-go`   |
 
+**PGVector:**
+| Variable                   | Description           | Default Value                 |
+| -------------------------- | --------------------- | ----------------------------- |
+| `PGVECTOR_HOST`            | PostgreSQL host       | `localhost`                   |
+| `PGVECTOR_PORT`            | PostgreSQL port       | `5432`                        |
+| `PGVECTOR_USER`            | PostgreSQL user       | `postgres`                    |
+| `PGVECTOR_PASSWORD`        | PostgreSQL password   | ``                            |
+| `PGVECTOR_DATABASE`        | PostgreSQL database   | `trpc-agent-go-pgsession`     |
+| `PGVECTOR_EMBEDDER_MODEL`  | Embedding model       | `text-embedding-3-small`      |
+
 **MySQL:**
 | Variable         | Description        | Default Value    |
 | ---------------- | ------------------ | ---------------- |
@@ -70,7 +80,7 @@ This implementation highlights the power of session management in conversational
 | Argument           | Description                                         | Default Value    |
 | ------------------ | --------------------------------------------------- | ---------------- |
 | `-model`           | Name of the model to use                            | `MODEL_NAME` env var |
-| `-session`         | Session backend: inmemory/sqlite/redis/postgres/mysql/clickhouse | `inmemory` |
+| `-session`         | Session backend: inmemory/sqlite/redis/postgres/pgvector/mysql/clickhouse | `inmemory` |
 | `-streaming`       | Enable streaming mode for responses                 | `true`           |
 | `-event-limit`     | Maximum number of events to store per session       | `1000`           |
 | `-session-ttl`     | Session time-to-live duration                       | `10s`            |
@@ -137,6 +147,19 @@ export PG_USER="postgres"
 export PG_PASSWORD="your-password"
 export PG_DATABASE="sessions_db"
 go run . -session postgres
+```
+
+### With PGVector Backend
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export PGVECTOR_HOST="localhost"
+export PGVECTOR_USER="postgres"
+export PGVECTOR_PASSWORD="your-password"
+export PGVECTOR_DATABASE="trpc-agent-go-pgsession"
+export PGVECTOR_EMBEDDER_MODEL="text-embedding-3-small"
+go run . -session pgvector
 ```
 
 ### With MySQL Backend

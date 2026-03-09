@@ -18,6 +18,7 @@
 //	go run main.go -session=sqlite
 //	go run main.go -session=redis
 //	go run main.go -session=postgres
+//	go run main.go -session=pgvector
 //	go run main.go -session=mysql
 //	go run main.go -session=clickhouse
 //
@@ -35,6 +36,14 @@
 //		export PG_USER="postgres"
 //		export PG_PASSWORD="password"
 //		export PG_DATABASE="trpc_agent"
+//
+//	pgvector:
+//		export PGVECTOR_HOST="localhost"
+//		export PGVECTOR_PORT="5432"
+//		export PGVECTOR_USER="postgres"
+//		export PGVECTOR_PASSWORD="password"
+//		export PGVECTOR_DATABASE="trpc-agent-go-pgsession"
+//		export PGVECTOR_EMBEDDER_MODEL="text-embedding-3-small"
 //
 //	mysql:
 //		export MYSQL_HOST="localhost"
@@ -83,7 +92,7 @@ var (
 		"session",
 		"inmemory",
 		"Name of the session service to use, inmemory / "+
-			"sqlite / redis / postgres / mysql / clickhouse",
+			"sqlite / redis / postgres / pgvector / mysql / clickhouse",
 	)
 	streaming = flag.Bool(
 		"streaming",

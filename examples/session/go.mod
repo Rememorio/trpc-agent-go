@@ -6,6 +6,7 @@ replace (
 	trpc.group/trpc-go/trpc-agent-go => ../..
 	trpc.group/trpc-go/trpc-agent-go/session/clickhouse => ../../session/clickhouse
 	trpc.group/trpc-go/trpc-agent-go/session/mysql => ../../session/mysql
+	trpc.group/trpc-go/trpc-agent-go/session/pgvector => ../../session/pgvector
 	trpc.group/trpc-go/trpc-agent-go/session/postgres => ../../session/postgres
 	trpc.group/trpc-go/trpc-agent-go/session/redis => ../../session/redis/
 	trpc.group/trpc-go/trpc-agent-go/session/sqlite => ../../session/sqlite
@@ -18,9 +19,10 @@ replace (
 require (
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.32
-	trpc.group/trpc-go/trpc-agent-go v0.5.0
+	trpc.group/trpc-go/trpc-agent-go v1.6.0
 	trpc.group/trpc-go/trpc-agent-go/session/clickhouse v0.0.0-20260107012516-0827a2e089f0
 	trpc.group/trpc-go/trpc-agent-go/session/mysql v0.0.0-20251126064502-c8c2594d2519
+	trpc.group/trpc-go/trpc-agent-go/session/pgvector v0.0.0
 	trpc.group/trpc-go/trpc-agent-go/session/postgres v0.0.0-20251126064502-c8c2594d2519
 	trpc.group/trpc-go/trpc-agent-go/session/redis v0.0.0-20251126064502-c8c2594d2519
 	trpc.group/trpc-go/trpc-agent-go/session/sqlite v0.0.0-20251126064502-c8c2594d2519
@@ -49,6 +51,7 @@ require (
 	github.com/openai/openai-go v1.12.0 // indirect
 	github.com/panjf2000/ants/v2 v2.10.0 // indirect
 	github.com/paulmach/orb v0.12.0 // indirect
+	github.com/pgvector/pgvector-go v0.2.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/redis/go-redis/v9 v9.11.0 // indirect
@@ -82,6 +85,6 @@ require (
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5 // indirect
 	trpc.group/trpc-go/trpc-agent-go/storage/clickhouse v1.1.2-0.20260108033914-7a20241f1ad5 // indirect
 	trpc.group/trpc-go/trpc-agent-go/storage/mysql v0.5.0 // indirect
-	trpc.group/trpc-go/trpc-agent-go/storage/postgres v0.8.0 // indirect
+	trpc.group/trpc-go/trpc-agent-go/storage/postgres v1.6.0 // indirect
 	trpc.group/trpc-go/trpc-agent-go/storage/redis v0.0.3 // indirect
 )
