@@ -2302,9 +2302,9 @@ import (
 
 // Service 是评估服务接口
 type Service interface {
-	Inference(ctx context.Context, request *InferenceRequest) ([]*InferenceResult, error) // Inference 执行推理阶段
-	Evaluate(ctx context.Context, request *EvaluateRequest) (*EvalSetRunResult, error)    // Evaluate 执行评估阶段
-	Close() error                                                                         // Close 释放资源
+	Inference(ctx context.Context, request *InferenceRequest, opt ...Option) ([]*InferenceResult, error) // Inference 执行推理阶段
+	Evaluate(ctx context.Context, request *EvaluateRequest, opt ...Option) (*EvalSetRunResult, error)    // Evaluate 执行评估阶段
+	Close() error                                                                                        // Close 释放资源
 }
 
 // InferenceRequest 是推理请求
@@ -2380,7 +2380,7 @@ AgentEvaluator 的接口定义如下。
 
 ```go
 type AgentEvaluator interface {
-	Evaluate(ctx context.Context, evalSetID string) (*EvaluationResult, error) // Evaluate 执行评估并返回聚合结果
+	Evaluate(ctx context.Context, evalSetID string, opt ...Option) (*EvaluationResult, error) // Evaluate 执行评估并返回聚合结果
 	Close() error                                                              // Close 释放资源
 }
 ```
@@ -2754,6 +2754,41 @@ passHatK, err := evaluation.PassHatK(n, c, k)
 ```
 
 pass@k 与 pass^k 的计算依赖运行之间的独立性与同分布假设，进行重复运行评估时需要确保每次运行均为独立采样并完成必要的状态重置，避免会话记忆、工具缓存或外部依赖复用导致指标被系统性高估。
+
+### 实时流量沉淀为评估集
+
+在业务迭代中，评估集往往需要从真实交互中沉淀。框架提供 `evaluation/evalset/recorder` Runner 插件，用于在运行时捕获 `runner.Run()` 的事件流，并将交互过程写入 EvalSet/EvalCase，形成可复用的评估资产。
+
+默认情况下，recorder 以 `sessionID` 同时作为 `EvalSetID` 和 `EvalCase.EvalID`，从而使同一 `sessionID` 的多轮对话持续追加到同一个 EvalCase 的 `conversation` 中。除了对话本身，recorder 还会把回放所需的输入一并沉淀下来：`RunOptions.RuntimeState` 会写入 `EvalCase.SessionInput.State`，注入型上下文消息会存入 `EvalCase.ContextMessages`。写入会在 `runner.completion` 到达，或者观测到终态错误事件时触发。`runner.completion` 表示本轮推理成功完成。终态错误既可以是对象类型为 `ObjectTypeError` 的 `error` 事件，也可以是携带 `Response.Error` 的响应事件；这两类情况都会以失败调用的形式写入评估集。
+
+```go
+import (
+	"log"
+	"time"
+
+	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset"
+	evalsetlocal "trpc.group/trpc-go/trpc-agent-go/evaluation/evalset/local"
+	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset/recorder"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+)
+
+evalSetManager := evalsetlocal.New(evalset.WithBaseDir("./data"))
+rec, err := recorder.New(
+	evalSetManager,
+	recorder.WithWriteTimeout(2*time.Second),
+)
+if err != nil {
+	log.Fatalf("create evalset recorder: %v", err)
+}
+
+run := runner.NewRunner(appName, agent, runner.WithPlugins(rec))
+```
+
+如需调整沉淀粒度与写入行为，可以通过 Option 进行配置。`WithEvalSetIDResolver` 与 `WithEvalCaseIDResolver` 用于自定义 `EvalSetID` 与 `EvalCase.EvalID` 的生成规则，常用于按业务维度分桶，或将多个 session 汇聚到同一评估集。写入模式默认同步，以保证在本轮推理完成后尽快落盘；当不希望写入阻塞事件处理时，可以通过 `WithAsyncWriteEnabled(true)` 开启异步写入。为避免慢存储导致单次写入耗时不可控，可以通过 `WithWriteTimeout(d)` 为落盘设置超时，`d==0` 表示不额外设置 deadline。
+
+如果希望把实时流量按 trace mode 作为 actual trace 落盘，可以开启 `WithTraceModeEnabled(true)`。开启后，recorder 会创建 `EvalModeTrace` 的 case，并将 turn 追加到 `ActualConversation`，而不是默认模式下的 `Conversation`。由于 `Conversation` 与 `ActualConversation` 在评估中的语义不同，向已有 EvalCase 追加时要求 mode 一致。
+
+完整示例参见 [examples/evaluation/evalsetrecorder](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/evaluation/evalsetrecorder)。
 
 ### Skills 评估
 

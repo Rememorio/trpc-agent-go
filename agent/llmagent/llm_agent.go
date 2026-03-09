@@ -521,9 +521,25 @@ func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
 				toolskill.WithForceSaveArtifacts(true),
 			)
 		}
-		allTools = append(allTools, toolskill.NewRunTool(
-			options.skillsRepository, exec, runOpts...,
-		))
+		if options.skillRunRequireSkillLoaded {
+			runOpts = append(runOpts,
+				toolskill.WithRequireSkillLoaded(true),
+			)
+		}
+		runTool := toolskill.NewRunTool(
+			options.skillsRepository,
+			exec,
+			runOpts...,
+		)
+		execTool := toolskill.NewExecTool(runTool)
+		allTools = append(
+			allTools,
+			runTool,
+			execTool,
+			toolskill.NewWriteStdinTool(execTool),
+			toolskill.NewPollSessionTool(execTool),
+			toolskill.NewKillSessionTool(execTool),
+		)
 	}
 
 	return allTools, userToolNames

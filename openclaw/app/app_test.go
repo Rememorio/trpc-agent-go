@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,14 +28,113 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/claudecode"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
+	meminmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
+	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
 	occhannel "trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwclient"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
+	tgapi "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/telegram"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/registry"
 )
+
+type captureRequestModel struct {
+	got *model.Request
+}
+
+func (m *captureRequestModel) GenerateContent(
+	ctx context.Context,
+	req *model.Request,
+) (<-chan *model.Response, error) {
+	m.got = req
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role:    model.RoleAssistant,
+				Content: "ok",
+			},
+		}},
+		Done: true,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *captureRequestModel) Info() model.Info {
+	return model.Info{Name: "capture"}
+}
+
+func createAppTestSkill(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "echoer")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	data := "---\nname: echoer\n" +
+		"description: simple echo skill\n---\nbody\n"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "SKILL.md"),
+		[]byte(data),
+		0o600,
+	))
+	return root
+}
+
+func runAgentAndCapture(
+	t *testing.T,
+	agt agent.Agent,
+	mdl *captureRequestModel,
+	sess *session.Session,
+) *model.Request {
+	t.Helper()
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("hi")),
+		agent.WithInvocationSession(sess),
+	)
+	ch, err := agt.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for evt := range ch {
+		if evt == nil || !evt.RequiresCompletion {
+			continue
+		}
+		key := agent.GetAppendEventNoticeKey(evt.ID)
+		require.NotNil(
+			t,
+			inv.AddNoticeChannel(context.Background(), key),
+		)
+		require.NoError(t, inv.NotifyCompletion(context.Background(), key))
+	}
+	require.NotNil(t, mdl.got)
+	return mdl.got
+}
+
+func joinSystemMessages(req *model.Request) string {
+	if req == nil {
+		return ""
+	}
+	var parts []string
+	for _, msg := range req.Messages {
+		if msg.Role != model.RoleSystem {
+			continue
+		}
+		parts = append(parts, msg.Content)
+	}
+	return strings.Join(parts, "\n\n")
+}
 
 func TestRun_ParseErrorExitCode(t *testing.T) {
 	t.Parallel()
@@ -66,6 +166,40 @@ func TestNewRuntime_BuildsGatewayHandler(t *testing.T) {
 	require.NotEmpty(t, rt.Gateway.StatusPath)
 	require.NotEmpty(t, rt.Gateway.CancelPath)
 	require.Empty(t, rt.Channels)
+}
+
+func TestNewRuntime_DebugRecorderEnabled_Smoke(t *testing.T) {
+	t.Parallel()
+
+	rt, err := NewRuntime(context.Background(), []string{
+		"-mode", modeMock,
+		"-state-dir", t.TempDir(),
+		"-skills-root", t.TempDir(),
+		"-debug-recorder",
+		"-debug-recorder-mode", "safe",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = rt.Close()
+	})
+	require.NotNil(t, rt.Gateway.Handler)
+}
+
+func TestNewRuntime_DebugRecorderModeInvalidExitCode(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewRuntime(context.Background(), []string{
+		"-mode", modeMock,
+		"-state-dir", t.TempDir(),
+		"-skills-root", t.TempDir(),
+		"-debug-recorder",
+		"-debug-recorder-mode", "nope",
+	})
+	require.Error(t, err)
+
+	var exitErr *exitError
+	require.True(t, errors.As(err, &exitErr))
+	require.Equal(t, 1, exitErr.Code)
 }
 
 func TestNewRuntime_WithRalphLoop_Smoke(t *testing.T) {
@@ -135,14 +269,29 @@ func TestNewRuntime_WithTelegram_BuildsChannel(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	t.Setenv(telegramBaseURLEnvName, srv.URL)
+	t.Setenv(tgapi.BaseURLEnvName, srv.URL)
+
+	cfgData, err := yaml.Marshal(map[string]any{
+		"channels": []any{
+			map[string]any{
+				"type": telegramChannelType,
+				"config": map[string]any{
+					"token": token,
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, cfgData, 0o600))
 
 	rt, err := NewRuntime(context.Background(), []string{
 		"-mode", modeMock,
 		"-state-dir", dir,
 		"-skills-root", t.TempDir(),
-		"-telegram-token", token,
+		"-config", cfgPath,
 		"-require-mention",
+		"-mention", "@bot",
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -151,14 +300,29 @@ func TestNewRuntime_WithTelegram_BuildsChannel(t *testing.T) {
 
 	require.NotNil(t, rt.Gateway.Handler)
 	require.Len(t, rt.Channels, 1)
-	require.Equal(t, registry.ChannelTypeTelegram, rt.Channels[0].ID())
+	require.Equal(t, telegramChannelType, rt.Channels[0].ID())
 }
 
 func TestNewRuntime_TelegramProxyErrorExitCode(t *testing.T) {
+	cfgData, err := yaml.Marshal(map[string]any{
+		"channels": []any{
+			map[string]any{
+				"type": telegramChannelType,
+				"config": map[string]any{
+					"token": "x",
+					"proxy": "://bad",
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, cfgData, 0o600))
+
 	rt, err := NewRuntime(context.Background(), []string{
 		"-mode", modeMock,
-		"-telegram-token", "x",
-		"-telegram-proxy", "://bad",
+		"-config", cfgPath,
+		"-skills-root", t.TempDir(),
 	})
 	require.Nil(t, rt)
 	require.Error(t, err)
@@ -396,14 +560,35 @@ func TestNewRuntime_ErrorPathsExitCode(t *testing.T) {
 			name: "probe telegram bot fails",
 			args: func(t *testing.T) []string {
 				t.Setenv(
-					telegramBaseURLEnvName,
+					tgapi.BaseURLEnvName,
 					makeBotServer(t, false),
 				)
+
+				cfgData, err := yaml.Marshal(map[string]any{
+					"channels": []any{
+						map[string]any{
+							"type": telegramChannelType,
+							"config": map[string]any{
+								"token": token,
+							},
+						},
+					},
+				})
+				require.NoError(t, err)
+				cfgPath := filepath.Join(
+					t.TempDir(),
+					"config.yaml",
+				)
+				require.NoError(t, os.WriteFile(
+					cfgPath,
+					cfgData,
+					0o600,
+				))
 				return []string{
 					"-mode", modeMock,
 					"-state-dir", t.TempDir(),
 					"-skills-root", t.TempDir(),
-					"-telegram-token", token,
+					"-config", cfgPath,
 				}
 			},
 			wantCode: 1,
@@ -412,15 +597,36 @@ func TestNewRuntime_ErrorPathsExitCode(t *testing.T) {
 			name: "create telegram channel fails",
 			args: func(t *testing.T) []string {
 				t.Setenv(
-					telegramBaseURLEnvName,
+					tgapi.BaseURLEnvName,
 					makeBotServer(t, true),
 				)
+
+				cfgData, err := yaml.Marshal(map[string]any{
+					"channels": []any{
+						map[string]any{
+							"type": telegramChannelType,
+							"config": map[string]any{
+								"token":       token,
+								"pairing_ttl": "0s",
+							},
+						},
+					},
+				})
+				require.NoError(t, err)
+				cfgPath := filepath.Join(
+					t.TempDir(),
+					"config.yaml",
+				)
+				require.NoError(t, os.WriteFile(
+					cfgPath,
+					cfgData,
+					0o600,
+				))
 				return []string{
 					"-mode", modeMock,
 					"-state-dir", t.TempDir(),
 					"-skills-root", t.TempDir(),
-					"-telegram-token", token,
-					"-telegram-pairing-ttl", "0s",
+					"-config", cfgPath,
 				}
 			},
 			wantCode: 1,
@@ -456,9 +662,26 @@ func TestMain_InspectDispatches(t *testing.T) {
 func TestRun_TelegramProxyErrorExitCode(t *testing.T) {
 	t.Parallel()
 
-	err := run(context.Background(), []string{
-		"-telegram-token", "x",
-		"-telegram-proxy", "://bad",
+	cfgData, err := yaml.Marshal(map[string]any{
+		"channels": []any{
+			map[string]any{
+				"type": telegramChannelType,
+				"config": map[string]any{
+					"token": "x",
+					"proxy": "://bad",
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, cfgData, 0o600))
+
+	err = run(context.Background(), []string{
+		"-config", cfgPath,
+		"-mode", modeMock,
+		"-skills-root", t.TempDir(),
+		"-state-dir", t.TempDir(),
 	})
 	require.Error(t, err)
 
@@ -621,6 +844,84 @@ func TestNewAgent_EmptyInstructionUsesDefault(t *testing.T) {
 	require.NotNil(t, agt)
 }
 
+func TestNewAgent_SkillsToolingGuidance_ConfigApplied(t *testing.T) {
+	t.Parallel()
+
+	root := createAppTestSkill(t)
+	mdl := &captureRequestModel{}
+	guide := ""
+	agt, err := newAgent(mdl, agentConfig{
+		AppName:            "demo",
+		SkillsRoot:         root,
+		StateDir:           t.TempDir(),
+		SkillsToolingGuide: &guide,
+	}, nil, nil)
+	require.NoError(t, err)
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		&session.Session{},
+	)
+	sys := joinSystemMessages(req)
+	require.Contains(t, sys, "Available skills:")
+	require.NotContains(
+		t,
+		sys,
+		"Tooling and workspace guidance:",
+	)
+}
+
+func TestNewAgent_SkillsLoadModeTurnClearsLoadedState(t *testing.T) {
+	t.Parallel()
+
+	root := createAppTestSkill(t)
+	mdl := &captureRequestModel{}
+	agt, err := newAgent(mdl, agentConfig{
+		AppName:        "demo",
+		SkillsRoot:     root,
+		StateDir:       t.TempDir(),
+		SkillsLoadMode: "turn",
+	}, nil, nil)
+	require.NoError(t, err)
+
+	sess := &session.Session{
+		State: session.StateMap{
+			skill.StateKeyLoadedPrefix + "echoer": []byte("1"),
+		},
+	}
+	req := runAgentAndCapture(t, agt, mdl, sess)
+	sys := joinSystemMessages(req)
+	require.NotContains(t, sys, "[Loaded] echoer")
+	require.Nil(t, sess.State[skill.StateKeyLoadedPrefix+"echoer"])
+}
+
+func TestNewAgent_SkillsToolResults_ConfigApplied(t *testing.T) {
+	t.Parallel()
+
+	root := createAppTestSkill(t)
+	mdl := &captureRequestModel{}
+	agt, err := newAgent(mdl, agentConfig{
+		AppName:           "demo",
+		SkillsRoot:        root,
+		StateDir:          t.TempDir(),
+		SkillsLoadMode:    "session",
+		SkillsToolResults: true,
+	}, nil, nil)
+	require.NoError(t, err)
+
+	sess := &session.Session{
+		State: session.StateMap{
+			skill.StateKeyLoadedPrefix + "echoer": []byte("1"),
+		},
+	}
+	req := runAgentAndCapture(t, agt, mdl, sess)
+	sys := joinSystemMessages(req)
+	require.Contains(t, sys, "Loaded skill context:")
+	require.Contains(t, sys, "[Loaded] echoer")
+}
+
 func TestRun_HTTPListenErrorPath(t *testing.T) {
 	t.Parallel()
 
@@ -661,6 +962,42 @@ func TestRun_Smoke(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRun_DebugRecorderEnabled_Smoke(t *testing.T) {
+	dir := t.TempDir()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	err := run(ctx, []string{
+		"-http-addr", "127.0.0.1:0",
+		"-mode", modeMock,
+		"-state-dir", dir,
+		"-skills-root", t.TempDir(),
+		"-debug-recorder",
+		"-debug-recorder-mode", "safe",
+	})
+	require.NoError(t, err)
+}
+
+func TestRun_DebugRecorderModeInvalidExitCode(t *testing.T) {
+	t.Parallel()
+
+	err := run(context.Background(), []string{
+		"-http-addr", "127.0.0.1:0",
+		"-mode", modeMock,
+		"-state-dir", t.TempDir(),
+		"-skills-root", t.TempDir(),
+		"-debug-recorder",
+		"-debug-recorder-mode", "nope",
+	})
+	require.Error(t, err)
+
+	var exitErr *exitError
+	require.True(t, errors.As(err, &exitErr))
+	require.Equal(t, 1, exitErr.Code)
+}
+
 func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 	dir := t.TempDir()
 	token := "token"
@@ -684,21 +1021,36 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	t.Setenv(telegramBaseURLEnvName, srv.URL)
+	t.Setenv(tgapi.BaseURLEnvName, srv.URL)
+
+	cfgData, err := yaml.Marshal(map[string]any{
+		"channels": []any{
+			map[string]any{
+				"type": telegramChannelType,
+				"config": map[string]any{
+					"token": token,
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, cfgData, 0o600))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	time.AfterFunc(50*time.Millisecond, cancel)
 
-	err := run(ctx, []string{
+	runErr := run(ctx, []string{
 		"-http-addr", "127.0.0.1:0",
 		"-mode", modeMock,
 		"-state-dir", dir,
 		"-skills-root", t.TempDir(),
-		"-telegram-token", token,
+		"-config", cfgPath,
 		"-require-mention",
+		"-mention", "@bot",
 	})
-	require.NoError(t, err)
+	require.NoError(t, runErr)
 }
 
 func TestSplitCSV(t *testing.T) {
@@ -973,6 +1325,74 @@ func TestResolveStateDir_DefaultHome(t *testing.T) {
 	require.Equal(t, filepath.Join(home, ".trpc-agent-go", appName), got)
 }
 
+func TestMaybeEnableDebugRecorder_Disabled(t *testing.T) {
+	t.Parallel()
+
+	ctx, rec, err := maybeEnableDebugRecorder(nil, runOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, ctx)
+	require.Nil(t, rec)
+	require.Nil(t, debugrecorder.RecorderFromContext(ctx))
+}
+
+func TestMaybeEnableDebugRecorder_Enabled_Defaults(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	ctx, rec, err := maybeEnableDebugRecorder(
+		context.Background(),
+		runOptions{
+			StateDir:             stateDir,
+			DebugRecorderEnabled: true,
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	require.Equal(
+		t,
+		filepath.Join(stateDir, defaultDebugRecorderDir),
+		rec.Dir(),
+	)
+	require.Equal(t, rec, debugrecorder.RecorderFromContext(ctx))
+
+	_, err = os.Stat(rec.Dir())
+	require.NoError(t, err)
+}
+
+func TestMaybeEnableDebugRecorder_InvalidModeFails(t *testing.T) {
+	t.Parallel()
+
+	_, rec, err := maybeEnableDebugRecorder(
+		context.Background(),
+		runOptions{
+			StateDir:             t.TempDir(),
+			DebugRecorderEnabled: true,
+			DebugRecorderMode:    "nope",
+		},
+	)
+	require.Error(t, err)
+	require.Nil(t, rec)
+}
+
+func TestMaybeEnableDebugRecorder_BadDirFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	debugFile := filepath.Join(dir, "debug.txt")
+	require.NoError(t, os.WriteFile(debugFile, []byte("x"), 0o600))
+
+	_, rec, err := maybeEnableDebugRecorder(
+		context.Background(),
+		runOptions{
+			StateDir:             t.TempDir(),
+			DebugRecorderEnabled: true,
+			DebugRecorderDir:     debugFile,
+		},
+	)
+	require.Error(t, err)
+	require.Nil(t, rec)
+}
+
 func TestConfigFingerprint_Deterministic(t *testing.T) {
 	require.Equal(t, configFingerprint("a"), configFingerprint("a"))
 	require.NotEqual(t, configFingerprint("a"), configFingerprint("b"))
@@ -1236,9 +1656,11 @@ func TestChannelsFromRegistry(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte("greeting: hi"), &node))
 
 	channels, err := channelsFromRegistry(
+		context.Background(),
 		stubGateway{},
 		"demo",
 		"/state",
+		nil,
 		[]pluginSpec{{
 			Type:   typeName,
 			Name:   "c1",
@@ -1254,6 +1676,46 @@ func TestChannelsFromRegistry(t *testing.T) {
 	require.Equal(t, "hi", got.greeting)
 	require.Equal(t, "demo", got.deps.AppName)
 	require.Equal(t, "/state", got.deps.StateDir)
+}
+
+func TestRuntimeAdminHelpers(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "", listenURL(""))
+	require.Equal(
+		t,
+		"http://127.0.0.1:18789",
+		listenURL(":18789"),
+	)
+	require.Equal(
+		t,
+		"http://127.0.0.1:8080",
+		listenURL("0.0.0.0:8080"),
+	)
+	require.Equal(
+		t,
+		"http://127.0.0.1:9090",
+		listenURL("127.0.0.1:9090"),
+	)
+
+	ids := channelIDs([]occhannel.Channel{
+		&stubChannel{id: "telegram"},
+		nil,
+		&stubChannel{id: "  "},
+		&stubChannel{id: "discord"},
+	})
+	require.Equal(t, []string{"telegram", "discord"}, ids)
+
+	instanceID := runtimeInstanceID(
+		agentTypeLLM,
+		runOptions{
+			ModelMode:   modeOpenAI,
+			OpenAIModel: "gpt-5",
+		},
+		true,
+		"/tmp/state",
+	)
+	require.NotEmpty(t, instanceID)
 }
 
 type toolProviderCfg struct {
@@ -1437,6 +1899,714 @@ func TestRuntime_Close_NilRunnerIsNoop(t *testing.T) {
 	require.NoError(t, rt.Close())
 }
 
+func TestInProcGatewayClient_SendMessage_OK(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testReply     = "ok"
+		testRequestID = "req-1"
+	)
+
+	srv, err := gateway.New(&inProcGWTestRunner{
+		reply:     testReply,
+		requestID: testRequestID,
+	})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+
+	rsp, err := c.SendMessage(context.Background(), gwclient.MessageRequest{
+		From: "u1",
+		Text: "hi",
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rsp.StatusCode)
+	require.Equal(t, testReply, rsp.Reply)
+	require.Equal(t, testRequestID, rsp.RequestID)
+	require.NotEmpty(t, rsp.SessionID)
+}
+
+func TestInProcGatewayClient_SendMessage_StatusError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		wantErr = "gwclient: status 400: invalid_request: " +
+			"missing user_id or from"
+	)
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+
+	_, err = c.SendMessage(context.Background(), gwclient.MessageRequest{
+		Text: "hi",
+	})
+	require.Error(t, err)
+	require.Equal(t, wantErr, err.Error())
+}
+
+func TestInProcGatewayClient_NilServerFails(t *testing.T) {
+	t.Parallel()
+
+	var c *inProcGatewayClient
+
+	_, err := c.SendMessage(context.Background(), gwclient.MessageRequest{
+		From: "u1",
+		Text: "hi",
+	})
+	require.Error(t, err)
+	require.Equal(t, errNilGatewayServer, err.Error())
+
+	_, err = c.Cancel(context.Background(), "req-1")
+	require.Error(t, err)
+	require.Equal(t, errNilGatewayServer, err.Error())
+}
+
+func TestInProcGatewayClient_Cancel_OK(t *testing.T) {
+	t.Parallel()
+
+	const testRequestID = "req-1"
+
+	r := &inProcGWTestManagedRunner{cancelOK: testRequestID}
+	srv, err := gateway.New(r)
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+
+	canceled, err := c.Cancel(context.Background(), testRequestID)
+	require.NoError(t, err)
+	require.True(t, canceled)
+}
+
+func TestInProcGatewayClient_Cancel_Unsupported(t *testing.T) {
+	t.Parallel()
+
+	const wantErr = "gwclient: status 501: unsupported: " +
+		"runner does not support cancel"
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+
+	_, err = c.Cancel(context.Background(), "req-1")
+	require.Error(t, err)
+	require.Equal(t, wantErr, err.Error())
+}
+
+func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	sessSvc := sessioninmemory.NewSessionService()
+	memSvc := meminmemory.NewMemoryService()
+
+	const (
+		channelName = "telegram"
+		userID      = "u1"
+	)
+
+	_, err := sessSvc.CreateSession(ctx, session.Key{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: "s1",
+	}, nil)
+	require.NoError(t, err)
+	_, err = sessSvc.CreateSession(ctx, session.Key{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: "s2",
+	}, nil)
+	require.NoError(t, err)
+
+	err = memSvc.AddMemory(
+		ctx,
+		memory.UserKey{AppName: appName, UserID: userID},
+		"remember",
+		nil,
+	)
+	require.NoError(t, err)
+
+	mode, err := debugrecorder.ParseMode("safe")
+	require.NoError(t, err)
+
+	debugDir := t.TempDir()
+	rec, err := debugrecorder.New(debugDir, mode)
+	require.NoError(t, err)
+
+	trace, err := rec.Start(debugrecorder.TraceStart{
+		AppName:   appName,
+		Channel:   channelName,
+		UserID:    userID,
+		SessionID: "sid",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, trace)
+	traceDir := trace.Dir()
+	require.NotEmpty(t, traceDir)
+	require.NoError(t, trace.Close(debugrecorder.TraceEnd{Status: "ok"}))
+
+	otherTrace, err := rec.Start(debugrecorder.TraceStart{
+		AppName:   appName,
+		Channel:   channelName,
+		UserID:    "u2",
+		SessionID: "sid2",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, otherTrace)
+	otherTraceDir := otherTrace.Dir()
+	require.NotEmpty(t, otherTraceDir)
+	require.NoError(
+		t,
+		otherTrace.Close(debugrecorder.TraceEnd{Status: "ok"}),
+	)
+
+	uploadStore, err := uploads.NewStore(debugDir)
+	require.NoError(t, err)
+	saved, err := uploadStore.Save(
+		ctx,
+		uploads.Scope{
+			Channel:   channelName,
+			UserID:    userID,
+			SessionID: "sid",
+		},
+		"report.pdf",
+		[]byte("pdf"),
+	)
+	require.NoError(t, err)
+
+	personaPath, err := persona.DefaultStorePath(debugDir)
+	require.NoError(t, err)
+	personaStore, err := persona.NewStore(personaPath)
+	require.NoError(t, err)
+	_, err = personaStore.Set(
+		ctx,
+		persona.DMScopeKey(channelName, userID),
+		persona.PresetCoach,
+	)
+	require.NoError(t, err)
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(
+		srv,
+		appName,
+		sessSvc,
+		memSvc,
+		debugDir,
+		uploadStore,
+	)
+	c.SetPersonaStore(personaStore)
+
+	require.NoError(t, c.ForgetUser(ctx, channelName, userID))
+
+	sessions, err := sessSvc.ListSessions(ctx, session.UserKey{
+		AppName: appName,
+		UserID:  userID,
+	})
+	require.NoError(t, err)
+	require.Empty(t, sessions)
+
+	memories, err := memSvc.ReadMemories(
+		ctx,
+		memory.UserKey{AppName: appName, UserID: userID},
+		10,
+	)
+	require.NoError(t, err)
+	require.Empty(t, memories)
+
+	_, err = os.Stat(traceDir)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, os.ErrNotExist))
+
+	_, err = os.Stat(saved.Path)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, os.ErrNotExist))
+
+	_, err = os.Stat(otherTraceDir)
+	require.NoError(t, err)
+
+	currentPreset, err := personaStore.Get(
+		persona.DMScopeKey(channelName, userID),
+	)
+	require.NoError(t, err)
+	require.Equal(t, persona.PresetDefault, currentPreset.ID)
+}
+
+func TestInProcGatewayClient_ForgetUser_ClearsCronJobsOnlyOnce(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	sessSvc := sessioninmemory.NewSessionService()
+	memSvc := meminmemory.NewMemoryService()
+	const userID = "u1"
+
+	_, err = sessSvc.CreateSession(ctx, session.Key{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: "dm:1",
+	}, nil)
+	require.NoError(t, err)
+	_, err = sessSvc.CreateSession(ctx, session.Key{
+		AppName:   appName,
+		UserID:    userID,
+		SessionID: "cron:job-1:1",
+	}, nil)
+	require.NoError(t, err)
+
+	cronSvc, err := cron.NewService(
+		t.TempDir(),
+		&inProcGWTestRunner{},
+		outbound.NewRouter(),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, cronSvc.Close())
+	})
+
+	_, err = cronSvc.Add(&cron.Job{
+		Name:    "report",
+		Enabled: true,
+		Schedule: cron.Schedule{
+			Kind:  cron.ScheduleKindEvery,
+			Every: "1m",
+		},
+		Message: "collect cpu",
+		UserID:  userID,
+		Delivery: outbound.DeliveryTarget{
+			Channel: "telegram",
+			Target:  "100",
+		},
+	})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, sessSvc, memSvc, "")
+	c.SetCronService(cronSvc)
+
+	require.NoError(t, c.ForgetUser(ctx, "telegram", userID))
+
+	sessions, err := sessSvc.ListSessions(ctx, session.UserKey{
+		AppName: appName,
+		UserID:  userID,
+	})
+	require.NoError(t, err)
+	require.Len(t, sessions, 1)
+	require.Equal(t, "cron:job-1:1", sessions[0].ID)
+	require.Empty(
+		t,
+		cronSvc.ListForUser(
+			userID,
+			outbound.DeliveryTarget{Channel: "telegram"},
+		),
+	)
+}
+
+func TestInProcGatewayClient_ForgetUser_ValidationErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+
+	require.NoError(t, c.ForgetUser(nil, "telegram", "u1"))
+
+	err = c.ForgetUser(ctx, " ", "u1")
+	require.Error(t, err)
+	require.Equal(t, errEmptyForgetChannel, err.Error())
+
+	err = c.ForgetUser(ctx, "telegram", " ")
+	require.Error(t, err)
+	require.Equal(t, errEmptyForgetUserID, err.Error())
+
+	c2 := newInProcGatewayClient(srv, " ", nil, nil, "")
+	err = c2.ForgetUser(ctx, "telegram", "u1")
+	require.ErrorIs(t, err, session.ErrAppNameRequired)
+
+	c3 := newInProcGatewayClient(nil, appName, nil, nil, "")
+	err = c3.ForgetUser(ctx, "telegram", "u1")
+	require.Error(t, err)
+	require.Equal(t, errNilGatewayServer, err.Error())
+
+	debugFile := filepath.Join(t.TempDir(), "debug.txt")
+	require.NoError(t, os.WriteFile(debugFile, []byte("x"), 0o600))
+
+	c4 := newInProcGatewayClient(srv, appName, nil, nil, debugFile)
+	require.NoError(t, c4.ForgetUser(ctx, "telegram", "u1"))
+}
+
+func TestInProcGatewayClient_ScheduledJobs(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	router := outbound.NewRouter()
+	now := time.Date(2026, 3, 6, 16, 0, 0, 0, time.UTC)
+	cronSvc, err := cron.NewService(
+		t.TempDir(),
+		&inProcGWTestRunner{},
+		router,
+		cron.WithClock(func() time.Time { return now }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, cronSvc.Close())
+	})
+
+	job, err := cronSvc.Add(&cron.Job{
+		Name:    "cpu report",
+		Enabled: true,
+		Schedule: cron.Schedule{
+			Kind:  cron.ScheduleKindEvery,
+			Every: "1m",
+		},
+		Message: "collect cpu",
+		UserID:  "u1",
+		Delivery: outbound.DeliveryTarget{
+			Channel: "telegram",
+			Target:  "100",
+		},
+		LastStatus: cron.StatusSucceeded,
+	})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+	c.SetCronService(cronSvc)
+
+	jobs, err := c.ListScheduledJobs(
+		context.Background(),
+		"telegram",
+		"u1",
+		"100",
+	)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	require.Equal(t, job.ID, jobs[0].ID)
+	require.Equal(t, "cpu report", jobs[0].Name)
+	require.Equal(t, "every 1m", jobs[0].Schedule)
+	require.Equal(t, cron.StatusSucceeded, jobs[0].LastStatus)
+	require.WithinDuration(t, now.Add(time.Minute), *jobs[0].NextRunAt, 0)
+
+	removed, err := c.ClearScheduledJobs(
+		context.Background(),
+		"telegram",
+		"u1",
+		"100",
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, removed)
+	require.Len(
+		t,
+		cronSvc.ListForUser("u1", outbound.DeliveryTarget{}),
+		0,
+	)
+}
+
+func TestInProcGatewayClient_ScheduledJobs_RequireCronService(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+
+	_, err = c.ListScheduledJobs(
+		context.Background(),
+		"telegram",
+		"u1",
+		"100",
+	)
+	require.Error(t, err)
+	require.Equal(t, errNilCronService, err.Error())
+
+	_, err = c.ClearScheduledJobs(
+		context.Background(),
+		"telegram",
+		"u1",
+		"100",
+	)
+	require.Error(t, err)
+	require.Equal(t, errNilCronService, err.Error())
+}
+
+func TestInProcGatewayClient_PresetPersona(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	personaPath, err := persona.DefaultStorePath(t.TempDir())
+	require.NoError(t, err)
+	personaStore, err := persona.NewStore(personaPath)
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+	c.SetPersonaStore(personaStore)
+
+	scopeKey := persona.DMScopeKey("telegram", "u1")
+	preset, err := c.SetPresetPersona(
+		context.Background(),
+		scopeKey,
+		persona.PresetGirlfriend,
+	)
+	require.NoError(t, err)
+	require.Equal(t, persona.PresetGirlfriend, preset.ID)
+
+	got, err := c.GetPresetPersona(context.Background(), scopeKey)
+	require.NoError(t, err)
+	require.Equal(t, persona.PresetGirlfriend, got.ID)
+
+	require.NotEmpty(t, c.ListPresetPersonas())
+}
+
+type errSessionService struct {
+	session.Service
+
+	listErr   error
+	deleteErr error
+}
+
+func (s errSessionService) ListSessions(
+	ctx context.Context,
+	userKey session.UserKey,
+	options ...session.Option,
+) ([]*session.Session, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return s.Service.ListSessions(ctx, userKey, options...)
+}
+
+func (s errSessionService) DeleteSession(
+	ctx context.Context,
+	key session.Key,
+	options ...session.Option,
+) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	return s.Service.DeleteSession(ctx, key, options...)
+}
+
+type errMemoryService struct {
+	memory.Service
+
+	clearErr error
+}
+
+func (m errMemoryService) ClearMemories(
+	ctx context.Context,
+	userKey memory.UserKey,
+) error {
+	if m.clearErr != nil {
+		return m.clearErr
+	}
+	return m.Service.ClearMemories(ctx, userKey)
+}
+
+func TestInProcGatewayClient_ForgetUser_ListSessionsError(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	sessSvc := errSessionService{
+		Service:   sessioninmemory.NewSessionService(),
+		listErr:   errors.New("list boom"),
+		deleteErr: nil,
+	}
+	c := newInProcGatewayClient(srv, appName, sessSvc, nil, "")
+
+	err = c.ForgetUser(context.Background(), "telegram", "u1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: list sessions")
+	require.Contains(t, err.Error(), "list boom")
+}
+
+func TestInProcGatewayClient_ForgetUser_DeleteSessionError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	base := sessioninmemory.NewSessionService()
+	_, err = base.CreateSession(ctx, session.Key{
+		AppName:   appName,
+		UserID:    "u1",
+		SessionID: "s1",
+	}, nil)
+	require.NoError(t, err)
+
+	sessSvc := errSessionService{
+		Service:   base,
+		deleteErr: errors.New("delete boom"),
+	}
+	c := newInProcGatewayClient(srv, appName, sessSvc, nil, "")
+
+	err = c.ForgetUser(ctx, "telegram", "u1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: delete session")
+	require.Contains(t, err.Error(), "delete boom")
+}
+
+func TestInProcGatewayClient_ForgetUser_ClearMemoriesError(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	base := meminmemory.NewMemoryService()
+	memSvc := errMemoryService{
+		Service:  base,
+		clearErr: errors.New("clear boom"),
+	}
+	c := newInProcGatewayClient(srv, appName, nil, memSvc, "")
+
+	err = c.ForgetUser(context.Background(), "telegram", "u1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: clear memories")
+	require.Contains(t, err.Error(), "clear boom")
+}
+
+func TestInProcGatewayClient_ForgetUser_DeleteDebugTracesError(t *testing.T) {
+	t.Parallel()
+
+	mode, err := debugrecorder.ParseMode("safe")
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	rec, err := debugrecorder.New(dir, mode)
+	require.NoError(t, err)
+
+	const (
+		channelName = "telegram"
+		userID      = "u1"
+	)
+
+	trace, err := rec.Start(debugrecorder.TraceStart{
+		AppName:   appName,
+		Channel:   channelName,
+		UserID:    userID,
+		SessionID: "s1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, trace)
+	traceDir := trace.Dir()
+	require.NoError(t, trace.Close(debugrecorder.TraceEnd{Status: "ok"}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, rec.Dir())
+	err = c.ForgetUser(ctx, channelName, userID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: delete debug traces")
+	require.Contains(t, err.Error(), "context canceled")
+
+	_, err = os.Stat(traceDir)
+	require.NoError(t, err)
+}
+
+func TestDeleteDebugTraces_MissingDirNoError(t *testing.T) {
+	t.Parallel()
+
+	debugDir := filepath.Join(t.TempDir(), "missing")
+	err := deleteDebugTraces(
+		context.Background(),
+		debugDir,
+		"telegram",
+		appName,
+		"u1",
+	)
+	require.NoError(t, err)
+}
+
+func TestDeleteDebugTraces_IgnoresBadMeta(t *testing.T) {
+	t.Parallel()
+
+	debugDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(debugDir, "notes.txt"),
+		[]byte("ignored"),
+		0o600,
+	))
+
+	rootMeta := `{"start":{"app_name":"openclaw","channel":"telegram",
+"user_id":"u1"}}`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(debugDir, debugTraceMetaFile),
+		[]byte(rootMeta),
+		0o600,
+	))
+
+	badReadDir := filepath.Join(debugDir, "badread")
+	require.NoError(t, os.MkdirAll(badReadDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(badReadDir, debugTraceMetaFile),
+		[]byte("secret"),
+		0,
+	))
+
+	badJSONDir := filepath.Join(debugDir, "badjson")
+	require.NoError(t, os.MkdirAll(badJSONDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(badJSONDir, debugTraceMetaFile),
+		[]byte("{"),
+		0o600,
+	))
+
+	mismatchDir := filepath.Join(debugDir, "mismatch")
+	require.NoError(t, os.MkdirAll(mismatchDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(mismatchDir, debugTraceMetaFile),
+		[]byte(`{"start":{"app_name":"other"}}`),
+		0o600,
+	))
+
+	err := deleteDebugTraces(
+		context.Background(),
+		debugDir,
+		"telegram",
+		appName,
+		"u1",
+	)
+	require.NoError(t, err)
+}
+
+func TestCompactStrings_Deduplicates(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t,
+		[]string{"a", "b"},
+		compactStrings([]string{"a", "a", "b", "b"}),
+	)
+}
+
+func TestErrorForGWStatus_NilAPIError(t *testing.T) {
+	t.Parallel()
+
+	err := errorForGWStatus(http.StatusInternalServerError, nil)
+	require.Error(t, err)
+	require.Equal(t, "gwclient: status 500", err.Error())
+}
+
 type stubCloser struct {
 	closeErr error
 }
@@ -1480,6 +2650,59 @@ func (s *stubRunner) Close() error {
 		*s.closed = true
 	}
 	return s.closeErr
+}
+
+type inProcGWTestRunner struct {
+	reply     string
+	requestID string
+}
+
+func (r *inProcGWTestRunner) Run(
+	_ context.Context,
+	_ string,
+	_ string,
+	_ model.Message,
+	_ ...agent.RunOption,
+) (<-chan *event.Event, error) {
+	reply := r.reply
+	if reply == "" {
+		reply = "ok"
+	}
+	requestID := r.requestID
+	if requestID == "" {
+		requestID = "req-1"
+	}
+
+	ch := make(chan *event.Event, 1)
+	ch <- &event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage(reply)},
+			},
+			Done: true,
+		},
+		RequestID: requestID,
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (r *inProcGWTestRunner) Close() error { return nil }
+
+type inProcGWTestManagedRunner struct {
+	inProcGWTestRunner
+	cancelOK string
+}
+
+func (r *inProcGWTestManagedRunner) Cancel(requestID string) bool {
+	return requestID == r.cancelOK
+}
+
+func (r *inProcGWTestManagedRunner) RunStatus(
+	string,
+) (runner.RunStatus, bool) {
+	return runner.RunStatus{}, false
 }
 
 func TestToolSetsFromProviders_EmptyTypeFails(t *testing.T) {
@@ -1546,9 +2769,11 @@ func TestChannelsFromRegistry_EmptyTypeFails(t *testing.T) {
 	t.Parallel()
 
 	_, err := channelsFromRegistry(
+		context.Background(),
 		stubGateway{},
 		"demo",
 		"/state",
+		nil,
 		[]pluginSpec{{Type: " "}},
 	)
 	require.Error(t, err)
@@ -1559,9 +2784,11 @@ func TestChannelsFromRegistry_UnsupportedTypeFails(t *testing.T) {
 	t.Parallel()
 
 	_, err := channelsFromRegistry(
+		context.Background(),
 		stubGateway{},
 		"demo",
 		"/state",
+		nil,
 		[]pluginSpec{{Type: "nope"}},
 	)
 	require.Error(t, err)
@@ -1583,9 +2810,11 @@ func TestChannelsFromRegistry_ChannelErrorWrapped(t *testing.T) {
 	))
 
 	_, err := channelsFromRegistry(
+		context.Background(),
 		stubGateway{},
 		"demo",
 		"/state",
+		nil,
 		[]pluginSpec{{Type: typeName}},
 	)
 	require.Error(t, err)

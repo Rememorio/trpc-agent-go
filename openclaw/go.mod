@@ -34,6 +34,8 @@ replace trpc.group/trpc-go/trpc-agent-go/session/postgres => ../session/postgres
 
 replace trpc.group/trpc-go/trpc-agent-go/session/redis => ../session/redis
 
+replace trpc.group/trpc-go/trpc-agent-go/session/sqlite => ../session/sqlite
+
 replace trpc.group/trpc-go/trpc-agent-go/storage/clickhouse => ../storage/clickhouse
 
 replace trpc.group/trpc-go/trpc-agent-go/storage/mysql => ../storage/mysql
@@ -47,7 +49,10 @@ require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
+	github.com/mattn/go-sqlite3 v1.14.32
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/stretchr/testify v1.11.1
+	github.com/yuin/goldmark v1.7.13
 	gopkg.in/yaml.v3 v3.0.1
 	trpc.group/trpc-go/trpc-agent-go v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/memory/mysql v1.5.0
@@ -58,6 +63,7 @@ require (
 	trpc.group/trpc-go/trpc-agent-go/session/mysql v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/session/postgres v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/session/redis v0.0.3
+	trpc.group/trpc-go/trpc-agent-go/session/sqlite v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/storage/clickhouse v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/storage/mysql v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/storage/postgres v1.5.0
@@ -88,6 +94,7 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/getkin/kin-openapi v0.133.0 // indirect
+	github.com/go-ego/gse v1.0.0 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -133,10 +140,10 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/vcaesar/cedar v0.20.2 // indirect
 	github.com/wneessen/go-mail v0.7.2 // indirect
 	github.com/woodsbury/decimal128 v1.3.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect

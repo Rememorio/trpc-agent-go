@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,20 @@ func (r staticResolver) LookupIPAddr(
 	return r.addrs, r.err
 }
 
+type stubAudioTranscriber struct {
+	transcript string
+	err        error
+	calls      int
+}
+
+func (s *stubAudioTranscriber) Transcribe(
+	_ context.Context,
+	_ *model.Audio,
+) (string, error) {
+	s.calls++
+	return s.transcript, s.err
+}
+
 func TestNormalizeContentPart_FileID(t *testing.T) {
 	t.Parallel()
 
@@ -119,6 +134,23 @@ func TestNormalizeContentPart_FileData_InferMimeType(t *testing.T) {
 	require.NotNil(t, out)
 	require.NotNil(t, out.File)
 	require.Equal(t, "text/plain", out.File.MimeType)
+}
+
+func TestNormalizeContentPart_FileData_TooLarge(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{maxPartBytes: 1}
+	part := gwproto.ContentPart{
+		Type: gwproto.PartTypeFile,
+		File: &gwproto.FilePart{
+			Filename: "a.txt",
+			Data:     []byte("hi"),
+		},
+	}
+
+	_, _, err := s.normalizeContentPart(context.Background(), part)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), errContentPartTooLarge)
 }
 
 func TestNormalizeContentPart_FileURL_DefaultMimeType(t *testing.T) {
@@ -164,6 +196,23 @@ func TestNormalizeContentPart_ImageData(t *testing.T) {
 	require.Equal(t, imageDetailAuto, out.Image.Detail)
 }
 
+func TestNormalizeContentPart_ImageData_TooLarge(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{maxPartBytes: 1}
+	part := gwproto.ContentPart{
+		Type: gwproto.PartTypeImage,
+		Image: &gwproto.ImagePart{
+			Data:   []byte{0x1, 0x2},
+			Format: "png",
+		},
+	}
+
+	_, _, err := s.normalizeContentPart(context.Background(), part)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), errContentPartTooLarge)
+}
+
 func TestNormalizeContentPart_AudioData(t *testing.T) {
 	t.Parallel()
 
@@ -180,6 +229,23 @@ func TestNormalizeContentPart_AudioData(t *testing.T) {
 	require.NotNil(t, out)
 	require.NotNil(t, out.Audio)
 	require.Equal(t, "mp3", out.Audio.Format)
+}
+
+func TestNormalizeContentPart_AudioData_TooLarge(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{maxPartBytes: 1}
+	part := gwproto.ContentPart{
+		Type: gwproto.PartTypeAudio,
+		Audio: &gwproto.AudioPart{
+			Data:   []byte("hi"),
+			Format: "mp3",
+		},
+	}
+
+	_, _, err := s.normalizeContentPart(context.Background(), part)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), errContentPartTooLarge)
 }
 
 func TestNormalizeContentPart_AudioURL_InferFromContentType(t *testing.T) {
@@ -260,6 +326,109 @@ func TestNormalizeUserMessage_MissingText(t *testing.T) {
 	require.Contains(t, err.Error(), "missing text")
 }
 
+func TestNormalizeUserMessage_TelegramAudioTranscribed(t *testing.T) {
+	t.Parallel()
+
+	transcriber := &stubAudioTranscriber{
+		transcript: "merge page 2 and page 4",
+	}
+	s := &Server{audioTranscriber: transcriber}
+
+	msg, mentionText, err := s.normalizeUserMessage(
+		context.Background(),
+		gwproto.MessageRequest{
+			Channel: telegramChannelName,
+			ContentParts: []gwproto.ContentPart{
+				{
+					Type: gwproto.PartTypeAudio,
+					Audio: &gwproto.AudioPart{
+						Data:   []byte(strings.Repeat("a", 2048)),
+						Format: audioFormatWAV,
+					},
+				},
+				{
+					Type: gwproto.PartTypeFile,
+					File: &gwproto.FilePart{
+						Filename: "voice.ogg",
+						Data:     []byte("ogg"),
+						Format:   "audio/ogg",
+					},
+				},
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, transcriber.calls)
+	require.Equal(t, "merge page 2 and page 4", msg.Content)
+	require.Equal(t, "merge page 2 and page 4", mentionText)
+	require.Len(t, msg.ContentParts, 1)
+	require.Equal(t, model.ContentTypeFile, msg.ContentParts[0].Type)
+}
+
+func TestNormalizeUserMessage_TelegramAudioTranscriptionFallback(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	transcriber := &stubAudioTranscriber{
+		err: errors.New("boom"),
+	}
+	s := &Server{audioTranscriber: transcriber}
+
+	msg, mentionText, err := s.normalizeUserMessage(
+		context.Background(),
+		gwproto.MessageRequest{
+			Channel: telegramChannelName,
+			ContentParts: []gwproto.ContentPart{
+				{
+					Type: gwproto.PartTypeAudio,
+					Audio: &gwproto.AudioPart{
+						Data:   []byte(strings.Repeat("a", 2048)),
+						Format: audioFormatMP3,
+					},
+				},
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, transcriber.calls)
+	require.Empty(t, msg.Content)
+	require.Empty(t, mentionText)
+	require.Len(t, msg.ContentParts, 1)
+	require.Equal(t, model.ContentTypeAudio, msg.ContentParts[0].Type)
+}
+
+func TestNormalizeUserMessage_NonTelegramKeepsAudio(t *testing.T) {
+	t.Parallel()
+
+	transcriber := &stubAudioTranscriber{
+		transcript: "should not be used",
+	}
+	s := &Server{audioTranscriber: transcriber}
+
+	msg, mentionText, err := s.normalizeUserMessage(
+		context.Background(),
+		gwproto.MessageRequest{
+			Channel: "http",
+			ContentParts: []gwproto.ContentPart{
+				{
+					Type: gwproto.PartTypeAudio,
+					Audio: &gwproto.AudioPart{
+						Data:   []byte(strings.Repeat("a", 2048)),
+						Format: audioFormatMP3,
+					},
+				},
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Zero(t, transcriber.calls)
+	require.Empty(t, msg.Content)
+	require.Empty(t, mentionText)
+	require.Len(t, msg.ContentParts, 1)
+	require.Equal(t, model.ContentTypeAudio, msg.ContentParts[0].Type)
+}
+
 func TestFilenameFromHeaders_FallbackURL(t *testing.T) {
 	t.Parallel()
 
@@ -296,6 +465,14 @@ func TestReadLimited_InvalidMaxBytes(t *testing.T) {
 	_, err := readLimited(strings.NewReader("a"), 0)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid max bytes")
+}
+
+func TestReadLimited_MaxInt64DoesNotOverflow(t *testing.T) {
+	t.Parallel()
+
+	data, err := readLimited(strings.NewReader(""), math.MaxInt64)
+	require.NoError(t, err)
+	require.Empty(t, data)
 }
 
 func TestReadLimited_ReadError(t *testing.T) {

@@ -14,7 +14,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
 def positive_int(value: str) -> int:
@@ -31,10 +31,37 @@ def eprint(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
+ALLOWED_PROVIDERS = frozenset({"codex", "claude"})
+
+
+def _run_codexbar_cost_codex() -> str:
+    return subprocess.check_output(
+        ["codexbar", "cost", "--format", "json", "--provider", "codex"],
+        text=True,
+    )
+
+
+def _run_codexbar_cost_claude() -> str:
+    return subprocess.check_output(
+        ["codexbar", "cost", "--format", "json", "--provider", "claude"],
+        text=True,
+    )
+
+
+CODEXBAR_COST_RUNNERS: Dict[str, Callable[[], str]] = {
+    "codex": _run_codexbar_cost_codex,
+    "claude": _run_codexbar_cost_claude,
+}
+
+
 def run_codexbar_cost(provider: str) -> List[Dict[str, Any]]:
-    cmd = ["codexbar", "cost", "--format", "json", "--provider", provider]
+    if provider not in ALLOWED_PROVIDERS:
+        raise ValueError(
+            f"Invalid provider: {provider!r}. "
+            f"Must be one of: {', '.join(sorted(ALLOWED_PROVIDERS))}"
+        )
     try:
-        output = subprocess.check_output(cmd, text=True)
+        output = CODEXBAR_COST_RUNNERS[provider]()
     except FileNotFoundError:
         raise RuntimeError("codexbar not found on PATH. Install CodexBar CLI first.")
     except subprocess.CalledProcessError as exc:
