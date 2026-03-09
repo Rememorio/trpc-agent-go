@@ -22,7 +22,7 @@ require (
 	trpc.group/trpc-go/trpc-agent-go v1.6.0
 	trpc.group/trpc-go/trpc-agent-go/session/clickhouse v0.0.0-20260107012516-0827a2e089f0
 	trpc.group/trpc-go/trpc-agent-go/session/mysql v0.0.0-20251126064502-c8c2594d2519
-	trpc.group/trpc-go/trpc-agent-go/session/pgvector v0.0.0
+	trpc.group/trpc-go/trpc-agent-go/session/pgvector v0.0.0-20260309081241-6c87b2171837
 	trpc.group/trpc-go/trpc-agent-go/session/postgres v0.0.0-20251126064502-c8c2594d2519
 	trpc.group/trpc-go/trpc-agent-go/session/redis v0.0.0-20251126064502-c8c2594d2519
 	trpc.group/trpc-go/trpc-agent-go/session/sqlite v0.0.0-20251126064502-c8c2594d2519
