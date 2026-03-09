@@ -509,6 +509,7 @@ func TestSearchEvents_SQLContainsTableName(t *testing.T) {
 		},
 		pgClient:           &mockPostgresClient{db: db},
 		tableSessionEvents: tableName,
+		tableSessionStates: "session_states",
 	}
 
 	rows := sqlmock.NewRows(

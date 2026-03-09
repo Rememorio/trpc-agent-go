@@ -74,11 +74,18 @@ func (s *Service) SearchEvents(
 			`AND user_id = $3 `+
 			`AND session_id = $4 `+
 			`AND embedding IS NOT NULL `+
-			`AND (expires_at IS NULL OR expires_at > $5) `+
 			`AND deleted_at IS NULL `+
+			`AND EXISTS (`+
+			`  SELECT 1 FROM %s `+
+			`  WHERE app_name = $2 `+
+			`  AND user_id = $3 `+
+			`  AND session_id = $4 `+
+			`  AND (expires_at IS NULL OR expires_at > $5) `+
+			`  AND deleted_at IS NULL`+
+			`) `+
 			`ORDER BY embedding <=> $1 `+
 			`LIMIT %d`,
-		s.tableSessionEvents, topK,
+		s.tableSessionEvents, s.tableSessionStates, topK,
 	)
 
 	var results []session.EventSearchResult
