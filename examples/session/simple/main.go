@@ -44,6 +44,8 @@
 //		export PGVECTOR_PASSWORD="password"
 //		export PGVECTOR_DATABASE="trpc-agent-go-pgsession"
 //		export PGVECTOR_EMBEDDER_MODEL="text-embedding-3-small"
+//		export OPENAI_EMBEDDING_API_KEY="$OPENAI_API_KEY"
+//		export OPENAI_EMBEDDING_BASE_URL="$OPENAI_BASE_URL"
 //
 //	mysql:
 //		export MYSQL_HOST="localhost"
@@ -82,6 +84,8 @@ import (
 	util "trpc.group/trpc-go/trpc-agent-go/examples/session"
 )
 
+const appName = "session-demo"
+
 var (
 	modelName = flag.String(
 		"model",
@@ -108,6 +112,11 @@ var (
 		"session-ttl",
 		10*time.Second,
 		"Session time-to-live duration",
+	)
+	searchTopK = flag.Int(
+		"search-topk",
+		5,
+		"Maximum number of recalled events to show when /search is available",
 	)
 	debugMode = flag.Bool(
 		"debug",
@@ -144,6 +153,7 @@ type multiTurnChat struct {
 	streaming      bool
 	runner         runner.Runner
 	sessionService session.Service
+	searchable     session.SearchableService
 	userID         string
 	sessionID      string
 }
@@ -178,6 +188,9 @@ func (c *multiTurnChat) setup(_ context.Context) error {
 		return fmt.Errorf("failed to create session service: %w", err)
 	}
 	c.sessionService = sessionService
+	if searchable, ok := sessionService.(session.SearchableService); ok {
+		c.searchable = searchable
+	}
 
 	modelInstance := openai.New(c.modelName)
 
@@ -198,7 +211,7 @@ func (c *multiTurnChat) setup(_ context.Context) error {
 	)
 
 	c.runner = runner.NewRunner(
-		"session-demo",
+		appName,
 		llmAgent,
 		runner.WithSessionService(sessionService),
 	)
@@ -219,6 +232,9 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 	fmt.Println("   /new       - Start a brand-new session ID")
 	fmt.Println("   /sessions  - List known session IDs")
 	fmt.Println("   /use <id>  - Switch to an existing (or new) session")
+	if c.searchable != nil {
+		fmt.Println("   /search <query> - Recall semantically similar events")
+	}
 	fmt.Println("   /exit      - End the conversation")
 	fmt.Println()
 
@@ -255,6 +271,17 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 			}
 			c.switchSession(target)
 			continue
+		case strings.HasPrefix(lowerInput, "/search"):
+			query := strings.TrimSpace(userInput[len("/search"):])
+			if query == "" {
+				fmt.Println("Usage: /search <query>")
+				continue
+			}
+			if err := c.recallSession(ctx, query); err != nil {
+				fmt.Printf("Recall error: %v\n", err)
+			}
+			fmt.Println()
+			continue
 		}
 
 		if err := c.processMessage(ctx, userInput); err != nil {
@@ -266,7 +293,7 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 			if err := util.PrintSessionEvents(
 				ctx,
 				c.sessionService,
-				"session-demo",
+				appName,
 				c.userID,
 				c.sessionID,
 			); err != nil {
@@ -476,7 +503,7 @@ func (c *multiTurnChat) startNewSession() {
 func (c *multiTurnChat) listSessions() {
 	ctx := context.Background()
 	userKey := session.UserKey{
-		AppName: "session-demo",
+		AppName: appName,
 		UserID:  c.userID,
 	}
 	sessions, err := c.sessionService.ListSessions(ctx, userKey)
@@ -517,4 +544,72 @@ func (c *multiTurnChat) switchSession(target string) {
 	}
 	c.sessionID = target
 	fmt.Printf("Switched to session %s\n", target)
+}
+
+func (c *multiTurnChat) recallSession(
+	ctx context.Context,
+	query string,
+) error {
+	if c.searchable == nil {
+		fmt.Println("Current session backend does not support semantic search.")
+		return nil
+	}
+
+	results, err := c.searchable.SearchEvents(
+		ctx,
+		session.Key{
+			AppName:   appName,
+			UserID:    c.userID,
+			SessionID: c.sessionID,
+		},
+		query,
+		session.WithTopK(*searchTopK),
+	)
+	if err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		fmt.Println("No recalled events.")
+		return nil
+	}
+
+	fmt.Printf("Semantic recall for %q:\n", query)
+	for i, result := range results {
+		role, content := eventDisplay(result.Event)
+		fmt.Printf(
+			"   %d. [%.3f] %-9s %s\n",
+			i+1,
+			result.Score,
+			role,
+			util.Truncate(content, 80),
+		)
+	}
+	return nil
+}
+
+func eventDisplay(evt event.Event) (string, string) {
+	if evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return "unknown", "<no content>"
+	}
+
+	msg := evt.Response.Choices[0].Message
+	content := strings.TrimSpace(msg.Content)
+	if content == "" && len(msg.ContentParts) > 0 {
+		var parts []string
+		for _, part := range msg.ContentParts {
+			if part.Text != nil && *part.Text != "" {
+				parts = append(parts, *part.Text)
+			}
+		}
+		content = strings.Join(parts, " ")
+	}
+	if content == "" {
+		content = "<empty>"
+	}
+
+	role := string(msg.Role)
+	if role == "" {
+		role = string(model.RoleAssistant)
+	}
+	return role, content
 }
