@@ -92,7 +92,8 @@ func (e *AutoEvaluator) Evaluate(
 		sessionID := fmt.Sprintf("seed-%s", sess.SessionID)
 		msgs := sessionMessages(sample, sess)
 		ch, err := runner.RunWithMessages(
-			ctx, seedRunner, userKey.UserID, sessionID, msgs,
+			ctx, seedRunner,
+			userKey.UserID, sessionID, msgs,
 		)
 		if err != nil {
 			return nil, fmt.Errorf(

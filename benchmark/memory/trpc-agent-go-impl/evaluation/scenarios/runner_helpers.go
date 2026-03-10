@@ -41,6 +41,41 @@ const (
 	seedSessionDateLabel = "SessionDate"
 )
 
+// sessionDateLayouts lists date formats found in LoCoMo dataset.
+var sessionDateLayouts = []string{
+	// "8 May, 2023" / "25 May, 2023"
+	"2 January, 2006",
+	// "8 May 2023" (no comma)
+	"2 January 2006",
+	// ISO "2023-05-08"
+	time.DateOnly,
+	// RFC3339 "2023-05-08T13:56:00Z"
+	time.RFC3339,
+}
+
+// parseSessionDate parses the SessionDate string from LoCoMo
+// dataset into a time.Time. It handles formats like
+// "1:56 pm on 8 May, 2023" and "8 May, 2023".
+// Returns zero time and false if parsing fails.
+func parseSessionDate(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	// Strip "<time> on " prefix if present.
+	if idx := strings.Index(
+		strings.ToLower(raw), " on ",
+	); idx >= 0 {
+		raw = strings.TrimSpace(raw[idx+len(" on "):])
+	}
+	for _, layout := range sessionDateLayouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // noAutoMemoryService wraps a memory service and disables auto extraction.
 // This prevents QA interactions from contaminating the memory store.
 type noAutoMemoryService struct {
@@ -191,6 +226,11 @@ func sessionMessages(sample *dataset.LoCoMoSample, sess dataset.Session) []model
 		if content == "" {
 			continue
 		}
+		// Prefix with speaker name so the extractor and QA agent
+		// know who said what in multi-speaker conversations.
+		if turn.Speaker != "" {
+			content = fmt.Sprintf("[%s]: %s", turn.Speaker, content)
+		}
 		msgs = append(msgs, model.Message{Role: role, Content: content})
 	}
 	return msgs
@@ -216,6 +256,77 @@ func buildHistoryMessages(
 		return all
 	}
 	return all[len(all)-k:]
+}
+
+// buildQAContextMessages injects benchmark-local temporal anchors and
+// optional recent chat history for QA turns.
+func buildQAContextMessages(
+	sample *dataset.LoCoMoSample,
+	historyTurns int,
+) []model.Message {
+	msgs := make([]model.Message, 0, historyTurns+1)
+	if temporalContext := buildQATemporalContext(sample); temporalContext != "" {
+		msgs = append(msgs, model.NewSystemMessage(temporalContext))
+	}
+	msgs = append(msgs, buildHistoryMessages(sample, historyTurns)...)
+	return msgs
+}
+
+func buildQATemporalContext(sample *dataset.LoCoMoSample) string {
+	if sample == nil {
+		return ""
+	}
+	var (
+		dates    []string
+		seen     = make(map[string]struct{})
+		earliest time.Time
+		latest   time.Time
+	)
+	for _, sess := range sample.Conversation {
+		rawDate := strings.TrimSpace(sess.SessionDate)
+		if rawDate == "" {
+			continue
+		}
+		if _, ok := seen[rawDate]; !ok {
+			seen[rawDate] = struct{}{}
+			dates = append(dates, rawDate)
+		}
+		if parsedDate, ok := parseSessionDate(rawDate); ok {
+			if earliest.IsZero() || parsedDate.Before(earliest) {
+				earliest = parsedDate
+			}
+			if latest.IsZero() || parsedDate.After(latest) {
+				latest = parsedDate
+			}
+		}
+	}
+	if len(dates) == 0 {
+		return ""
+	}
+	const naturalDateLayout = "2 January 2006"
+	var b strings.Builder
+	b.WriteString(
+		"Temporal anchors for this sample. Use these dates only to " +
+			"resolve relative time phrases that appear in retrieved " +
+			"memories or recent chat history. Do not answer from this " +
+			"date list alone.\n",
+	)
+	if len(sample.Speakers) > 0 {
+		b.WriteString("Speakers: ")
+		b.WriteString(strings.Join(sample.Speakers, ", "))
+		b.WriteString(".\n")
+	}
+	if !earliest.IsZero() && !latest.IsZero() {
+		fmt.Fprintf(
+			&b,
+			"Conversation date range: %s to %s.\n",
+			earliest.Format(naturalDateLayout),
+			latest.Format(naturalDateLayout),
+		)
+	}
+	b.WriteString("Session dates: ")
+	b.WriteString(strings.Join(dates, " | "))
+	return b.String()
 }
 
 const fallbackAnswer = "The information is not available."
@@ -297,6 +408,7 @@ type StepTrace struct {
 	PromptTokens     int             `json:"prompt_tokens"`
 	CompletionTokens int             `json:"completion_tokens"`
 	TotalTokens      int             `json:"total_tokens"`
+	CachedTokens     int             `json:"cached_tokens,omitempty"`
 	ToolCalls        []ToolCallTrace `json:"tool_calls,omitempty"`
 }
 
@@ -338,6 +450,8 @@ func collectFinalTextAndUsage(
 							ev.Response.Usage.CompletionTokens
 						st.TotalTokens =
 							ev.Response.Usage.TotalTokens
+						st.CachedTokens =
+							ev.Response.Usage.PromptTokensDetails.CachedTokens
 					}
 					pendingCalls = make(
 						[]ToolCallTrace, 0, len(msg.ToolCalls),
@@ -388,6 +502,8 @@ func collectFinalTextAndUsage(
 					ev.Response.Usage.CompletionTokens
 				res.usage.TotalTokens +=
 					ev.Response.Usage.TotalTokens
+				res.usage.CachedTokens +=
+					ev.Response.Usage.PromptTokensDetails.CachedTokens
 				res.usage.LLMCalls++
 			}
 		}
@@ -427,11 +543,22 @@ func logQATrace(
 	log.Printf("    📋 Question: %s", question)
 	log.Printf("    🎯 Expected: %s", expected)
 	for _, st := range res.steps {
-		log.Printf(
-			"    🔹 Step %d | Tokens: %d (in:%d out:%d)",
-			st.Step, st.TotalTokens,
-			st.PromptTokens, st.CompletionTokens,
-		)
+		if st.CachedTokens > 0 {
+			log.Printf(
+				"    🔹 Step %d | Tokens: %d"+
+					" (in:%d cached:%d out:%d)",
+				st.Step, st.TotalTokens,
+				st.PromptTokens, st.CachedTokens,
+				st.CompletionTokens,
+			)
+		} else {
+			log.Printf(
+				"    🔹 Step %d | Tokens: %d"+
+					" (in:%d out:%d)",
+				st.Step, st.TotalTokens,
+				st.PromptTokens, st.CompletionTokens,
+			)
+		}
 		if len(st.ToolCalls) > 0 {
 			log.Printf(
 				"    🔧 Tool Calls: %d", len(st.ToolCalls),

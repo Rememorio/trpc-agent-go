@@ -86,7 +86,7 @@ var (
 	)
 	flagVectorTopK = flag.Int(
 		"vector-topk",
-		10,
+		20,
 		"Top-k results for vector backends (pgvector, sqlitevec)",
 	)
 	flagMySQLDSN = flag.String(
@@ -117,17 +117,24 @@ var (
 	flagDebugMemLimit     = flag.Int("debug-mem-limit", 200, "Max memories to dump when debug-dump-memories is enabled")
 	flagDebugQALimit      = flag.Int("debug-qa-limit", 5, "Dump retrieval hits for the first N questions (auto scenario only)")
 	flagResume            = flag.Bool("resume", false, "Resume from checkpoint (TODO: implement)")
+	flagTableSuffix       = flag.String(
+		"table-suffix",
+		"",
+		"Suffix appended to all DB table names for parallel runs "+
+			"(e.g. _v2 → memory_eval_auto_v2)",
+	)
 )
 
+// Base table name constants (before suffix).
 const (
-	pgvectorTableDefault  = "memory_eval"
-	pgvectorTableAuto     = "memory_eval_auto"
-	mysqlTableDefault     = "memory_eval_mysql"
-	mysqlTableAuto        = "memory_eval_auto_mysql"
-	sqliteTableDefault    = "memory_eval_sqlite"
-	sqliteTableAuto       = "memory_eval_auto_sqlite"
-	sqliteVecTableDefault = "memory_eval_sqlitevec"
-	sqliteVecTableAuto    = "memory_eval_auto_sqlitevec"
+	pgvectorTableDefaultBase  = "memory_eval"
+	pgvectorTableAutoBase     = "memory_eval_auto"
+	mysqlTableDefaultBase     = "memory_eval_mysql"
+	mysqlTableAutoBase        = "memory_eval_auto_mysql"
+	sqliteTableDefaultBase    = "memory_eval_sqlite"
+	sqliteTableAutoBase       = "memory_eval_auto_sqlite"
+	sqliteVecTableDefaultBase = "memory_eval_sqlitevec"
+	sqliteVecTableAutoBase    = "memory_eval_auto_sqlitevec"
 
 	autoMemoryAsyncWorkers = 3
 	autoMemoryQueueSize    = 200
@@ -167,6 +174,14 @@ OUTPUT:
 - Use the provided tools to add/update/delete memories.
 - Use short topics (1-3) such as: person, event, date, location, preference.
 `
+
+// tableNameWithSuffix appends the user-specified suffix to a base table name.
+func tableNameWithSuffix(base string) string {
+	if *flagTableSuffix == "" {
+		return base
+	}
+	return base + *flagTableSuffix
+}
 
 type memoryMode string
 
@@ -218,10 +233,15 @@ type EvalSummary struct {
 	TotalPromptTokens     int     `json:"total_prompt_tokens"`
 	TotalCompletionTokens int     `json:"total_completion_tokens"`
 	TotalTokens           int     `json:"total_tokens"`
+	TotalCachedTokens     int     `json:"total_cached_tokens,omitempty"`
 	TotalLLMCalls         int     `json:"total_llm_calls"`
 	AvgPromptTokensPerQA  float64 `json:"avg_prompt_tokens_per_qa"`
 	AvgCompletionPerQA    float64 `json:"avg_completion_tokens_per_qa"`
+	AvgCachedTokensPerQA  float64 `json:"avg_cached_tokens_per_qa,omitempty"`
 	AvgLLMCallsPerQA      float64 `json:"avg_llm_calls_per_qa"`
+	// CacheHitRate is the fraction of prompt tokens served
+	// from the provider's prompt cache (0.0–1.0).
+	CacheHitRate float64 `json:"cache_hit_rate,omitempty"`
 }
 
 func main() {
@@ -255,6 +275,9 @@ func main() {
 		)
 	}
 	log.Printf("Output: %s", outputDir)
+	if *flagTableSuffix != "" {
+		log.Printf("Table Suffix: %s", *flagTableSuffix)
+	}
 	if *flagResume {
 		log.Printf("Resume mode: enabled (checkpoint will be loaded if exists)")
 	}
@@ -641,7 +664,7 @@ func createPGVectorService(
 	}
 	embedModelName := getEmbedModelName()
 	emb := newEmbeddingEmbedder(embedModelName)
-	tableName := pgvectorTableDefault
+	tableName := tableNameWithSuffix(pgvectorTableDefaultBase)
 	var ext extractor.MemoryExtractor
 	if opts.enableExtractor {
 		log.Printf(
@@ -649,7 +672,7 @@ func createPGVectorService(
 				"(embed_model=%s)",
 			embedModelName,
 		)
-		tableName = pgvectorTableAuto
+		tableName = tableNameWithSuffix(pgvectorTableAutoBase)
 		ext = extractor.NewExtractor(opts.extractorModel, extractor.WithPrompt(benchmarkExtractorPrompt))
 	} else {
 		log.Printf(
@@ -684,11 +707,11 @@ func createMySQLService(
 		)
 	}
 
-	tableName := mysqlTableDefault
+	tableName := tableNameWithSuffix(mysqlTableDefaultBase)
 	var ext extractor.MemoryExtractor
 	if opts.enableExtractor {
 		log.Printf("Creating mysql memory service with extractor")
-		tableName = mysqlTableAuto
+		tableName = tableNameWithSuffix(mysqlTableAutoBase)
 		ext = extractor.NewExtractor(opts.extractorModel, extractor.WithPrompt(benchmarkExtractorPrompt))
 	} else {
 		log.Printf("Creating mysql memory service")
@@ -772,12 +795,24 @@ func runEvaluation(
 			result.Overall.BLEU)
 		if result.TokenUsage != nil &&
 			result.TokenUsage.LLMCalls > 0 {
-			log.Printf(
-				"  Tokens: prompt=%d completion=%d calls=%d",
-				result.TokenUsage.PromptTokens,
-				result.TokenUsage.CompletionTokens,
-				result.TokenUsage.LLMCalls,
-			)
+			if result.TokenUsage.CachedTokens > 0 {
+				log.Printf(
+					"  Tokens: prompt=%d cached=%d"+
+						" completion=%d calls=%d",
+					result.TokenUsage.PromptTokens,
+					result.TokenUsage.CachedTokens,
+					result.TokenUsage.CompletionTokens,
+					result.TokenUsage.LLMCalls,
+				)
+			} else {
+				log.Printf(
+					"  Tokens: prompt=%d"+
+						" completion=%d calls=%d",
+					result.TokenUsage.PromptTokens,
+					result.TokenUsage.CompletionTokens,
+					result.TokenUsage.LLMCalls,
+				)
+			}
 		}
 
 		// Log per-sample category breakdown.
@@ -833,6 +868,11 @@ func buildEvaluationResult(
 	totalTime := time.Since(startTime)
 	overall := catAgg.GetOverall()
 	qCount := max(totalQuestions, 1)
+	var cacheHitRate float64
+	if totalUsage.PromptTokens > 0 {
+		cacheHitRate = float64(totalUsage.CachedTokens) /
+			float64(totalUsage.PromptTokens)
+	}
 	return &EvaluationResult{
 		Metadata: &EvalMetadata{
 			Framework:      "trpc-agent-go",
@@ -858,10 +898,13 @@ func buildEvaluationResult(
 			TotalPromptTokens:     totalUsage.PromptTokens,
 			TotalCompletionTokens: totalUsage.CompletionTokens,
 			TotalTokens:           totalUsage.TotalTokens,
+			TotalCachedTokens:     totalUsage.CachedTokens,
 			TotalLLMCalls:         totalUsage.LLMCalls,
 			AvgPromptTokensPerQA:  float64(totalUsage.PromptTokens) / float64(qCount),
 			AvgCompletionPerQA:    float64(totalUsage.CompletionTokens) / float64(qCount),
+			AvgCachedTokensPerQA:  float64(totalUsage.CachedTokens) / float64(qCount),
 			AvgLLMCallsPerQA:      float64(totalUsage.LLMCalls) / float64(qCount),
+			CacheHitRate:          cacheHitRate,
 		},
 		ByCategory:    catAgg.GetCategoryMetrics(),
 		SampleResults: sampleResults,
