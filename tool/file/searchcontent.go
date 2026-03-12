@@ -29,7 +29,7 @@ import (
 // searchContentRequest represents the input for the search content operation.
 type searchContentRequest struct {
 	// Path is a relative directory under base_directory.
-	Path string `json:"path" jsonschema:"description=Relative directory path under base_directory or workspace:// directory ref; can also be a single local or workspace file path"`
+	Path string `json:"path" jsonschema:"description=Relative directory path under base_directory or workspace:// directory ref; can also be a single local file path"`
 	// FilePattern selects files (glob or workspace://... for an exported
 	// workspace file).
 	FilePattern string `json:"file_pattern" jsonschema:"description=Glob pattern for files to search or a direct workspace:// or artifact:// file ref"`
@@ -179,13 +179,6 @@ func (f *fileToolSet) searchContentByPath(
 			"searching artifact:// path is not supported",
 		)
 	case fileref.SchemeWorkspace:
-		if matches, ok := f.searchSingleWorkspaceFile(
-			ctx,
-			pathRef.Path,
-			re,
-		); ok {
-			return fileref.WorkspaceRef(pathRef.Path), matches, nil
-		}
 		path := fileref.WorkspaceRef(pathRef.Path)
 		matches := f.searchWorkspaceContent(ctx, pathRef.Path, req, re)
 		return path, matches, nil
@@ -299,34 +292,6 @@ func (f *fileToolSet) searchSinglePath(
 		return nil, false
 	}
 	path := fileref.WorkspaceRef(reqPath)
-	match := searchTextContent(path, content, re)
-	if len(match.Matches) == 0 {
-		return []*fileMatch{}, true
-	}
-	match.Message = fmt.Sprintf(
-		"Found %d matches in file '%s'",
-		len(match.Matches),
-		path,
-	)
-	return []*fileMatch{match}, true
-}
-
-func (f *fileToolSet) searchSingleWorkspaceFile(
-	ctx context.Context,
-	path string,
-	re *regexp.Regexp,
-) ([]*fileMatch, bool) {
-	if strings.TrimSpace(path) == "" || re == nil {
-		return nil, false
-	}
-	content, _, ok := toolcache.LookupSkillRunOutputFileFromContext(ctx, path)
-	if !ok {
-		return nil, false
-	}
-	if int64(len(content)) > f.maxFileSize {
-		return []*fileMatch{}, true
-	}
-	path = fileref.WorkspaceRef(path)
 	match := searchTextContent(path, content, re)
 	if len(match.Matches) == 0 {
 		return []*fileMatch{}, true

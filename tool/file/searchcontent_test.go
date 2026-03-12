@@ -320,40 +320,6 @@ func TestSearchContent_PathFile_FromSkillRunCache(t *testing.T) {
 	assert.Len(t, rsp.FileMatches[0].Matches, 1)
 }
 
-func TestSearchContent_PathWorkspaceFile(t *testing.T) {
-	tempDir := t.TempDir()
-
-	set, err := NewToolSet(WithBaseDir(tempDir))
-	assert.NoError(t, err)
-	fts := set.(*fileToolSet)
-
-	inv := agent.NewInvocation()
-	ctx := agent.NewInvocationContext(context.Background(), inv)
-	toolcache.StoreSkillRunOutputFiles(inv, []codeexecutor.File{
-		{
-			Name:     "out/transcript.txt",
-			Content:  "freshly squeezed lemon juice\n",
-			MIMEType: "text/plain",
-		},
-	})
-
-	req := searchContentRequest{
-		Path:           fileref.WorkspaceRef("out/transcript.txt"),
-		FilePattern:    "*",
-		ContentPattern: "freshly squeezed lemon juice",
-	}
-	rsp, err := fts.searchContent(ctx, &req)
-	assert.NoError(t, err)
-	assert.Equal(t, fileref.WorkspaceRef("out/transcript.txt"), rsp.Path)
-	assert.Len(t, rsp.FileMatches, 1)
-	assert.Equal(
-		t,
-		fileref.WorkspaceRef("out/transcript.txt"),
-		rsp.FileMatches[0].FilePath,
-	)
-	assert.Len(t, rsp.FileMatches[0].Matches, 1)
-}
-
 func TestSearchContent_FilePattern_WorkspaceRef(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -538,62 +504,6 @@ func TestSearchSingleLocalFile_Branches(t *testing.T) {
 	matches, ok = fts.searchSingleLocalFile(noMatch, "nomatch.txt", re)
 	assert.True(t, ok)
 	assert.Empty(t, matches)
-}
-
-func TestSearchSingleWorkspaceFile_Branches(t *testing.T) {
-	base := t.TempDir()
-	set, err := NewToolSet(WithBaseDir(base), WithMaxFileSize(7))
-	assert.NoError(t, err)
-	fts := set.(*fileToolSet)
-
-	re := regexp.MustCompile("foo")
-
-	matches, ok := fts.searchSingleWorkspaceFile(context.Background(), "", re)
-	assert.False(t, ok)
-	assert.Nil(t, matches)
-
-	matches, ok = fts.searchSingleWorkspaceFile(context.Background(), "out/a.txt", nil)
-	assert.False(t, ok)
-	assert.Nil(t, matches)
-
-	inv := agent.NewInvocation()
-	ctx := agent.NewInvocationContext(context.Background(), inv)
-	toolcache.StoreSkillRunOutputFiles(inv, []codeexecutor.File{
-		{
-			Name:     "out/large.txt",
-			Content:  "12345678",
-			MIMEType: "text/plain",
-		},
-		{
-			Name:     "out/nomatch.txt",
-			Content:  "bar",
-			MIMEType: "text/plain",
-		},
-		{
-			Name:     "out/match.txt",
-			Content:  "foo\nbar",
-			MIMEType: "text/plain",
-		},
-	})
-
-	matches, ok = fts.searchSingleWorkspaceFile(ctx, "out/missing.txt", re)
-	assert.False(t, ok)
-	assert.Nil(t, matches)
-
-	matches, ok = fts.searchSingleWorkspaceFile(ctx, "out/large.txt", re)
-	assert.True(t, ok)
-	assert.Empty(t, matches)
-
-	matches, ok = fts.searchSingleWorkspaceFile(ctx, "out/nomatch.txt", re)
-	assert.True(t, ok)
-	assert.Empty(t, matches)
-
-	matches, ok = fts.searchSingleWorkspaceFile(ctx, "out/match.txt", re)
-	assert.True(t, ok)
-	assert.Len(t, matches, 1)
-	assert.Equal(t, fileref.WorkspaceRef("out/match.txt"), matches[0].FilePath)
-	assert.Len(t, matches[0].Matches, 1)
-	assert.Contains(t, matches[0].Message, "Found 1 matches")
 }
 
 func TestSearchSkillCache_Branches(t *testing.T) {

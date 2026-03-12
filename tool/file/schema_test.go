@@ -54,7 +54,7 @@ func TestFileTool_InputSchemaDescriptions(t *testing.T) {
 			"case_sensitive": "Whether glob matching should be case-sensitive",
 		},
 		"search_content": {
-			"path":                   "Relative directory path under base_directory or workspace:// directory ref; can also be a single local or workspace file path",
+			"path":                   "Relative directory path under base_directory or workspace:// directory ref; can also be a single local file path",
 			"file_pattern":           "Glob pattern for files to search or a direct workspace:// or artifact:// file ref",
 			"file_case_sensitive":    "Whether file pattern matching should be case-sensitive",
 			"content_pattern":        "Regular expression to search for within matched files",
