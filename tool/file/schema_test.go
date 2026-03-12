@@ -36,7 +36,7 @@ func TestFileTool_InputSchemaDescriptions(t *testing.T) {
 			"overwrite": "Whether to replace the file if it already exists",
 		},
 		"read_file": {
-			"file_name":  "Relative file path under base_directory or workspace:// file ref to read",
+			"file_name":  "Relative file path under base_directory or workspace:// or artifact:// file ref to read",
 			"start_line": "Optional 1-based start line to begin reading from",
 			"num_lines":  "Optional maximum number of lines to return",
 		},
@@ -54,8 +54,8 @@ func TestFileTool_InputSchemaDescriptions(t *testing.T) {
 			"case_sensitive": "Whether glob matching should be case-sensitive",
 		},
 		"search_content": {
-			"path":                   "Relative directory path under base_directory or workspace:// directory ref; can also be a single file path",
-			"file_pattern":           "Glob pattern for files to search or a direct workspace:// file ref",
+			"path":                   "Relative directory path under base_directory or workspace:// directory ref; can also be a single local or workspace file path",
+			"file_pattern":           "Glob pattern for files to search or a direct workspace:// or artifact:// file ref",
 			"file_case_sensitive":    "Whether file pattern matching should be case-sensitive",
 			"content_pattern":        "Regular expression to search for within matched files",
 			"content_case_sensitive": "Whether regular expression matching should be case-sensitive",
