@@ -76,15 +76,22 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	alog "trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/langfuse"
+	atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 
 	util "trpc.group/trpc-go/trpc-agent-go/examples/session"
 )
 
 const appName = "session-demo"
+
+type ctxKey string
+
+const requestIDKey ctxKey = "requestID"
 
 var (
 	modelName = flag.String(
@@ -94,7 +101,7 @@ var (
 	)
 	sessServiceName = flag.String(
 		"session",
-		"inmemory",
+		"redis",
 		"Name of the session service to use, inmemory / "+
 			"sqlite / redis / postgres / pgvector / mysql / clickhouse",
 	)
@@ -124,10 +131,38 @@ var (
 		"Enable debug mode to print session events after each "+
 			"turn",
 	)
+	enableTrace = flag.Bool(
+		"enable-trace",
+		true,
+		"Enable Langfuse tracing for session operations. "+
+			"Requires LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, LANGFUSE_HOST env vars.",
+	)
 )
 
 func main() {
 	flag.Parse()
+
+	// Replace the default log functions to inject RequestID from context.
+	origInfofContext := alog.InfofContext
+	alog.InfofContext = func(ctx context.Context, format string, args ...any) {
+		reqID, _ := ctx.Value(requestIDKey).(string)
+		if reqID != "" {
+			format = fmt.Sprintf("[req:%s] %s", reqID, format)
+		}
+		origInfofContext(ctx, format, args...)
+	}
+
+	if *enableTrace {
+		clean, err := langfuse.Start(context.Background())
+		if err != nil {
+			log.Fatalf("failed to start langfuse tracer: %v", err)
+		}
+		defer func() {
+			if err := clean(context.Background()); err != nil {
+				log.Printf("langfuse tracer cleanup: %v", err)
+			}
+		}()
+	}
 
 	fmt.Printf("Session Management Demo\n")
 	fmt.Printf("Model: %s\n", *modelName)
@@ -180,8 +215,9 @@ func (c *multiTurnChat) setup(_ context.Context) error {
 	sessionService, err := util.NewSessionServiceByType(
 		sessionType,
 		util.SessionServiceConfig{
-			EventLimit: *eventLimit,
-			TTL:        *sessionTTL,
+			EventLimit:    *eventLimit,
+			TTL:           *sessionTTL,
+			EnableTracing: *enableTrace,
 		},
 	)
 	if err != nil {
@@ -228,14 +264,14 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("Session commands:")
-	fmt.Println("   /history   - Ask the assistant to recap our conversation")
-	fmt.Println("   /new       - Start a brand-new session ID")
-	fmt.Println("   /sessions  - List known session IDs")
-	fmt.Println("   /use <id>  - Switch to an existing (or new) session")
+	fmt.Println("   /history      - Ask the assistant to recap our conversation")
+	fmt.Println("   /new [id]     - Start a new session (optional: specify custom ID)")
+	fmt.Println("   /sessions     - List known session IDs")
+	fmt.Println("   /use <id>     - Switch to an existing (or new) session")
 	if c.searchable != nil {
 		fmt.Println("   /search <query> - Recall semantically similar events")
 	}
-	fmt.Println("   /exit      - End the conversation")
+	fmt.Println("   /exit         - End the conversation")
 	fmt.Println()
 
 	for {
@@ -257,8 +293,9 @@ func (c *multiTurnChat) startChat(ctx context.Context) error {
 			return nil
 		case lowerInput == "/history":
 			userInput = "show our conversation history"
-		case lowerInput == "/new":
-			c.startNewSession()
+		case strings.HasPrefix(lowerInput, "/new"):
+			customID := strings.TrimSpace(userInput[4:])
+			c.startNewSession(customID)
 			continue
 		case lowerInput == "/sessions":
 			c.listSessions()
@@ -319,6 +356,19 @@ func (c *multiTurnChat) processMessage(
 	message := model.NewUserMessage(userMessage)
 
 	requestID := uuid.New().String()
+
+	// Inject requestID into context for logging.
+	ctx = context.WithValue(ctx, requestIDKey, requestID)
+
+	// Create a root span if tracing is enabled. The session service
+	// will attach its child spans (create_session, get_session, append_event)
+	// to this root span automatically via context propagation.
+	if *enableTrace {
+		spanCtx, span := atrace.Tracer.Start(ctx, "session_demo_request")
+		defer span.End()
+		ctx = spanCtx
+	}
+
 	// Run the agent through the runner.
 	eventChan, err := c.runner.Run(
 		ctx,
@@ -490,9 +540,13 @@ func (c *multiTurnChat) displayContent(
 	*fullContent += content
 }
 
-func (c *multiTurnChat) startNewSession() {
+func (c *multiTurnChat) startNewSession(customID string) {
 	oldSessionID := c.sessionID
-	c.sessionID = fmt.Sprintf("session-%d", time.Now().Unix())
+	if customID != "" {
+		c.sessionID = customID
+	} else {
+		c.sessionID = fmt.Sprintf("session-%d", time.Now().Unix())
+	}
 	fmt.Printf("Started new session!\n")
 	fmt.Printf("   Previous: %s\n", oldSessionID)
 	fmt.Printf("   Current:  %s\n", c.sessionID)

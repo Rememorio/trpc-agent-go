@@ -60,6 +60,7 @@ type SessionServiceConfig struct {
 	TTL              time.Duration
 	AppendEventHooks []session.AppendEventHook
 	GetSessionHooks  []session.GetSessionHook
+	EnableTracing    bool // enable OpenTelemetry tracing (redis only)
 }
 
 // NewSessionServiceByType creates a session service based on the specified
@@ -167,6 +168,8 @@ func newRedisSessionService(
 		redis.WithSessionTTL(cfg.TTL),
 		redis.WithAppendEventHook(cfg.AppendEventHooks...),
 		redis.WithGetSessionHook(cfg.GetSessionHooks...),
+		redis.WithCompatMode(redis.CompatModeLegacy),
+		redis.WithEnableTracing(cfg.EnableTracing),
 	)
 }
 
