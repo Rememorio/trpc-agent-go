@@ -216,25 +216,46 @@ func checkTokenThresholdFromText(
 // Token accounting via model usage is not stable once session summary
 // injection is enabled. For consistent gating, we estimate tokens from
 // the delta events.
+//
+// Because Checker does not accept a context, this legacy helper evaluates
+// token counts with context.Background(). Use CheckTokenThresholdContext or
+// WithTokenThreshold when token counting depends on request-scoped context.
 func CheckTokenThreshold(tokenCount int) Checker {
 	return func(sess *session.Session) bool {
-		delta := filterDeltaEvents(sess)
-		if len(delta) == 0 {
-			return false
-		}
-		primary := filterPrimaryEvents(delta, sess.AppName)
-		if len(primary) == 0 {
-			return false
-		}
-		conversationText := extractConversationText(
-			primary, nil, nil,
-		)
-		return checkTokenThresholdFromText(
-			context.Background(),
-			tokenCount,
-			conversationText,
-		)
+		return checkTokenThreshold(context.Background(), tokenCount, sess)
 	}
+}
+
+// CheckTokenThresholdContext creates a context-aware checker that triggers
+// when the estimated token count of the primary-agent events since the last
+// summary exceeds the given threshold.
+func CheckTokenThresholdContext(tokenCount int) ContextChecker {
+	return func(ctx context.Context, sess *session.Session) bool {
+		return checkTokenThreshold(ctx, tokenCount, sess)
+	}
+}
+
+func checkTokenThreshold(
+	ctx context.Context,
+	tokenCount int,
+	sess *session.Session,
+) bool {
+	delta := filterDeltaEvents(sess)
+	if len(delta) == 0 {
+		return false
+	}
+	primary := filterPrimaryEvents(delta, sess.AppName)
+	if len(primary) == 0 {
+		return false
+	}
+	conversationText := extractConversationText(
+		primary, nil, nil,
+	)
+	return checkTokenThresholdFromText(
+		ctx,
+		tokenCount,
+		conversationText,
+	)
 }
 
 // ChecksAll composes multiple checkers using AND logic.

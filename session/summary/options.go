@@ -90,7 +90,7 @@ func WithSkipRecent(skipFunc SkipRecentFunc) Option {
 // If you call multiple threshold options (e.g. token + event), all must pass.
 func WithTokenThreshold(tokenCount int) Option {
 	return func(s *sessionSummarizer) {
-		s.checks = append(s.checks, wrapChecker(CheckTokenThreshold(tokenCount)))
+		s.checks = append(s.checks, CheckTokenThresholdContext(tokenCount))
 	}
 }
 

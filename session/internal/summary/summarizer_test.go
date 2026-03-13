@@ -38,6 +38,12 @@ func TestHasSummarizer(t *testing.T) {
 	require.True(t, HasSummarizer(&fakeSummarizer{}))
 }
 
+func TestShouldSummarize_NilSummarizer(t *testing.T) {
+	sess := session.NewSession("app", "user", "sid")
+
+	require.False(t, ShouldSummarize(context.Background(), nil, sess))
+}
+
 func TestShouldSummarize(t *testing.T) {
 	sess := session.NewSession("app", "user", "sid")
 
