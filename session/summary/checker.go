@@ -26,6 +26,12 @@ import (
 // When no custom checkers are supplied, a default set is used.
 type Checker func(sess *session.Session) bool
 
+// ContextChecker evaluates whether a summary should be triggered for the
+// current summary attempt using request-scoped context.
+type ContextChecker func(context.Context, SessionSummaryRequest) bool
+
+type summaryCheck func(context.Context, SessionSummaryRequest) bool
+
 var (
 	defaultTokenCounterMu sync.RWMutex
 	defaultTokenCounter   model.TokenCounter = model.NewSimpleTokenCounter()
@@ -170,6 +176,14 @@ func CheckEventThreshold(eventCount int) Checker {
 	}
 }
 
+// CheckEventThresholdContext creates a context-aware event-count-based checker.
+func CheckEventThresholdContext(eventCount int) ContextChecker {
+	checker := CheckEventThreshold(eventCount)
+	return func(_ context.Context, req SessionSummaryRequest) bool {
+		return checker(req.Session)
+	}
+}
+
 // CheckTimeThreshold creates a checker that triggers when the time elapsed
 // since the last event is greater than the given interval.
 func CheckTimeThreshold(interval time.Duration) Checker {
@@ -182,15 +196,30 @@ func CheckTimeThreshold(interval time.Duration) Checker {
 	}
 }
 
+// CheckTimeThresholdContext creates a context-aware time-based checker.
+func CheckTimeThresholdContext(interval time.Duration) ContextChecker {
+	checker := CheckTimeThreshold(interval)
+	return func(_ context.Context, req SessionSummaryRequest) bool {
+		return checker(req.Session)
+	}
+}
+
 // checkTokenThresholdFromText checks if the token count of the given text exceeds the threshold.
-func checkTokenThresholdFromText(tokenCount int, conversationText string) bool {
+func checkTokenThresholdFromText(
+	ctx context.Context,
+	tokenCount int,
+	conversationText string,
+) bool {
 	if conversationText == "" {
 		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	// SimpleTokenCounter.CountTokens currently never returns an error.
 	tokens, _ := getTokenCounter().CountTokens(
-		context.Background(),
+		ctx,
 		model.Message{Content: conversationText},
 	)
 	return tokens > tokenCount
@@ -219,7 +248,29 @@ func CheckTokenThreshold(tokenCount int) Checker {
 			primary, nil, nil,
 		)
 		return checkTokenThresholdFromText(
-			tokenCount, conversationText,
+			context.Background(),
+			tokenCount,
+			conversationText,
+		)
+	}
+}
+
+// CheckTokenThresholdContext creates a context-aware token-based checker.
+func CheckTokenThresholdContext(tokenCount int) ContextChecker {
+	return func(ctx context.Context, req SessionSummaryRequest) bool {
+		delta := filterDeltaEvents(req.Session)
+		if len(delta) == 0 {
+			return false
+		}
+		primary := filterPrimaryEvents(delta, req.Session.AppName)
+		if len(primary) == 0 {
+			return false
+		}
+		conversationText := extractConversationText(primary, nil, nil)
+		return checkTokenThresholdFromText(
+			ctx,
+			tokenCount,
+			conversationText,
 		)
 	}
 }
@@ -249,5 +300,41 @@ func ChecksAny(checks []Checker) Checker {
 			}
 		}
 		return false
+	}
+}
+
+// ChecksAllContext composes multiple context-aware checkers using AND logic.
+func ChecksAllContext(checks []ContextChecker) ContextChecker {
+	return func(ctx context.Context, req SessionSummaryRequest) bool {
+		for _, check := range checks {
+			if !check(ctx, req) {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// ChecksAnyContext composes multiple context-aware checkers using OR logic.
+func ChecksAnyContext(checks []ContextChecker) ContextChecker {
+	return func(ctx context.Context, req SessionSummaryRequest) bool {
+		for _, check := range checks {
+			if check(ctx, req) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func wrapChecker(check Checker) summaryCheck {
+	return func(_ context.Context, req SessionSummaryRequest) bool {
+		return check(req.Session)
+	}
+}
+
+func wrapContextChecker(check ContextChecker) summaryCheck {
+	return func(ctx context.Context, req SessionSummaryRequest) bool {
+		return check(ctx, req)
 	}
 }

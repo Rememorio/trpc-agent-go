@@ -88,21 +88,21 @@ func WithSkipRecent(skipFunc SkipRecentFunc) Option {
 // WithTokenThreshold creates a token-based check function.
 func WithTokenThreshold(tokenCount int) Option {
 	return func(s *sessionSummarizer) {
-		s.checks = append(s.checks, CheckTokenThreshold(tokenCount))
+		s.checks = append(s.checks, wrapChecker(CheckTokenThreshold(tokenCount)))
 	}
 }
 
 // WithEventThreshold creates an event-count-based check function.
 func WithEventThreshold(eventCount int) Option {
 	return func(s *sessionSummarizer) {
-		s.checks = append(s.checks, CheckEventThreshold(eventCount))
+		s.checks = append(s.checks, wrapChecker(CheckEventThreshold(eventCount)))
 	}
 }
 
 // WithTimeThreshold creates a time-based check function.
 func WithTimeThreshold(interval time.Duration) Option {
 	return func(s *sessionSummarizer) {
-		s.checks = append(s.checks, CheckTimeThreshold(interval))
+		s.checks = append(s.checks, wrapChecker(CheckTimeThreshold(interval)))
 	}
 }
 
@@ -110,7 +110,7 @@ func WithTimeThreshold(interval time.Duration) Option {
 func WithChecksAll(checks ...Checker) Option {
 	return func(s *sessionSummarizer) {
 		if len(checks) > 0 {
-			s.checks = append(s.checks, ChecksAll(checks))
+			s.checks = append(s.checks, wrapChecker(ChecksAll(checks)))
 		}
 	}
 }
@@ -119,7 +119,33 @@ func WithChecksAll(checks ...Checker) Option {
 func WithChecksAny(checks ...Checker) Option {
 	return func(s *sessionSummarizer) {
 		if len(checks) > 0 {
-			s.checks = append(s.checks, ChecksAny(checks))
+			s.checks = append(s.checks, wrapChecker(ChecksAny(checks)))
+		}
+	}
+}
+
+// WithChecksAllContext appends a single composite context-aware check that
+// requires all provided checks (AND logic).
+func WithChecksAllContext(checks ...ContextChecker) Option {
+	return func(s *sessionSummarizer) {
+		if len(checks) > 0 {
+			s.checks = append(
+				s.checks,
+				wrapContextChecker(ChecksAllContext(checks)),
+			)
+		}
+	}
+}
+
+// WithChecksAnyContext appends a single composite context-aware check that
+// passes if any provided check passes (OR logic).
+func WithChecksAnyContext(checks ...ContextChecker) Option {
+	return func(s *sessionSummarizer) {
+		if len(checks) > 0 {
+			s.checks = append(
+				s.checks,
+				wrapContextChecker(ChecksAnyContext(checks)),
+			)
 		}
 	}
 }

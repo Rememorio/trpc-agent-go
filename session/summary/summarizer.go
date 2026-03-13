@@ -147,7 +147,7 @@ type sessionSummarizer struct {
 	model           model.Model
 	name            string
 	prompt          string
-	checks          []Checker
+	checks          []summaryCheck
 	maxSummaryWords int
 	skipRecentFunc  SkipRecentFunc
 
@@ -167,10 +167,10 @@ type sessionSummarizer struct {
 // NewSummarizer creates a new session summarizer.
 func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 	s := &sessionSummarizer{
-		prompt:          "",          // Will be set after processing options.
-		checks:          []Checker{}, // No default checks - summarization only when explicitly configured.
-		maxSummaryWords: 0,           // 0 means no word limit.
-		skipRecentFunc:  nil,         // nil means no events are skipped.
+		prompt:          "",               // Will be set after processing options.
+		checks:          []summaryCheck{}, // No default checks - summarization only when explicitly configured.
+		maxSummaryWords: 0,                // 0 means no word limit.
+		skipRecentFunc:  nil,              // nil means no events are skipped.
 	}
 	s.model = m
 
@@ -190,12 +190,23 @@ func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 
 // ShouldSummarize checks if the session should be summarized.
 func (s *sessionSummarizer) ShouldSummarize(sess *session.Session) bool {
-	if len(sess.Events) == 0 {
+	return s.ShouldSummarizeContext(context.Background(), SessionSummaryRequest{
+		Session: sess,
+	})
+}
+
+// ShouldSummarizeContext checks if the current summary attempt should proceed.
+func (s *sessionSummarizer) ShouldSummarizeContext(
+	ctx context.Context,
+	req SessionSummaryRequest,
+) bool {
+	sess := req.Session
+	if sess == nil || len(sess.Events) == 0 {
 		return false
 	}
 
 	for _, check := range s.checks {
-		if !check(sess) {
+		if !check(ctx, req) {
 			return false
 		}
 	}

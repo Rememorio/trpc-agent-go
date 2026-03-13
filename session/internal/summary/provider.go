@@ -15,40 +15,52 @@ import (
 	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
-// HasSummarizer reports whether summary generation is configured either through
-// a static summarizer or a request-scoped resolver.
-func HasSummarizer(
-	summarizer psummary.SessionSummarizer,
-	resolver psummary.SessionSummarizerResolver,
-) bool {
-	return summarizer != nil || resolver != nil
+// HasSummarizer reports whether summary generation is configured.
+func HasSummarizer(summarizer psummary.SessionSummarizer) bool {
+	return summarizer != nil
 }
 
-// ResolveSessionSummarizer resolves the summarizer for the current summary
-// attempt. A resolver takes precedence; returning nil falls back to the static
-// summarizer when present.
-func ResolveSessionSummarizer(
+// EnsureSummaryTrigger applies a default trigger to ctx when none has been set
+// by an upstream caller.
+func EnsureSummaryTrigger(
 	ctx context.Context,
-	summarizer psummary.SessionSummarizer,
-	resolver psummary.SessionSummarizerResolver,
+	trigger psummary.SessionSummaryTrigger,
+) context.Context {
+	if _, ok := psummary.SessionSummaryTriggerFromContext(ctx); ok {
+		return ctx
+	}
+	return psummary.WithSessionSummaryTrigger(ctx, trigger)
+}
+
+// BuildSummaryRequest builds the request-scoped metadata for the current
+// summary attempt.
+func BuildSummaryRequest(
+	ctx context.Context,
 	sess *session.Session,
 	filterKey string,
 	force bool,
-) (psummary.SessionSummarizer, error) {
-	if resolver == nil {
-		return summarizer, nil
-	}
-
-	resolved, err := resolver(ctx, psummary.SessionSummaryRequest{
+) psummary.SessionSummaryRequest {
+	trigger, _ := psummary.SessionSummaryTriggerFromContext(ctx)
+	return psummary.SessionSummaryRequest{
 		Session:   sess,
 		FilterKey: filterKey,
 		Force:     force,
-	})
-	if err != nil {
-		return nil, err
+		Trigger:   trigger,
 	}
-	if resolved != nil {
-		return resolved, nil
+}
+
+// ShouldSummarize evaluates the summary gate, preferring the optional
+// request-scoped decider extension when available.
+func ShouldSummarize(
+	ctx context.Context,
+	summarizer psummary.SessionSummarizer,
+	req psummary.SessionSummaryRequest,
+) bool {
+	if summarizer == nil {
+		return false
 	}
-	return summarizer, nil
+	if decider, ok := summarizer.(psummary.SessionSummaryDecider); ok {
+		return decider.ShouldSummarizeContext(ctx, req)
+	}
+	return summarizer.ShouldSummarize(req.Session)
 }

@@ -18,6 +18,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
+	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // CreateSessionSummary generates and persists a summary for the session.
@@ -27,7 +28,8 @@ func (s *Service) CreateSessionSummary(
 	filterKey string,
 	force bool,
 ) error {
-	if !isummary.HasSummarizer(s.opts.summarizer, s.opts.summarizerResolver) {
+	ctx = isummary.EnsureSummaryTrigger(ctx, psummary.SessionSummaryTriggerSync)
+	if !isummary.HasSummarizer(s.opts.summarizer) {
 		return nil
 	}
 	if sess == nil {
@@ -43,21 +45,9 @@ func (s *Service) CreateSessionSummary(
 		return fmt.Errorf("check session key: %w", err)
 	}
 
-	summarizer, err := isummary.ResolveSessionSummarizer(
-		ctx,
-		s.opts.summarizer,
-		s.opts.summarizerResolver,
-		sess,
-		filterKey,
-		force,
-	)
-	if err != nil {
-		return err
-	}
-
 	updated, err := isummary.SummarizeSession(
 		ctx,
-		summarizer,
+		s.opts.summarizer,
 		sess,
 		filterKey,
 		force,
@@ -112,7 +102,8 @@ func (s *Service) EnqueueSummaryJob(
 	filterKey string,
 	force bool,
 ) error {
-	if !isummary.HasSummarizer(s.opts.summarizer, s.opts.summarizerResolver) {
+	ctx = isummary.EnsureSummaryTrigger(ctx, psummary.SessionSummaryTriggerAsync)
+	if !isummary.HasSummarizer(s.opts.summarizer) {
 		return nil
 	}
 	if sess == nil {

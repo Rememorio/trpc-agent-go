@@ -64,21 +64,6 @@ sessionService := inmemory.NewSessionService(
     inmemory.WithSummaryJobTimeout(60*time.Second),
 )
 
-// Dynamically resolve a summarizer per request, for example from ctx values.
-sessionService := inmemory.NewSessionService(
-    inmemory.WithSessionSummarizerResolver(summary.SessionSummarizerResolver(func(
-        ctx context.Context,
-        req summary.SessionSummaryRequest,
-    ) (summary.SessionSummarizer, error) {
-        dynamicModel := pickSummaryModelFromCtx(ctx)
-        return summary.NewSummarizer(
-            dynamicModel,
-            summary.WithEventThreshold(20),
-        ), nil
-    })),
-    inmemory.WithAsyncSummaryNum(2),
-)
-
 // Redis storage (production)
 sessionService, err := redis.NewService(
     redis.WithRedisClientURL("redis://localhost:6379"),
@@ -161,24 +146,44 @@ type SessionSummarizer interface {
 }
 ```
 
-## SessionSummarizerResolver
+## Context-Aware Summary Decisions
 
-When the summary model must be selected dynamically per request, configure a resolver on the session service instead of changing the `SessionSummarizer` interface:
+The released `SessionSummarizer` interface stays unchanged. For request-scoped
+decision logic, implement the optional `SessionSummaryDecider` extension on
+your summarizer:
 
 ```go
 type SessionSummaryRequest struct {
     Session   *session.Session
     FilterKey string
     Force     bool
+    Trigger   SessionSummaryTrigger
 }
 
-type SessionSummarizerResolver func(
-    ctx context.Context,
-    req SessionSummaryRequest,
-) (SessionSummarizer, error)
+type SessionSummaryDecider interface {
+    ShouldSummarizeContext(ctx context.Context, req SessionSummaryRequest) bool
+}
 ```
 
-The resolver is evaluated once per summary attempt, and the same summarizer instance is reused for both `ShouldSummarize` and `Summarize`. This avoids mutating a shared summarizer with `SetModel` under concurrent workloads.
+`Trigger` is set to `SessionSummaryTriggerSync` for direct
+`CreateSessionSummary` calls and `SessionSummaryTriggerAsync` for
+`EnqueueSummaryJob`. The same trigger is also available from
+`summary.SessionSummaryTriggerFromContext(ctx)`.
+
+For built-in summarizers, use the context-aware check options when the decision
+depends on request context:
+
+```go
+summarizer := summary.NewSummarizer(
+    summaryModel,
+    summary.WithChecksAnyContext(
+        summary.CheckEventThresholdContext(20),
+        func(ctx context.Context, req summary.SessionSummaryRequest) bool {
+            return req.Trigger == summary.SessionSummaryTriggerAsync
+        },
+    ),
+)
+```
 
 ## Summarizer Options
 
@@ -196,8 +201,13 @@ The resolver is evaluated once per summary attempt, and the same summarizer inst
 | --- | --- |
 | `WithChecksAll(checks ...Checker)` | All conditions must be met (AND logic), use `Check*` functions |
 | `WithChecksAny(checks ...Checker)` | Any condition triggers (OR logic), use `Check*` functions |
+| `WithChecksAllContext(checks ...ContextChecker)` | All request-scoped conditions must be met (AND logic) |
+| `WithChecksAnyContext(checks ...ContextChecker)` | Any request-scoped condition triggers (OR logic) |
 
-**Note**: Use `Check*` functions (e.g., `CheckEventThreshold`) inside `WithChecksAll` and `WithChecksAny`, not `With*` functions.
+`ContextChecker` receives `(ctx context.Context, req SessionSummaryRequest)`.
+
+**Note**: Use `Check*` functions (for example `CheckEventThreshold`) inside
+`WithChecksAll` and `WithChecksAny`, not `With*` functions.
 
 ```go
 // AND logic: all conditions must be met

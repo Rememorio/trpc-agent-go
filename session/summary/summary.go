@@ -45,8 +45,57 @@ type SessionSummarizer interface {
 	Metadata() map[string]any
 }
 
-// SessionSummaryRequest carries request-scoped inputs for selecting a
-// summarizer dynamically.
+// SessionSummaryDecider is an optional extension interface for
+// SessionSummarizer implementations that need request-scoped context during the
+// summary decision phase.
+type SessionSummaryDecider interface {
+	// ShouldSummarizeContext checks if the session should be summarized for the
+	// current summary attempt.
+	ShouldSummarizeContext(context.Context, SessionSummaryRequest) bool
+}
+
+// SessionSummaryTrigger identifies how a summary attempt was initiated.
+type SessionSummaryTrigger string
+
+const (
+	// SessionSummaryTriggerSync marks a summary attempt initiated by a direct
+	// CreateSessionSummary call.
+	SessionSummaryTriggerSync SessionSummaryTrigger = "sync"
+	// SessionSummaryTriggerAsync marks a summary attempt initiated by
+	// EnqueueSummaryJob, even if the actual execution later falls back to inline
+	// processing.
+	SessionSummaryTriggerAsync SessionSummaryTrigger = "async"
+)
+
+type sessionSummaryTriggerKey struct{}
+
+// WithSessionSummaryTrigger annotates ctx with the trigger mode for the current
+// summary attempt.
+func WithSessionSummaryTrigger(
+	ctx context.Context,
+	trigger SessionSummaryTrigger,
+) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, sessionSummaryTriggerKey{}, trigger)
+}
+
+// SessionSummaryTriggerFromContext extracts the summary trigger mode from ctx.
+func SessionSummaryTriggerFromContext(
+	ctx context.Context,
+) (SessionSummaryTrigger, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	trigger, ok := ctx.Value(sessionSummaryTriggerKey{}).(SessionSummaryTrigger)
+	if !ok || trigger == "" {
+		return "", false
+	}
+	return trigger, true
+}
+
+// SessionSummaryRequest carries request-scoped inputs for a summary attempt.
 type SessionSummaryRequest struct {
 	// Session is the session being summarized.
 	Session *session.Session
@@ -56,14 +105,9 @@ type SessionSummaryRequest struct {
 	// Force indicates whether summarization should proceed even when no delta
 	// events are found.
 	Force bool
+	// Trigger identifies how the summary attempt was initiated.
+	Trigger SessionSummaryTrigger
 }
-
-// SessionSummarizerResolver resolves the summarizer to use for a single
-// summary attempt.
-type SessionSummarizerResolver func(
-	context.Context,
-	SessionSummaryRequest,
-) (SessionSummarizer, error)
 
 // SessionSummary represents a summary of a session's conversation history.
 type SessionSummary struct {
