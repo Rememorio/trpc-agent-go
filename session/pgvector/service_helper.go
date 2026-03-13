@@ -704,7 +704,7 @@ func (s *Service) startAsyncPersistWorker() {
 			for pair := range eventCh {
 				ctx, cancel := context.WithTimeout(
 					context.Background(),
-					defaultAsyncPersistTimeout,
+					s.opts.embedTimeout,
 				)
 				log.DebugfContext(ctx,
 					"Session persistence queue "+
@@ -746,7 +746,7 @@ func (s *Service) startAsyncPersistWorker() {
 			for pair := range trackCh {
 				ctx, cancel := context.WithTimeout(
 					context.Background(),
-					defaultAsyncPersistTimeout,
+					s.opts.embedTimeout,
 				)
 				log.DebugfContext(ctx,
 					"Session track persistence "+

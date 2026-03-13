@@ -27,7 +27,7 @@ const (
 	defaultChanBufferSize        = 100
 	defaultAsyncPersisterNum     = 10
 	defaultCleanupIntervalSecond = 5 * time.Minute
-	defaultAsyncPersistTimeout   = 5 * time.Second
+	defaultEmbedTimeout          = 30 * time.Second
 
 	defaultAsyncSummaryNum   = 3
 	defaultSummaryQueueSize  = 100
@@ -90,7 +90,8 @@ type ServiceOpts struct {
 	hnswEf         int
 
 	// Embedder generates event embeddings.
-	embedder embedder.Embedder
+	embedder     embedder.Embedder
+	embedTimeout time.Duration
 }
 
 // ServiceOpt is a functional option for the pgvector
@@ -109,6 +110,7 @@ var defaultOptions = ServiceOpts{
 	maxResults:         defaultMaxResults,
 	hnswM:              defaultHNSWM,
 	hnswEf:             defaultHNSWEf,
+	embedTimeout:       defaultEmbedTimeout,
 }
 
 // WithPostgresClientDSN sets the PostgreSQL DSN connection
@@ -316,6 +318,17 @@ func WithGetSessionHook(
 // embeddings. Required for vector search support.
 func WithEmbedder(e embedder.Embedder) ServiceOpt {
 	return func(o *ServiceOpts) { o.embedder = e }
+}
+
+// WithEmbedTimeout sets the timeout for embedding API calls.
+// Default is 30 seconds. Increase this if you experience
+// timeout errors with slow embedding APIs.
+func WithEmbedTimeout(timeout time.Duration) ServiceOpt {
+	return func(o *ServiceOpts) {
+		if timeout > 0 {
+			o.embedTimeout = timeout
+		}
+	}
 }
 
 // WithIndexDimension sets the embedding vector dimension

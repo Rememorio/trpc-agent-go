@@ -1070,7 +1070,7 @@ func (s *Service) triggerAsyncIndexEvent(
 	go func() {
 		ctx, cancel := context.WithTimeout(
 			context.Background(),
-			defaultAsyncPersistTimeout,
+			s.opts.embedTimeout,
 		)
 		defer cancel()
 		s.asyncIndexEvent(ctx, sess, evt)
