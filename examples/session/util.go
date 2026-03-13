@@ -253,7 +253,7 @@ func newPGVectorSessionService(
 		port = parsed
 	}
 	user := GetEnvOrDefault("PGVECTOR_USER", "postgres")
-	password := GetEnvOrDefault("PGVECTOR_PASSWORD", "test123")
+	password := GetEnvOrDefault("PGVECTOR_PASSWORD", "")
 	database := GetEnvOrDefault(
 		"PGVECTOR_DATABASE", "trpc-agent-go-pgsession",
 	)

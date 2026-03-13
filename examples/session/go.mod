@@ -8,8 +8,7 @@ replace (
 	trpc.group/trpc-go/trpc-agent-go/session/mysql => ../../session/mysql
 	trpc.group/trpc-go/trpc-agent-go/session/pgvector => ../../session/pgvector
 	trpc.group/trpc-go/trpc-agent-go/session/postgres => ../../session/postgres
-	// trpc.group/trpc-go/trpc-agent-go/session/redis => trpc.group/trpc-go/trpc-agent-go/session/redis v1.5.0
-	trpc.group/trpc-go/trpc-agent-go/session/redis => ../../session/redis/
+	trpc.group/trpc-go/trpc-agent-go/session/redis => ../../session/redis
 	trpc.group/trpc-go/trpc-agent-go/session/sqlite => ../../session/sqlite
 	trpc.group/trpc-go/trpc-agent-go/storage/clickhouse => ../../storage/clickhouse
 	trpc.group/trpc-go/trpc-agent-go/storage/mysql => ../../storage/mysql
