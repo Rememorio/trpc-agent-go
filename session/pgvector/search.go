@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/pgvector/pgvector-go"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -80,7 +79,7 @@ func (s *Service) SearchEvents(
 			`  WHERE app_name = $2 `+
 			`  AND user_id = $3 `+
 			`  AND session_id = $4 `+
-			`  AND (expires_at IS NULL OR expires_at > $5) `+
+			`  AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'localtime') `+
 			`  AND deleted_at IS NULL`+
 			`) `+
 			`ORDER BY embedding <=> $1 `+
@@ -123,7 +122,6 @@ func (s *Service) SearchEvents(
 		searchSQL,
 		vector,
 		key.AppName, key.UserID, key.SessionID,
-		time.Now(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf(

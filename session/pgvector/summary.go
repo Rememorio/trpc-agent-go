@@ -13,7 +13,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
@@ -192,13 +191,13 @@ func (s *Service) GetSessionSummaryText(
 			WHERE app_name = $1 AND user_id = $2
 			AND session_id = $3 AND filter_key = $4
 			AND (expires_at IS NULL
-				OR expires_at > $5)
-			AND updated_at >= $6
+				OR expires_at > NOW() AT TIME ZONE 'localtime')
+			AND updated_at >= $5
 			AND deleted_at IS NULL`,
 			s.tableSessionSummaries,
 		),
 		key.AppName, key.UserID, key.SessionID,
-		filterKey, time.Now(), sess.CreatedAt,
+		filterKey, sess.CreatedAt,
 	)
 	if err == nil && summaryText != "" {
 		return summaryText, true
@@ -236,14 +235,14 @@ func (s *Service) GetSessionSummaryText(
 				AND session_id = $3
 				AND filter_key = $4
 				AND (expires_at IS NULL
-					OR expires_at > $5)
-				AND updated_at >= $6
+					OR expires_at > NOW() AT TIME ZONE 'localtime')
+				AND updated_at >= $5
 				AND deleted_at IS NULL`,
 				s.tableSessionSummaries,
 			),
 			key.AppName, key.UserID, key.SessionID,
 			session.SummaryFilterKeyAllContents,
-			time.Now(), sess.CreatedAt,
+			sess.CreatedAt,
 		)
 		if err == nil && summaryText != "" {
 			return summaryText, true

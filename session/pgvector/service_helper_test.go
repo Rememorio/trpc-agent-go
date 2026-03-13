@@ -484,7 +484,7 @@ func TestGetSummariesList_QueryError(t *testing.T) {
 	mock.ExpectQuery("SELECT session_id, filter_key").
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("db error"))
 

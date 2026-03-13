@@ -187,7 +187,6 @@ func TestSearchEvents_Success(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -228,7 +227,6 @@ func TestSearchEvents_MultipleResults(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -263,7 +261,6 @@ func TestSearchEvents_NoResults(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -291,7 +288,6 @@ func TestSearchEvents_QueryError(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnError(fmt.Errorf("db connection lost"))
 
@@ -327,7 +323,6 @@ func TestSearchEvents_WithTopK(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -364,7 +359,6 @@ func TestSearchEvents_DefaultTopK(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -396,7 +390,6 @@ func TestSearchEvents_InvalidEventJSON(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -520,7 +513,6 @@ func TestSearchEvents_SQLContainsTableName(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -553,7 +545,6 @@ func TestSearchEvents_TrimmedQuery(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -587,7 +578,6 @@ func TestSearchEvents_QueryPassedToEmbedder(
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 
@@ -664,7 +654,6 @@ func TestSearchEvents_ScanError(t *testing.T) {
 		WithArgs(
 			anyVectorArg{},
 			"app", "user", "sess",
-			sqlmock.AnyArg(),
 		).
 		WillReturnRows(rows)
 

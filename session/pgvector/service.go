@@ -522,11 +522,11 @@ func (s *Service) ListAppStates(
 			`SELECT key, value FROM %s
 			WHERE app_name = $1
 			AND (expires_at IS NULL
-				OR expires_at > $2)
+				OR expires_at > NOW() AT TIME ZONE 'localtime')
 			AND deleted_at IS NULL`,
 			s.tableAppStates,
 		),
-		appName, time.Now(),
+		appName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -649,11 +649,11 @@ func (s *Service) ListUserStates(
 			`SELECT key, value FROM %s
 			WHERE app_name = $1 AND user_id = $2
 			AND (expires_at IS NULL
-				OR expires_at > $3)
+				OR expires_at > NOW() AT TIME ZONE 'localtime')
 			AND deleted_at IS NULL`,
 			s.tableUserStates,
 		),
-		userKey.AppName, userKey.UserID, time.Now(),
+		userKey.AppName, userKey.UserID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(

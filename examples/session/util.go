@@ -250,7 +250,7 @@ func newPGVectorSessionService(
 		port = parsed
 	}
 	user := GetEnvOrDefault("PGVECTOR_USER", "postgres")
-	password := GetEnvOrDefault("PGVECTOR_PASSWORD", "")
+	password := GetEnvOrDefault("PGVECTOR_PASSWORD", "test123")
 	database := GetEnvOrDefault(
 		"PGVECTOR_DATABASE", "trpc-agent-go-pgsession",
 	)
@@ -505,6 +505,9 @@ func PrintSessionEvents(
 	sess, err := svc.GetSession(ctx, key)
 	if err != nil {
 		return fmt.Errorf("get session failed: %w", err)
+	}
+	if sess == nil {
+		return fmt.Errorf("session not found")
 	}
 
 	events := sess.GetEvents()
