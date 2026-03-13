@@ -6,21 +6,49 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-// Package main demonstrates how business code can route to different
-// summarizers by reading request-scoped values from ctx.
+// Package main demonstrates how business code can route real summary model
+// calls to different summarizers using request-scoped ctx values.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/session/summary"
+)
+
+var (
+	modelName = flag.String("model", "deepseek-chat", "Model name to use for both chat and summary generation")
+	waitSec   = flag.Int("wait-sec", 12, "Max wait time in seconds for async summary generation")
+
+	billingInput = flag.String(
+		"billing-input",
+		"I am a VIP customer. Invoice INV-8842 contains a duplicate charge of $129. Draft a short billing escalation note with the facts only.",
+		"First turn user input used before the sync summary path",
+	)
+	supportInput = flag.String(
+		"support-input",
+		"Switch context. I reset MFA and now I cannot log in on mobile. Give me concise next support steps.",
+		"Second turn user input used before the async summary path",
+	)
+	finalInput = flag.String(
+		"final-input",
+		"What support actions are still pending for the mobile login issue?",
+		"Third turn user input used after async summary to show isolated summary injection",
+	)
 )
 
 type summaryRequest struct {
@@ -38,73 +66,290 @@ const (
 type summaryRequestKey struct{}
 type summaryModeKey struct{}
 
-var _ summary.ContextAwareSummarizer = (*routingSummarizer)(nil)
-
 func main() {
-	ctx := context.Background()
+	flag.Parse()
 
-	svc := inmemory.NewSessionService(
-		inmemory.WithSummarizer(newRoutingSummarizer()),
-		inmemory.WithAsyncSummaryNum(1),
-		inmemory.WithSummaryQueueSize(8),
-		inmemory.WithSummaryJobTimeout(5*time.Second),
-	)
-	defer svc.Close()
-
-	key := session.Key{
-		AppName:   "summary-contextaware-demo",
-		UserID:    "demo-user",
-		SessionID: fmt.Sprintf("summary-contextaware-%d", time.Now().Unix()),
+	d := &contextAwareDemo{
+		modelName: *modelName,
+		wait:      time.Duration(*waitSec) * time.Second,
 	}
-	sess, err := svc.CreateSession(ctx, key, session.StateMap{})
+	if err := d.run(context.Background(), *billingInput, *supportInput, *finalInput); err != nil {
+		fmt.Printf("❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+type contextAwareDemo struct {
+	modelName string
+	wait      time.Duration
+
+	runner         runner.Runner
+	sessionService session.Service
+	app            string
+	userID         string
+	sessionID      string
+
+	agentReqSeq int64
+}
+
+func (d *contextAwareDemo) run(
+	ctx context.Context,
+	billingInput string,
+	supportInput string,
+	finalInput string,
+) error {
+	if err := d.setup(); err != nil {
+		return err
+	}
+	defer d.runner.Close()
+
+	fmt.Println("🧪 Context-Aware Summary Routing Demo")
+	fmt.Printf("Model: %s\n", d.modelName)
+	fmt.Printf("Session: %s\n", d.sessionID)
+	fmt.Printf("Async wait timeout: %s\n", d.wait)
+	fmt.Println(strings.Repeat("=", 72))
+
+	billingReq := summaryRequest{Tenant: "vip", Scene: "billing"}
+	fmt.Println("== Turn 1: billing conversation ==")
+	if err := d.runTurn(ctx, billingReq, billingInput); err != nil {
+		return err
+	}
+
+	if err := d.createSummaryWithRequest(ctx, billingReq); err != nil {
+		return err
+	}
+	syncSummary, err := d.readSummary(ctx, billingReq)
 	if err != nil {
-		panic(err)
+		return err
 	}
-
-	mustAppendText(ctx, svc, sess, "user", "VIP customer prefers concise billing summaries.")
-	mustAppendText(ctx, svc, sess, "assistant", "Noted. I will keep billing answers brief.")
-
-	syncCtx := WithSummaryRequest(
-		WithSummaryMode(ctx, summaryModeSync),
-		summaryRequest{Tenant: "vip", Scene: "billing"},
-	)
-	if err := svc.CreateSessionSummary(syncCtx, sess, "", false); err != nil {
-		panic(err)
-	}
-
-	syncSummary, err := loadSummary(ctx, svc, key)
-	if err != nil {
-		panic(err)
-	}
+	fmt.Println()
 	fmt.Println("== Sync summary ==")
 	fmt.Println(syncSummary)
+
+	supportReq := summaryRequest{Tenant: "standard", Scene: "support"}
 	fmt.Println()
-
-	// Append one more event so the async path has a non-empty delta and will
-	// run through ShouldSummarizeWithContext again.
-	mustAppendText(ctx, svc, sess, "user", "Standard user asks for a general support recap.")
-
-	asyncCtx := WithSummaryRequest(
-		WithSummaryMode(ctx, summaryModeAsync),
-		summaryRequest{Tenant: "standard", Scene: "support"},
-	)
-	if err := svc.EnqueueSummaryJob(asyncCtx, sess, "", false); err != nil {
-		panic(err)
+	fmt.Println("== Turn 2: support conversation on an isolated branch ==")
+	if err := d.runTurn(ctx, supportReq, supportInput); err != nil {
+		return err
 	}
 
-	asyncSummary, err := waitForSummary(ctx, svc, key, "router=default-async", 3*time.Second)
+	if err := d.enqueueSummaryWithRequest(ctx, supportReq); err != nil {
+		return err
+	}
+	asyncSummary, err := d.waitSummary(ctx, supportReq, "route=support-async")
 	if err != nil {
-		panic(err)
+		return err
 	}
+	fmt.Println()
 	fmt.Println("== Async summary ==")
 	fmt.Println(asyncSummary)
+
+	fmt.Println()
+	fmt.Println("== Turn 3: follow-up on the support branch ==")
+	if err := d.runTurn(ctx, supportReq, finalInput); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	fmt.Println("== Notes ==")
+	fmt.Println("1. Business code defines its own ctx schema: summaryRequest + summaryMode.")
+	fmt.Println("2. The router implements summary.ContextAwareSummarizer and picks a real summary.NewSummarizer at runtime.")
+	fmt.Println("3. Each branch uses a non-empty filterKey derived from the request, so billing and support stay isolated.")
+	fmt.Println("4. The demo adds a deterministic route tag in a post-summary hook so you can see which summarizer actually ran.")
+	fmt.Println("5. The final support turn shows the support-branch summary injected back into the prompt.")
+	return nil
+}
+
+func (d *contextAwareDemo) setup() error {
+	agentModel := openai.New(d.modelName)
+	routerSummarizer := newRoutingSummarizer(d.modelName)
+
+	d.sessionService = inmemory.NewSessionService(
+		inmemory.WithSummarizer(routerSummarizer),
+		inmemory.WithAsyncSummaryNum(1),
+		inmemory.WithSummaryQueueSize(32),
+		inmemory.WithSummaryJobTimeout(60*time.Second),
+		inmemory.WithAppendEventHook(func(
+			ctx *session.AppendEventContext,
+			next func() error,
+		) error {
+			if ctx != nil && ctx.Event != nil {
+				if ctx.Event.Actions == nil {
+					ctx.Event.Actions = &event.EventActions{}
+				}
+				ctx.Event.Actions.SkipSummarization = true
+			}
+			return next()
+		}),
+	)
+
+	agentCallbacks := model.NewCallbacks().RegisterBeforeModel(d.beforeAgentModel)
+	ag := llmagent.New(
+		"contextaware-summary-agent",
+		llmagent.WithModel(agentModel),
+		llmagent.WithInstruction(
+			"You are a concise support and billing assistant. "+
+				"Answer clearly and keep each response under 120 words.",
+		),
+		llmagent.WithDescription("A demo agent for context-aware session summary routing."),
+		llmagent.WithGenerationConfig(model.GenerationConfig{
+			Stream:      false,
+			Temperature: floatPtr(0.2),
+			MaxTokens:   intPtr(600),
+		}),
+		llmagent.WithAddSessionSummary(true),
+		llmagent.WithModelCallbacks(agentCallbacks),
+	)
+
+	d.app = "summary-contextaware-demo-app"
+	d.userID = "user"
+	d.sessionID = fmt.Sprintf("summary-contextaware-%d", time.Now().Unix())
+	d.runner = runner.NewRunner(
+		d.app,
+		ag,
+		runner.WithSessionService(d.sessionService),
+	)
+	return nil
+}
+
+func (d *contextAwareDemo) runTurn(
+	ctx context.Context,
+	req summaryRequest,
+	input string,
+) error {
+	fmt.Println("👤 User:")
+	fmt.Println(input)
 	fmt.Println()
 
-	fmt.Println("== Notes ==")
-	fmt.Println("1. Business code defines its own ctx schema. The framework does not own request/trigger keys.")
-	fmt.Println("2. The custom router implements SessionSummarizer plus ShouldSummarizeWithContext(ctx, sess).")
-	fmt.Println("3. The same ctx values are visible in both the gate phase and the Summarize phase.")
-	fmt.Println("4. If you rewrite EnqueueSummaryJob yourself, add your async marker to ctx before delegating.")
+	filterKey := d.filterKey(req)
+	fmt.Printf("🔀 Active filterKey: %s\n\n", filterKey)
+
+	evtCh, err := d.runner.Run(
+		ctx,
+		d.userID,
+		d.sessionID,
+		model.NewUserMessage(input),
+		agent.WithEventFilterKey(filterKey),
+	)
+	if err != nil {
+		return fmt.Errorf("run failed: %w", err)
+	}
+
+	var assistantText string
+	for evt := range evtCh {
+		if evt == nil || evt.Error != nil || evt.Response == nil {
+			continue
+		}
+		for _, choice := range evt.Response.Choices {
+			if choice.Message.Role == model.RoleAssistant &&
+				strings.TrimSpace(choice.Message.Content) != "" {
+				assistantText = choice.Message.Content
+			}
+		}
+	}
+
+	fmt.Println("🤖 Assistant:")
+	fmt.Println(assistantText)
+	return nil
+}
+
+func (d *contextAwareDemo) beforeAgentModel(
+	_ context.Context,
+	args *model.BeforeModelArgs,
+) (*model.BeforeModelResult, error) {
+	reqNum := atomic.AddInt64(&d.agentReqSeq, 1)
+	fmt.Printf("🧾 Agent model request #%d, messages=%d\n", reqNum, len(args.Request.Messages))
+	for i, msg := range args.Request.Messages {
+		if isSessionSummaryMessage(msg) {
+			fmt.Printf("   [%d] role=%s summary(injected):\n%s\n", i, msg.Role, msg.Content)
+			continue
+		}
+		fmt.Printf("   [%d] role=%s content=%q\n", i, msg.Role, preview(msg.Content, 140))
+	}
+	fmt.Println()
+	return nil, nil
+}
+
+func (d *contextAwareDemo) createSummaryWithRequest(
+	ctx context.Context,
+	req summaryRequest,
+) error {
+	sess, err := d.fetchSession(ctx)
+	if err != nil {
+		return err
+	}
+	ctx = WithSummaryRequest(WithSummaryMode(ctx, summaryModeSync), req)
+	return d.sessionService.CreateSessionSummary(ctx, sess, d.filterKey(req), false)
+}
+
+func (d *contextAwareDemo) enqueueSummaryWithRequest(
+	ctx context.Context,
+	req summaryRequest,
+) error {
+	sess, err := d.fetchSession(ctx)
+	if err != nil {
+		return err
+	}
+	ctx = WithSummaryRequest(WithSummaryMode(ctx, summaryModeAsync), req)
+	return d.sessionService.EnqueueSummaryJob(ctx, sess, d.filterKey(req), false)
+}
+
+func (d *contextAwareDemo) waitSummary(
+	ctx context.Context,
+	req summaryRequest,
+	wantContains string,
+) (string, error) {
+	deadline := time.Now().Add(d.wait)
+	for time.Now().Before(deadline) {
+		text, err := d.readSummary(ctx, req)
+		if err == nil && strings.Contains(text, wantContains) {
+			return text, nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return "", fmt.Errorf("timeout waiting for summary containing %q", wantContains)
+}
+
+func (d *contextAwareDemo) readSummary(
+	ctx context.Context,
+	req summaryRequest,
+) (string, error) {
+	sess, err := d.fetchSession(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	filterKey := d.filterKey(req)
+	sess.SummariesMu.RLock()
+	defer sess.SummariesMu.RUnlock()
+	if sess.Summaries != nil {
+		if sum := sess.Summaries[filterKey]; sum != nil && strings.TrimSpace(sum.Summary) != "" {
+			return sum.Summary, nil
+		}
+	}
+	return "", fmt.Errorf("summary not found for filterKey %q", filterKey)
+}
+
+func (d *contextAwareDemo) fetchSession(ctx context.Context) (*session.Session, error) {
+	sess, err := d.sessionService.GetSession(ctx, session.Key{
+		AppName: d.app, UserID: d.userID, SessionID: d.sessionID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get session failed: %w", err)
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("session not found")
+	}
+	return sess, nil
+}
+
+func (d *contextAwareDemo) filterKey(req summaryRequest) string {
+	return fmt.Sprintf(
+		"%s/%s/%s",
+		d.app,
+		normalizeFilterComponent(defaultString(req.Tenant, "default")),
+		normalizeFilterComponent(defaultString(req.Scene, "general")),
+	)
 }
 
 // WithSummaryRequest stores business request metadata on ctx.
@@ -136,26 +381,27 @@ func SummaryModeFromContext(ctx context.Context) (summaryMode, bool) {
 }
 
 type routingSummarizer struct {
-	defaultSync  summary.SessionSummarizer
-	defaultAsync summary.SessionSummarizer
-	vipSync      summary.SessionSummarizer
-	vipAsync     summary.SessionSummarizer
+	billingSync  summary.SessionSummarizer
+	billingAsync summary.SessionSummarizer
+	supportSync  summary.SessionSummarizer
+	supportAsync summary.SessionSummarizer
 }
 
-func newRoutingSummarizer() *routingSummarizer {
+var _ summary.ContextAwareSummarizer = (*routingSummarizer)(nil)
+
+func newRoutingSummarizer(modelName string) *routingSummarizer {
 	return &routingSummarizer{
-		defaultSync:  newNamedSummarizer("default-sync"),
-		defaultAsync: newNamedSummarizer("default-async"),
-		vipSync:      newNamedSummarizer("vip-sync"),
-		vipAsync:     newNamedSummarizer("vip-async"),
+		billingSync:  newRouteSummarizer(modelName, "billing-sync", billingPrompt("sync")),
+		billingAsync: newRouteSummarizer(modelName, "billing-async", billingPrompt("async")),
+		supportSync:  newRouteSummarizer(modelName, "support-sync", supportPrompt("sync")),
+		supportAsync: newRouteSummarizer(modelName, "support-async", supportPrompt("async")),
 	}
 }
 
 func (r *routingSummarizer) ShouldSummarize(sess *session.Session) bool {
-	return r.defaultSync.ShouldSummarize(sess)
+	return r.billingSync.ShouldSummarize(sess)
 }
 
-// ShouldSummarizeWithContext satisfies psummary.ContextAwareSummarizer.
 func (r *routingSummarizer) ShouldSummarizeWithContext(
 	ctx context.Context,
 	sess *session.Session,
@@ -184,10 +430,10 @@ func (r *routingSummarizer) SetModel(m model.Model) {
 
 func (r *routingSummarizer) Metadata() map[string]any {
 	return map[string]any{
-		"default_sync":  r.defaultSync.Metadata(),
-		"default_async": r.defaultAsync.Metadata(),
-		"vip_sync":      r.vipSync.Metadata(),
-		"vip_async":     r.vipAsync.Metadata(),
+		"billing_sync":  r.billingSync.Metadata(),
+		"billing_async": r.billingAsync.Metadata(),
+		"support_sync":  r.supportSync.Metadata(),
+		"support_async": r.supportAsync.Metadata(),
 	}
 }
 
@@ -198,142 +444,111 @@ func (r *routingSummarizer) route(ctx context.Context) summary.SessionSummarizer
 		mode = summaryModeSync
 	}
 
-	if req.Tenant == "vip" {
+	switch req.Scene {
+	case "billing":
 		if mode == summaryModeAsync {
-			return r.vipAsync
+			return r.billingAsync
 		}
-		return r.vipSync
+		return r.billingSync
+	case "support":
+		if mode == summaryModeAsync {
+			return r.supportAsync
+		}
+		return r.supportSync
+	default:
+		if mode == summaryModeAsync {
+			return r.supportAsync
+		}
+		return r.supportSync
 	}
-	if mode == summaryModeAsync {
-		return r.defaultAsync
-	}
-	return r.defaultSync
 }
 
 func (r *routingSummarizer) all() []summary.SessionSummarizer {
 	return []summary.SessionSummarizer{
-		r.defaultSync,
-		r.defaultAsync,
-		r.vipSync,
-		r.vipAsync,
+		r.billingSync,
+		r.billingAsync,
+		r.supportSync,
+		r.supportAsync,
 	}
 }
 
-type namedSummarizer struct {
-	name string
-}
+func newRouteSummarizer(modelName string, routeName string, prompt string) summary.SessionSummarizer {
+	callbacks := model.NewCallbacks().RegisterBeforeModel(func(
+		_ context.Context,
+		args *model.BeforeModelArgs,
+	) (*model.BeforeModelResult, error) {
+		fmt.Printf("📝 Summary model route=%s, messages=%d\n", routeName, len(args.Request.Messages))
+		for i, msg := range args.Request.Messages {
+			fmt.Printf("   [%d] role=%s content=%q\n", i, msg.Role, preview(msg.Content, 160))
+		}
+		fmt.Println()
+		return nil, nil
+	})
 
-func newNamedSummarizer(name string) *namedSummarizer {
-	return &namedSummarizer{name: name}
-}
-
-func (s *namedSummarizer) ShouldSummarize(sess *session.Session) bool {
-	return sess != nil && len(sess.Events) > 0
-}
-
-func (s *namedSummarizer) Summarize(
-	ctx context.Context,
-	sess *session.Session,
-) (string, error) {
-	req, _ := SummaryRequestFromContext(ctx)
-	mode, ok := SummaryModeFromContext(ctx)
-	if !ok {
-		mode = summaryModeSync
-	}
-
-	return fmt.Sprintf(
-		"router=%s tenant=%s scene=%s mode=%s events=%d latest=%q",
-		s.name,
-		defaultString(req.Tenant, "default"),
-		defaultString(req.Scene, "general"),
-		mode,
-		len(sess.Events),
-		lastMessageText(sess),
-	), nil
-}
-
-func (s *namedSummarizer) SetPrompt(string) {}
-
-func (s *namedSummarizer) SetModel(model.Model) {}
-
-func (s *namedSummarizer) Metadata() map[string]any {
-	return map[string]any{"name": s.name}
-}
-
-func mustAppendText(
-	ctx context.Context,
-	svc session.Service,
-	sess *session.Session,
-	author string,
-	content string,
-) {
-	e := event.New(
-		fmt.Sprintf("event-%d", time.Now().UnixNano()),
-		author,
+	return summary.NewSummarizer(
+		openai.New(modelName),
+		summary.WithName(routeName),
+		summary.WithPrompt(prompt),
+		summary.WithChecksAny(summary.CheckEventThreshold(0)),
+		summary.WithModelCallbacks(callbacks),
+		summary.WithPostSummaryHook(func(in *summary.PostSummaryHookContext) error {
+			req, _ := SummaryRequestFromContext(in.Ctx)
+			mode, ok := SummaryModeFromContext(in.Ctx)
+			if !ok {
+				mode = summaryModeSync
+			}
+			in.Summary = fmt.Sprintf(
+				"[route=%s tenant=%s scene=%s mode=%s]\n%s",
+				routeName,
+				defaultString(req.Tenant, "default"),
+				defaultString(req.Scene, "general"),
+				mode,
+				strings.TrimSpace(in.Summary),
+			)
+			return nil
+		}),
 	)
-	e.Timestamp = time.Now()
-	e.Response = &model.Response{
-		Choices: []model.Choice{{
-			Message: model.Message{
-				Role:    model.Role(author),
-				Content: content,
-			},
-		}},
-	}
-	if err := svc.AppendEvent(ctx, sess, e); err != nil {
-		panic(err)
-	}
 }
 
-func loadSummary(
-	ctx context.Context,
-	svc session.Service,
-	key session.Key,
-) (string, error) {
-	sess, err := svc.GetSession(ctx, key)
-	if err != nil {
-		return "", err
-	}
-	text, ok := svc.GetSessionSummaryText(ctx, sess)
-	if !ok {
-		return "", fmt.Errorf("summary not found")
-	}
-	return text, nil
+func billingPrompt(mode string) string {
+	return "You are generating a billing-oriented session summary. " +
+		"Focus on invoice facts, amounts, customer priority, and next actions. " +
+		"If the mode is " + mode + ", optimize the wording for that workflow. " +
+		"Keep it concise and structured.\n\n" +
+		"<conversation>\n{conversation_text}\n</conversation>\n\nSummary:"
 }
 
-func waitForSummary(
-	ctx context.Context,
-	svc session.Service,
-	key session.Key,
-	wantContains string,
-	timeout time.Duration,
-) (string, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		text, err := loadSummary(ctx, svc, key)
-		if err == nil && strings.Contains(text, wantContains) {
-			return text, nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return "", fmt.Errorf("timeout waiting for summary containing %q", wantContains)
+func supportPrompt(mode string) string {
+	return "You are generating a support-oriented session summary. " +
+		"Focus on symptoms, failed steps, likely owners, and immediate next actions. " +
+		"If the mode is " + mode + ", optimize the wording for that workflow. " +
+		"Keep it concise and structured.\n\n" +
+		"<conversation>\n{conversation_text}\n</conversation>\n\nSummary:"
 }
 
-func lastMessageText(sess *session.Session) string {
-	if sess == nil {
-		return ""
+func isSessionSummaryMessage(msg model.Message) bool {
+	if msg.Role != model.RoleSystem {
+		return false
 	}
-	for i := len(sess.Events) - 1; i >= 0; i-- {
-		resp := sess.Events[i].Response
-		if resp == nil || len(resp.Choices) == 0 {
-			continue
-		}
-		content := strings.TrimSpace(resp.Choices[0].Message.Content)
-		if content != "" {
-			return content
-		}
+	return strings.Contains(
+		msg.Content,
+		"<summary_of_previous_interactions>",
+	) || strings.Contains(
+		msg.Content,
+		"Here is a brief summary of your previous interactions:",
+	)
+}
+
+func preview(s string, max int) string {
+	clean := strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if clean == "" {
+		return "<empty>"
 	}
-	return ""
+	runes := []rune(clean)
+	if len(runes) <= max {
+		return clean
+	}
+	return string(runes[:max]) + "..."
 }
 
 func defaultString(s, fallback string) string {
@@ -341,4 +556,21 @@ func defaultString(s, fallback string) string {
 		return fallback
 	}
 	return s
+}
+
+func normalizeFilterComponent(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "default"
+	}
+	replacer := strings.NewReplacer("/", "_", "\\", "_", " ", "_")
+	return replacer.Replace(s)
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func floatPtr(v float64) *float64 {
+	return &v
 }
