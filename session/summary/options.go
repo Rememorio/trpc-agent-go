@@ -85,21 +85,27 @@ func WithSkipRecent(skipFunc SkipRecentFunc) Option {
 	}
 }
 
-// WithTokenThreshold creates a token-based check function.
+// WithTokenThreshold appends a token-based check.
+// Note: all checks in a summarizer are combined with global AND semantics.
+// If you call multiple threshold options (e.g. token + event), all must pass.
 func WithTokenThreshold(tokenCount int) Option {
 	return func(s *sessionSummarizer) {
 		s.checks = append(s.checks, wrapChecker(CheckTokenThreshold(tokenCount)))
 	}
 }
 
-// WithEventThreshold creates an event-count-based check function.
+// WithEventThreshold appends an event-count-based check.
+// Note: all checks in a summarizer are combined with global AND semantics.
+// If you call multiple threshold options (e.g. token + event), all must pass.
 func WithEventThreshold(eventCount int) Option {
 	return func(s *sessionSummarizer) {
 		s.checks = append(s.checks, wrapChecker(CheckEventThreshold(eventCount)))
 	}
 }
 
-// WithTimeThreshold creates a time-based check function.
+// WithTimeThreshold appends a time-based check.
+// Note: all checks in a summarizer are combined with global AND semantics.
+// If you call multiple threshold options (e.g. event + time), all must pass.
 func WithTimeThreshold(interval time.Duration) Option {
 	return func(s *sessionSummarizer) {
 		s.checks = append(s.checks, wrapChecker(CheckTimeThreshold(interval)))
