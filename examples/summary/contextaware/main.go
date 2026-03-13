@@ -20,7 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
-	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
+	"trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 type summaryRequest struct {
@@ -37,6 +37,8 @@ const (
 
 type summaryRequestKey struct{}
 type summaryModeKey struct{}
+
+var _ summary.ContextAwareSummarizer = (*routingSummarizer)(nil)
 
 func main() {
 	ctx := context.Background()
@@ -134,10 +136,10 @@ func SummaryModeFromContext(ctx context.Context) (summaryMode, bool) {
 }
 
 type routingSummarizer struct {
-	defaultSync  psummary.SessionSummarizer
-	defaultAsync psummary.SessionSummarizer
-	vipSync      psummary.SessionSummarizer
-	vipAsync     psummary.SessionSummarizer
+	defaultSync  summary.SessionSummarizer
+	defaultAsync summary.SessionSummarizer
+	vipSync      summary.SessionSummarizer
+	vipAsync     summary.SessionSummarizer
 }
 
 func newRoutingSummarizer() *routingSummarizer {
@@ -153,8 +155,7 @@ func (r *routingSummarizer) ShouldSummarize(sess *session.Session) bool {
 	return r.defaultSync.ShouldSummarize(sess)
 }
 
-// ShouldSummarizeWithContext is not part of the released SessionSummarizer
-// interface, but the framework will use it when present.
+// ShouldSummarizeWithContext satisfies psummary.ContextAwareSummarizer.
 func (r *routingSummarizer) ShouldSummarizeWithContext(
 	ctx context.Context,
 	sess *session.Session,
@@ -190,7 +191,7 @@ func (r *routingSummarizer) Metadata() map[string]any {
 	}
 }
 
-func (r *routingSummarizer) route(ctx context.Context) psummary.SessionSummarizer {
+func (r *routingSummarizer) route(ctx context.Context) summary.SessionSummarizer {
 	req, _ := SummaryRequestFromContext(ctx)
 	mode, ok := SummaryModeFromContext(ctx)
 	if !ok {
@@ -209,8 +210,8 @@ func (r *routingSummarizer) route(ctx context.Context) psummary.SessionSummarize
 	return r.defaultSync
 }
 
-func (r *routingSummarizer) all() []psummary.SessionSummarizer {
-	return []psummary.SessionSummarizer{
+func (r *routingSummarizer) all() []summary.SessionSummarizer {
+	return []summary.SessionSummarizer{
 		r.defaultSync,
 		r.defaultAsync,
 		r.vipSync,

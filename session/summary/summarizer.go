@@ -23,6 +23,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 )
 
+var _ SessionSummarizer = (*sessionSummarizer)(nil)
+var _ ContextAwareSummarizer = (*sessionSummarizer)(nil)
+
 // Common metadata field keys.
 const (
 	// metadataKeyModelName is the key for model name in metadata.

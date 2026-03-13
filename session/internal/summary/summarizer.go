@@ -15,10 +15,6 @@ import (
 	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
-type contextAwareSummarizer interface {
-	ShouldSummarizeWithContext(context.Context, *session.Session) bool
-}
-
 // HasSummarizer reports whether summary generation is configured.
 func HasSummarizer(summarizer psummary.SessionSummarizer) bool {
 	return summarizer != nil
@@ -34,7 +30,7 @@ func ShouldSummarize(
 	if summarizer == nil {
 		return false
 	}
-	if contextual, ok := summarizer.(contextAwareSummarizer); ok {
+	if contextual, ok := summarizer.(psummary.ContextAwareSummarizer); ok {
 		return contextual.ShouldSummarizeWithContext(ctx, sess)
 	}
 	return summarizer.ShouldSummarize(sess)
