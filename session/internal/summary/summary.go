@@ -142,8 +142,7 @@ func SummarizeSession(
 	// Build input with previous summary prepended.
 	input := prependPrevSummary(prevText, delta, time.Now())
 	tmp := buildFilterSession(base, filterKey, input)
-	req := BuildSummaryRequest(ctx, tmp, filterKey, force)
-	if !force && !ShouldSummarize(ctx, m, req) {
+	if !force && !ShouldSummarize(ctx, m, tmp) {
 		return false, nil
 	}
 

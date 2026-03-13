@@ -146,44 +146,36 @@ type SessionSummarizer interface {
 }
 ```
 
-## Context-Aware Summary Decisions
+## Context-Aware Summary Checks
 
-The released `SessionSummarizer` interface stays unchanged. For request-scoped
-decision logic, implement the optional `SessionSummaryDecider` extension on
-your summarizer:
+The released `SessionSummarizer` interface stays unchanged.
 
-```go
-type SessionSummaryRequest struct {
-    Session   *session.Session
-    FilterKey string
-    Force     bool
-    Trigger   SessionSummaryTrigger
-}
-
-type SessionSummaryDecider interface {
-    ShouldSummarizeContext(ctx context.Context, req SessionSummaryRequest) bool
-}
-```
-
-`Trigger` is set to `SessionSummaryTriggerSync` for direct
-`CreateSessionSummary` calls and `SessionSummaryTriggerAsync` for
-`EnqueueSummaryJob`. The same trigger is also available from
-`summary.SessionSummaryTriggerFromContext(ctx)`.
-
-For built-in summarizers, use the context-aware check options when the decision
-depends on request context:
+When summary gating depends on request context, use `ContextChecker` with the
+context-aware check options:
 
 ```go
+type asyncSummaryKey struct{}
+
+eventThreshold := summary.CheckEventThreshold(20)
+
 summarizer := summary.NewSummarizer(
     summaryModel,
     summary.WithChecksAnyContext(
-        summary.CheckEventThresholdContext(20),
-        func(ctx context.Context, req summary.SessionSummaryRequest) bool {
-            return req.Trigger == summary.SessionSummaryTriggerAsync
+        func(ctx context.Context, sess *session.Session) bool {
+            if eventThreshold(sess) {
+                return true
+            }
+            async, _ := ctx.Value(asyncSummaryKey{}).(bool)
+            return async
         },
     ),
 )
 ```
+
+The framework does not reserve any context keys for summary triggering. If your
+application needs to distinguish different summary entry points, annotate the
+context before calling the session APIs and read the value inside your
+`ContextChecker`.
 
 ## Summarizer Options
 
@@ -204,7 +196,7 @@ summarizer := summary.NewSummarizer(
 | `WithChecksAllContext(checks ...ContextChecker)` | All request-scoped conditions must be met (AND logic) |
 | `WithChecksAnyContext(checks ...ContextChecker)` | Any request-scoped condition triggers (OR logic) |
 
-`ContextChecker` receives `(ctx context.Context, req SessionSummaryRequest)`.
+`ContextChecker` receives `(ctx context.Context, sess *session.Session)`.
 
 **Note**: Use `Check*` functions (for example `CheckEventThreshold`) inside
 `WithChecksAll` and `WithChecksAny`, not `With*` functions.

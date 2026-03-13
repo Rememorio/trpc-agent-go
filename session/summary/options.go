@@ -129,10 +129,7 @@ func WithChecksAny(checks ...Checker) Option {
 func WithChecksAllContext(checks ...ContextChecker) Option {
 	return func(s *sessionSummarizer) {
 		if len(checks) > 0 {
-			s.checks = append(
-				s.checks,
-				wrapContextChecker(ChecksAllContext(checks)),
-			)
+			s.checks = append(s.checks, allContextChecks(checks))
 		}
 	}
 }
@@ -142,10 +139,7 @@ func WithChecksAllContext(checks ...ContextChecker) Option {
 func WithChecksAnyContext(checks ...ContextChecker) Option {
 	return func(s *sessionSummarizer) {
 		if len(checks) > 0 {
-			s.checks = append(
-				s.checks,
-				wrapContextChecker(ChecksAnyContext(checks)),
-			)
+			s.checks = append(s.checks, anyContextChecks(checks))
 		}
 	}
 }

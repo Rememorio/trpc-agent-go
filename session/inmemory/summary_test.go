@@ -20,7 +20,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
-	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 type fakeSummarizer struct {
@@ -842,35 +841,35 @@ func (c *ctxCaptureSummarizer) SetPrompt(prompt string)  {}
 func (c *ctxCaptureSummarizer) SetModel(m model.Model)   {}
 func (c *ctxCaptureSummarizer) Metadata() map[string]any { return map[string]any{} }
 
-type contextDeciderSummarizer struct {
+type contextAwareSummarizer struct {
 	capturedVal any
-	req         psummary.SessionSummaryRequest
+	sess        *session.Session
 	done        chan struct{}
 }
 
-func (c *contextDeciderSummarizer) ShouldSummarize(*session.Session) bool { return false }
-func (c *contextDeciderSummarizer) ShouldSummarizeContext(
+func (c *contextAwareSummarizer) ShouldSummarize(*session.Session) bool { return false }
+func (c *contextAwareSummarizer) ShouldSummarizeWithContext(
 	ctx context.Context,
-	req psummary.SessionSummaryRequest,
+	sess *session.Session,
 ) bool {
 	c.capturedVal = ctx.Value(traceIDKey)
-	c.req = req
+	c.sess = sess
 	return true
 }
-func (c *contextDeciderSummarizer) Summarize(context.Context, *session.Session) (string, error) {
+func (c *contextAwareSummarizer) Summarize(context.Context, *session.Session) (string, error) {
 	if c.done != nil {
 		close(c.done)
 	}
 	return "provider-summary", nil
 }
-func (c *contextDeciderSummarizer) SetPrompt(string)     {}
-func (c *contextDeciderSummarizer) SetModel(model.Model) {}
-func (c *contextDeciderSummarizer) Metadata() map[string]any {
+func (c *contextAwareSummarizer) SetPrompt(string)     {}
+func (c *contextAwareSummarizer) SetModel(model.Model) {}
+func (c *contextAwareSummarizer) Metadata() map[string]any {
 	return map[string]any{}
 }
 
-func TestMemoryService_CreateSessionSummary_ContextDeciderReceivesRequest(t *testing.T) {
-	resolved := &contextDeciderSummarizer{}
+func TestMemoryService_CreateSessionSummary_ContextAwareGateReceivesContext(t *testing.T) {
+	resolved := &contextAwareSummarizer{}
 
 	s := NewSessionService(WithSummarizer(resolved))
 
@@ -895,10 +894,8 @@ func TestMemoryService_CreateSessionSummary_ContextDeciderReceivesRequest(t *tes
 	require.NoError(t, err)
 
 	assert.Equal(t, "trace-sync", resolved.capturedVal)
-	assert.NotNil(t, resolved.req.Session)
-	assert.Equal(t, "", resolved.req.FilterKey)
-	assert.False(t, resolved.req.Force)
-	assert.Equal(t, psummary.SessionSummaryTriggerSync, resolved.req.Trigger)
+	require.NotNil(t, resolved.sess)
+	assert.Len(t, resolved.sess.Events, 1)
 
 	text, ok := s.GetSessionSummaryText(context.Background(), sess)
 	require.True(t, ok)
@@ -944,8 +941,8 @@ func TestMemoryService_EnqueueSummaryJob_ContextValuePreserved(t *testing.T) {
 	assert.Equal(t, "trace-12345", captureSummarizer.capturedVal)
 }
 
-func TestMemoryService_EnqueueSummaryJob_ContextDeciderReceivesAsyncTrigger(t *testing.T) {
-	resolved := &contextDeciderSummarizer{done: make(chan struct{})}
+func TestMemoryService_EnqueueSummaryJob_ContextAwareGateReceivesContext(t *testing.T) {
+	resolved := &contextAwareSummarizer{done: make(chan struct{})}
 
 	s := NewSessionService(
 		WithAsyncSummaryNum(1),
@@ -981,8 +978,6 @@ func TestMemoryService_EnqueueSummaryJob_ContextDeciderReceivesAsyncTrigger(t *t
 	}
 
 	assert.Equal(t, "trace-provider", resolved.capturedVal)
-	assert.NotNil(t, resolved.req.Session)
-	assert.Equal(t, "", resolved.req.FilterKey)
-	assert.False(t, resolved.req.Force)
-	assert.Equal(t, psummary.SessionSummaryTriggerAsync, resolved.req.Trigger)
+	require.NotNil(t, resolved.sess)
+	assert.Len(t, resolved.sess.Events, 1)
 }

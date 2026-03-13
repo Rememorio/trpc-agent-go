@@ -118,7 +118,6 @@ func (w *AsyncSummaryWorker) EnqueueJob(
 	if !w.config.hasSummarizer() {
 		return nil
 	}
-	ctx = EnsureSummaryTrigger(ctx, summary.SessionSummaryTriggerAsync)
 
 	if sess == nil {
 		return errors.New("nil session")

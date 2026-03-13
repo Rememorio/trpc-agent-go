@@ -26,11 +26,11 @@ import (
 // When no custom checkers are supplied, a default set is used.
 type Checker func(sess *session.Session) bool
 
-// ContextChecker evaluates whether a summary should be triggered for the
-// current summary attempt using request-scoped context.
-type ContextChecker func(context.Context, SessionSummaryRequest) bool
+// ContextChecker evaluates whether a summary should be triggered using the
+// current request context.
+type ContextChecker func(context.Context, *session.Session) bool
 
-type summaryCheck func(context.Context, SessionSummaryRequest) bool
+type summaryCheck func(context.Context, *session.Session) bool
 
 var (
 	defaultTokenCounterMu sync.RWMutex
@@ -176,14 +176,6 @@ func CheckEventThreshold(eventCount int) Checker {
 	}
 }
 
-// CheckEventThresholdContext creates a context-aware event-count-based checker.
-func CheckEventThresholdContext(eventCount int) ContextChecker {
-	checker := CheckEventThreshold(eventCount)
-	return func(_ context.Context, req SessionSummaryRequest) bool {
-		return checker(req.Session)
-	}
-}
-
 // CheckTimeThreshold creates a checker that triggers when the time elapsed
 // since the last event is greater than the given interval.
 func CheckTimeThreshold(interval time.Duration) Checker {
@@ -193,14 +185,6 @@ func CheckTimeThreshold(interval time.Duration) Checker {
 		}
 		lastEvent := sess.Events[len(sess.Events)-1]
 		return time.Since(lastEvent.Timestamp) > interval
-	}
-}
-
-// CheckTimeThresholdContext creates a context-aware time-based checker.
-func CheckTimeThresholdContext(interval time.Duration) ContextChecker {
-	checker := CheckTimeThreshold(interval)
-	return func(_ context.Context, req SessionSummaryRequest) bool {
-		return checker(req.Session)
 	}
 }
 
@@ -255,26 +239,6 @@ func CheckTokenThreshold(tokenCount int) Checker {
 	}
 }
 
-// CheckTokenThresholdContext creates a context-aware token-based checker.
-func CheckTokenThresholdContext(tokenCount int) ContextChecker {
-	return func(ctx context.Context, req SessionSummaryRequest) bool {
-		delta := filterDeltaEvents(req.Session)
-		if len(delta) == 0 {
-			return false
-		}
-		primary := filterPrimaryEvents(delta, req.Session.AppName)
-		if len(primary) == 0 {
-			return false
-		}
-		conversationText := extractConversationText(primary, nil, nil)
-		return checkTokenThresholdFromText(
-			ctx,
-			tokenCount,
-			conversationText,
-		)
-	}
-}
-
 // ChecksAll composes multiple checkers using AND logic.
 // It returns true only if all provided checkers return true.
 // Use this to enforce stricter summarization gates.
@@ -303,11 +267,22 @@ func ChecksAny(checks []Checker) Checker {
 	}
 }
 
-// ChecksAllContext composes multiple context-aware checkers using AND logic.
-func ChecksAllContext(checks []ContextChecker) ContextChecker {
-	return func(ctx context.Context, req SessionSummaryRequest) bool {
+func wrapChecker(check Checker) summaryCheck {
+	return func(_ context.Context, sess *session.Session) bool {
+		return check(sess)
+	}
+}
+
+func wrapContextChecker(check ContextChecker) summaryCheck {
+	return func(ctx context.Context, sess *session.Session) bool {
+		return check(ctx, sess)
+	}
+}
+
+func allContextChecks(checks []ContextChecker) summaryCheck {
+	return func(ctx context.Context, sess *session.Session) bool {
 		for _, check := range checks {
-			if !check(ctx, req) {
+			if !check(ctx, sess) {
 				return false
 			}
 		}
@@ -315,26 +290,13 @@ func ChecksAllContext(checks []ContextChecker) ContextChecker {
 	}
 }
 
-// ChecksAnyContext composes multiple context-aware checkers using OR logic.
-func ChecksAnyContext(checks []ContextChecker) ContextChecker {
-	return func(ctx context.Context, req SessionSummaryRequest) bool {
+func anyContextChecks(checks []ContextChecker) summaryCheck {
+	return func(ctx context.Context, sess *session.Session) bool {
 		for _, check := range checks {
-			if check(ctx, req) {
+			if check(ctx, sess) {
 				return true
 			}
 		}
 		return false
-	}
-}
-
-func wrapChecker(check Checker) summaryCheck {
-	return func(_ context.Context, req SessionSummaryRequest) bool {
-		return check(req.Session)
-	}
-}
-
-func wrapContextChecker(check ContextChecker) summaryCheck {
-	return func(ctx context.Context, req SessionSummaryRequest) bool {
-		return check(ctx, req)
 	}
 }

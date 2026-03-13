@@ -16,93 +16,111 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 type contextKey string
 
-type captureTokenCounter struct {
-	val any
-}
-
-func (c *captureTokenCounter) CountTokens(
-	ctx context.Context,
-	_ model.Message,
-) (int, error) {
-	c.val = ctx.Value(contextKey("trace"))
-	return 100, nil
-}
-
-func (c *captureTokenCounter) CountTokensRange(
-	ctx context.Context,
-	_ []model.Message,
-	_,
-	_ int,
-) (int, error) {
-	c.val = ctx.Value(contextKey("trace"))
-	return 100, nil
-}
-
-func TestSessionSummaryTriggerFromContext(t *testing.T) {
-	trigger, ok := SessionSummaryTriggerFromContext(context.Background())
-	assert.False(t, ok)
-	assert.Empty(t, trigger)
-
-	ctx := WithSessionSummaryTrigger(
-		context.Background(),
-		SessionSummaryTriggerAsync,
-	)
-	trigger, ok = SessionSummaryTriggerFromContext(ctx)
-	require.True(t, ok)
-	assert.Equal(t, SessionSummaryTriggerAsync, trigger)
-}
-
-func TestSessionSummarizer_ShouldSummarizeContext(t *testing.T) {
+func TestSessionSummarizer_WithChecksAnyContextReceivesContext(t *testing.T) {
 	s := NewSummarizer(&testModel{}, WithChecksAnyContext(func(
 		ctx context.Context,
-		req SessionSummaryRequest,
+		sess *session.Session,
 	) bool {
 		trace, _ := ctx.Value(contextKey("trace")).(string)
-		return trace == "trace-ctx" &&
-			req.FilterKey == "branch" &&
-			req.Trigger == SessionSummaryTriggerAsync
+		return trace == "trace-ctx" && len(sess.Events) == 1
 	}))
 
-	decider, ok := s.(SessionSummaryDecider)
+	contextual, ok := s.(interface {
+		ShouldSummarizeWithContext(context.Context, *session.Session) bool
+	})
 	require.True(t, ok)
 
-	req := SessionSummaryRequest{
-		Session: &session.Session{
-			Events: []event.Event{{Timestamp: time.Now()}},
-		},
-		FilterKey: "branch",
-		Trigger:   SessionSummaryTriggerAsync,
+	sess := &session.Session{
+		Events: []event.Event{{Timestamp: time.Now()}},
 	}
 	ctx := context.WithValue(context.Background(), contextKey("trace"), "trace-ctx")
-	assert.True(t, decider.ShouldSummarizeContext(ctx, req))
+	assert.True(t, contextual.ShouldSummarizeWithContext(ctx, sess))
 }
 
-func TestCheckTokenThresholdContext_UsesRequestContext(t *testing.T) {
-	counter := &captureTokenCounter{}
-	original := getTokenCounter()
-	SetTokenCounter(counter)
-	defer SetTokenCounter(original)
+func TestSessionSummarizer_WithChecksAllContextAllMustPass(t *testing.T) {
+	s := NewSummarizer(
+		&testModel{},
+		WithChecksAllContext(
+			func(ctx context.Context, sess *session.Session) bool {
+				trace, _ := ctx.Value(contextKey("trace")).(string)
+				return trace == "trace-ctx"
+			},
+			func(_ context.Context, sess *session.Session) bool {
+				return len(sess.Events) == 1
+			},
+		),
+	)
 
-	checker := CheckTokenThresholdContext(10)
-	req := SessionSummaryRequest{
-		Session: &session.Session{
-			Events: []event.Event{{
-				Author:    "user",
-				Timestamp: time.Now(),
-				Response: &model.Response{Choices: []model.Choice{{
-					Message: model.Message{Content: "hello world"},
-				}}},
-			}},
-		},
+	contextual, ok := s.(interface {
+		ShouldSummarizeWithContext(context.Context, *session.Session) bool
+	})
+	require.True(t, ok)
+
+	sess := &session.Session{
+		Events: []event.Event{{Timestamp: time.Now()}},
 	}
+	ctx := context.WithValue(context.Background(), contextKey("trace"), "trace-ctx")
+	assert.True(t, contextual.ShouldSummarizeWithContext(ctx, sess))
 
-	ctx := context.WithValue(context.Background(), contextKey("trace"), "trace-token")
-	assert.True(t, checker(ctx, req))
-	assert.Equal(t, "trace-token", counter.val)
+	ctx = context.WithValue(context.Background(), contextKey("trace"), "other")
+	assert.False(t, contextual.ShouldSummarizeWithContext(ctx, sess))
+}
+
+func TestSessionSummarizer_WithChecksAllContextShortCircuits(t *testing.T) {
+	calledSecond := false
+	s := NewSummarizer(
+		&testModel{},
+		WithChecksAllContext(
+			func(context.Context, *session.Session) bool {
+				return false
+			},
+			func(context.Context, *session.Session) bool {
+				calledSecond = true
+				return true
+			},
+		),
+	)
+
+	contextual, ok := s.(interface {
+		ShouldSummarizeWithContext(context.Context, *session.Session) bool
+	})
+	require.True(t, ok)
+
+	sess := &session.Session{
+		Events: []event.Event{{Timestamp: time.Now()}},
+	}
+	assert.False(t, contextual.ShouldSummarizeWithContext(context.Background(), sess))
+	assert.False(t, calledSecond)
+}
+
+func TestSessionSummarizer_WithChecksAnyContextShortCircuits(t *testing.T) {
+	calledSecond := false
+	s := NewSummarizer(
+		&testModel{},
+		WithChecksAnyContext(
+			func(context.Context, *session.Session) bool {
+				return true
+			},
+			func(context.Context, *session.Session) bool {
+				calledSecond = true
+				return false
+			},
+		),
+	)
+
+	contextual, ok := s.(interface {
+		ShouldSummarizeWithContext(context.Context, *session.Session) bool
+	})
+	require.True(t, ok)
+
+	sess := &session.Session{
+		Events: []event.Event{{Timestamp: time.Now()}},
+	}
+	assert.True(t, contextual.ShouldSummarizeWithContext(context.Background(), sess))
+	assert.False(t, calledSecond)
 }

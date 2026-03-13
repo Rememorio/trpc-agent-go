@@ -18,7 +18,6 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
-	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // CreateSessionSummary is the internal implementation that returns the summary.
@@ -28,7 +27,6 @@ func (s *Service) CreateSessionSummary(
 	filterKey string,
 	force bool,
 ) error {
-	ctx = isummary.EnsureSummaryTrigger(ctx, psummary.SessionSummaryTriggerSync)
 	if !isummary.HasSummarizer(s.opts.summarizer) {
 		return nil
 	}
@@ -85,7 +83,6 @@ func (s *Service) CreateSessionSummary(
 
 // EnqueueSummaryJob enqueues a summary job for asynchronous processing.
 func (s *Service) EnqueueSummaryJob(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
-	ctx = isummary.EnsureSummaryTrigger(ctx, psummary.SessionSummaryTriggerAsync)
 	if !isummary.HasSummarizer(s.opts.summarizer) {
 		return nil
 	}

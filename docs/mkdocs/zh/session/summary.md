@@ -151,43 +151,35 @@ type SessionSummarizer interface {
 }
 ```
 
-## 上下文感知的摘要决策
+## 上下文感知的摘要检查
 
-已发布的 `SessionSummarizer` 接口保持不变。如果需要按请求上下文参与
-决策，可以让 summarizer 额外实现可选扩展接口 `SessionSummaryDecider`：
+已发布的 `SessionSummarizer` 接口保持不变。
 
-```go
-type SessionSummaryRequest struct {
-    Session   *session.Session
-    FilterKey string
-    Force     bool
-    Trigger   SessionSummaryTrigger
-}
-
-type SessionSummaryDecider interface {
-    ShouldSummarizeContext(ctx context.Context, req SessionSummaryRequest) bool
-}
-```
-
-`Trigger` 在直接调用 `CreateSessionSummary` 时为
-`SessionSummaryTriggerSync`，在调用 `EnqueueSummaryJob` 时为
-`SessionSummaryTriggerAsync`。同样的触发来源也可以通过
-`summary.SessionSummaryTriggerFromContext(ctx)` 读取。
-
-对于内置 summarizer，如果决策依赖请求上下文，可以直接使用带
-context 的检查选项：
+如果摘要触发条件依赖请求上下文，可以直接使用 `ContextChecker`
+以及带 context 的检查选项：
 
 ```go
+type asyncSummaryKey struct{}
+
+eventThreshold := summary.CheckEventThreshold(20)
+
 summarizer := summary.NewSummarizer(
     summaryModel,
     summary.WithChecksAnyContext(
-        summary.CheckEventThresholdContext(20),
-        func(ctx context.Context, req summary.SessionSummaryRequest) bool {
-            return req.Trigger == summary.SessionSummaryTriggerAsync
+        func(ctx context.Context, sess *session.Session) bool {
+            if eventThreshold(sess) {
+                return true
+            }
+            async, _ := ctx.Value(asyncSummaryKey{}).(bool)
+            return async
         },
     ),
 )
 ```
+
+框架本身不会为摘要触发方式预留 context key。如果业务需要区分不同的
+摘要入口，可以在调用 session API 之前自行往 `ctx` 写入标记，并在
+`ContextChecker` 中读取。
 
 ## 摘要器选项
 
@@ -208,7 +200,7 @@ summarizer := summary.NewSummarizer(
 | `WithChecksAllContext(checks ...ContextChecker)` | 要求所有带请求上下文的条件都满足（AND 逻辑） |
 | `WithChecksAnyContext(checks ...ContextChecker)` | 任一带请求上下文的条件满足即触发（OR 逻辑） |
 
-`ContextChecker` 的签名为 `(ctx context.Context, req SessionSummaryRequest)`。
+`ContextChecker` 的签名为 `(ctx context.Context, sess *session.Session)`。
 
 **注意**：在 `WithChecksAll` 和 `WithChecksAny` 中使用 `Check*` 函数（如 `CheckEventThreshold`），而不是 `With*` 函数。
 

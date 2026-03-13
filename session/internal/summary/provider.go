@@ -15,52 +15,27 @@ import (
 	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
+type contextAwareSummarizer interface {
+	ShouldSummarizeWithContext(context.Context, *session.Session) bool
+}
+
 // HasSummarizer reports whether summary generation is configured.
 func HasSummarizer(summarizer psummary.SessionSummarizer) bool {
 	return summarizer != nil
 }
 
-// EnsureSummaryTrigger applies a default trigger to ctx when none has been set
-// by an upstream caller.
-func EnsureSummaryTrigger(
-	ctx context.Context,
-	trigger psummary.SessionSummaryTrigger,
-) context.Context {
-	if _, ok := psummary.SessionSummaryTriggerFromContext(ctx); ok {
-		return ctx
-	}
-	return psummary.WithSessionSummaryTrigger(ctx, trigger)
-}
-
-// BuildSummaryRequest builds the request-scoped metadata for the current
-// summary attempt.
-func BuildSummaryRequest(
-	ctx context.Context,
-	sess *session.Session,
-	filterKey string,
-	force bool,
-) psummary.SessionSummaryRequest {
-	trigger, _ := psummary.SessionSummaryTriggerFromContext(ctx)
-	return psummary.SessionSummaryRequest{
-		Session:   sess,
-		FilterKey: filterKey,
-		Force:     force,
-		Trigger:   trigger,
-	}
-}
-
-// ShouldSummarize evaluates the summary gate, preferring the optional
-// request-scoped decider extension when available.
+// ShouldSummarize evaluates the summary gate, preferring the built-in
+// context-aware summary path when available.
 func ShouldSummarize(
 	ctx context.Context,
 	summarizer psummary.SessionSummarizer,
-	req psummary.SessionSummaryRequest,
+	sess *session.Session,
 ) bool {
 	if summarizer == nil {
 		return false
 	}
-	if decider, ok := summarizer.(psummary.SessionSummaryDecider); ok {
-		return decider.ShouldSummarizeContext(ctx, req)
+	if contextual, ok := summarizer.(contextAwareSummarizer); ok {
+		return contextual.ShouldSummarizeWithContext(ctx, sess)
 	}
-	return summarizer.ShouldSummarize(req.Session)
+	return summarizer.ShouldSummarize(sess)
 }

@@ -18,14 +18,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
 	"trpc.group/trpc-go/trpc-agent-go/session/redis/internal/util"
-	psummary "trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // CreateSessionSummary generates a summary for the session (async-ready).
 // It performs per-filterKey delta summarization; when filterKey=="", it means full-session summary.
 // Strategy: Summary storage version follows session storage version.
 func (s *Service) CreateSessionSummary(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
-	ctx = isummary.EnsureSummaryTrigger(ctx, psummary.SessionSummaryTriggerSync)
 	if !isummary.HasSummarizer(s.opts.summarizer) {
 		return nil
 	}
@@ -165,7 +163,6 @@ func (s *Service) getSummaryFromZSet(ctx context.Context, key session.Key, filte
 
 // EnqueueSummaryJob enqueues a summary job for asynchronous processing.
 func (s *Service) EnqueueSummaryJob(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
-	ctx = isummary.EnsureSummaryTrigger(ctx, psummary.SessionSummaryTriggerAsync)
 	if !isummary.HasSummarizer(s.opts.summarizer) {
 		return nil
 	}

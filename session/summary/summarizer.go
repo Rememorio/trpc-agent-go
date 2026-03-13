@@ -190,23 +190,21 @@ func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 
 // ShouldSummarize checks if the session should be summarized.
 func (s *sessionSummarizer) ShouldSummarize(sess *session.Session) bool {
-	return s.ShouldSummarizeContext(context.Background(), SessionSummaryRequest{
-		Session: sess,
-	})
+	return s.ShouldSummarizeWithContext(context.Background(), sess)
 }
 
-// ShouldSummarizeContext checks if the current summary attempt should proceed.
-func (s *sessionSummarizer) ShouldSummarizeContext(
+// ShouldSummarizeWithContext evaluates configured checks using the current
+// request context when available.
+func (s *sessionSummarizer) ShouldSummarizeWithContext(
 	ctx context.Context,
-	req SessionSummaryRequest,
+	sess *session.Session,
 ) bool {
-	sess := req.Session
 	if sess == nil || len(sess.Events) == 0 {
 		return false
 	}
 
 	for _, check := range s.checks {
-		if !check(ctx, req) {
+		if !check(ctx, sess) {
 			return false
 		}
 	}
