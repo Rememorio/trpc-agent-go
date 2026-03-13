@@ -147,7 +147,7 @@ type sessionSummarizer struct {
 	model           model.Model
 	name            string
 	prompt          string
-	checks          []summaryCheck
+	checks          []ContextChecker
 	maxSummaryWords int
 	skipRecentFunc  SkipRecentFunc
 
@@ -167,10 +167,10 @@ type sessionSummarizer struct {
 // NewSummarizer creates a new session summarizer.
 func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 	s := &sessionSummarizer{
-		prompt:          "",               // Will be set after processing options.
-		checks:          []summaryCheck{}, // No default checks - summarization only when explicitly configured.
-		maxSummaryWords: 0,                // 0 means no word limit.
-		skipRecentFunc:  nil,              // nil means no events are skipped.
+		prompt:          "",                 // Will be set after processing options.
+		checks:          []ContextChecker{}, // No default checks - summarization only when explicitly configured.
+		maxSummaryWords: 0,                  // 0 means no word limit.
+		skipRecentFunc:  nil,                // nil means no events are skipped.
 	}
 	s.model = m
 

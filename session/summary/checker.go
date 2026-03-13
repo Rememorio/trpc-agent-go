@@ -30,8 +30,6 @@ type Checker func(sess *session.Session) bool
 // current request context.
 type ContextChecker func(context.Context, *session.Session) bool
 
-type summaryCheck func(context.Context, *session.Session) bool
-
 var (
 	defaultTokenCounterMu sync.RWMutex
 	defaultTokenCounter   model.TokenCounter = model.NewSimpleTokenCounter()
@@ -267,19 +265,13 @@ func ChecksAny(checks []Checker) Checker {
 	}
 }
 
-func wrapChecker(check Checker) summaryCheck {
+func wrapChecker(check Checker) ContextChecker {
 	return func(_ context.Context, sess *session.Session) bool {
 		return check(sess)
 	}
 }
 
-func wrapContextChecker(check ContextChecker) summaryCheck {
-	return func(ctx context.Context, sess *session.Session) bool {
-		return check(ctx, sess)
-	}
-}
-
-func allContextChecks(checks []ContextChecker) summaryCheck {
+func allContextChecks(checks []ContextChecker) ContextChecker {
 	return func(ctx context.Context, sess *session.Session) bool {
 		for _, check := range checks {
 			if !check(ctx, sess) {
@@ -290,7 +282,7 @@ func allContextChecks(checks []ContextChecker) summaryCheck {
 	}
 }
 
-func anyContextChecks(checks []ContextChecker) summaryCheck {
+func anyContextChecks(checks []ContextChecker) ContextChecker {
 	return func(ctx context.Context, sess *session.Session) bool {
 		for _, check := range checks {
 			if check(ctx, sess) {
