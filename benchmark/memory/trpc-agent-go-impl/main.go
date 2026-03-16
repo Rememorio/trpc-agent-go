@@ -227,6 +227,7 @@ func main() {
 	modelName := getModelName()
 	evalModelName := getEvalModelName()
 	outputDir := *flagOutput
+	scenariosToRun := getScenarios(*flagScenario)
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		log.Fatalf("Failed to create output directory: %v", err)
@@ -239,17 +240,8 @@ func main() {
 	log.Printf("Model: %s", modelName)
 	log.Printf("Eval Model: %s", evalModelName)
 	log.Printf("Scenario: %s", *flagScenario)
-	log.Printf("Memory Backends: %v", backends)
 	log.Printf("LLM Judge: %v", *flagLLMJudge)
-	if *flagQAHistoryTurns > 0 {
-		log.Printf("QA History Turns: %d", *flagQAHistoryTurns)
-	}
-	if *flagQASearchPasses > 1 {
-		log.Printf(
-			"QA Search Passes: %d",
-			*flagQASearchPasses,
-		)
-	}
+	logScenarioConfig(scenariosToRun, backends)
 	log.Printf("Output: %s", outputDir)
 	if *flagTableSuffix != "" {
 		log.Printf("Table Suffix: %s", *flagTableSuffix)
@@ -300,9 +292,6 @@ func main() {
 		DebugQALimit:          *flagDebugQALimit,
 	}
 
-	// Determine scenarios to run.
-	scenariosToRun := getScenarios(*flagScenario)
-
 	// Run evaluation for each scenario and backend combination.
 	for _, scenarioType := range scenariosToRun {
 		// Long-context doesn't need memory backends.
@@ -340,6 +329,54 @@ func parseMemoryBackends(backendsStr string) []string {
 		}
 	}
 	return backends
+}
+
+func logScenarioConfig(
+	scenariosToRun []scenarios.ScenarioType,
+	backends []string,
+) {
+	hasMemoryScenarios := containsScenario(
+		scenariosToRun,
+		scenarios.ScenarioAgentic,
+	) || containsScenario(
+		scenariosToRun,
+		scenarios.ScenarioAuto,
+	)
+	if containsScenario(scenariosToRun, scenarios.ScenarioLongContext) {
+		log.Printf("Context Mode: long_context transcript preload")
+	}
+	if containsScenario(scenariosToRun, scenarios.ScenarioSessionRecall) {
+		log.Printf("Session Backend: session_pgvector")
+		log.Printf("Session Recall Results: %d", *flagVectorTopK)
+		if *flagSessionRecallMinScore > 0 {
+			log.Printf(
+				"Session Recall Min Score: %.3f",
+				*flagSessionRecallMinScore,
+			)
+		}
+	}
+	if !hasMemoryScenarios {
+		return
+	}
+	log.Printf("Memory Backends: %v", backends)
+	if *flagQAHistoryTurns > 0 {
+		log.Printf("QA History Turns: %d", *flagQAHistoryTurns)
+	}
+	if *flagQASearchPasses > 1 {
+		log.Printf("QA Search Passes: %d", *flagQASearchPasses)
+	}
+}
+
+func containsScenario(
+	scenariosToRun []scenarios.ScenarioType,
+	target scenarios.ScenarioType,
+) bool {
+	for _, scenario := range scenariosToRun {
+		if scenario == target {
+			return true
+		}
+	}
+	return false
 }
 
 func getScenarios(scenario string) []scenarios.ScenarioType {
