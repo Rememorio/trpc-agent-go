@@ -26,9 +26,10 @@ type ScenarioType string
 
 // Scenario types.
 const (
-	ScenarioLongContext ScenarioType = "long_context"
-	ScenarioAgentic     ScenarioType = "agentic"
-	ScenarioAuto        ScenarioType = "auto"
+	ScenarioLongContext   ScenarioType = "long_context"
+	ScenarioSessionRecall ScenarioType = "session_recall"
+	ScenarioAgentic       ScenarioType = "agentic"
+	ScenarioAuto          ScenarioType = "auto"
 )
 
 // Config holds scenario evaluation configuration.
@@ -52,6 +53,16 @@ type Config struct {
 	// Only applies to agentic and auto scenarios.
 	QASearchPasses int
 
+	// SessionRecallResults controls how many recalled
+	// session events are preloaded during QA.
+	// Only applies to session_recall scenario.
+	SessionRecallResults int
+
+	// SessionRecallMinScore filters low-confidence
+	// session recall hits before preload injection.
+	// Only applies to session_recall scenario.
+	SessionRecallMinScore float64
+
 	// Debug options (primarily for benchmark diagnosis).
 	DebugDumpMemories bool
 	DebugMemLimit     int
@@ -61,15 +72,17 @@ type Config struct {
 // DefaultConfig returns default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Scenario:          ScenarioLongContext,
-		MaxContext:        128000,
-		EnableLLMJudge:    false,
-		Verbose:           false,
-		SessionEventLimit: 1000,
-		QASearchPasses:    1,
-		DebugDumpMemories: false,
-		DebugMemLimit:     0,
-		DebugQALimit:      0,
+		Scenario:              ScenarioLongContext,
+		MaxContext:            128000,
+		EnableLLMJudge:        false,
+		Verbose:               false,
+		SessionEventLimit:     1000,
+		QASearchPasses:        1,
+		SessionRecallResults:  20,
+		SessionRecallMinScore: 0,
+		DebugDumpMemories:     false,
+		DebugMemLimit:         0,
+		DebugQALimit:          0,
 	}
 }
 
@@ -200,12 +213,15 @@ func (e *LongContextEvaluator) Evaluate(
 	catAgg := metrics.NewCategoryAggregator()
 	var sampleUsage TokenUsage
 
-	for _, qa := range sample.QA {
+	for i, qa := range sample.QA {
 		qaResult, err := e.evaluateQA(
 			ctx, transcript, transcriptTokens, qa,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("evaluate QA %s: %w", qa.QuestionID, err)
+		}
+		if e.config.Verbose {
+			logVerboseQAResult(i, len(sample.QA), qa, qaResult)
 		}
 		result.QAResults = append(result.QAResults, qaResult)
 		catAgg.Add(qa.Category, qaResult.Metrics)

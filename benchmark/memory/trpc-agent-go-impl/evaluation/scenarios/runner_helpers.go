@@ -546,7 +546,7 @@ func collectFinalTextAndUsage(
 				res.usage.LLMCalls++
 			}
 		}
-		if ev.IsFinalResponse() || ev.IsRunnerCompletion() {
+		if ev.IsRunnerCompletion() {
 			break
 		}
 	}
@@ -632,6 +632,77 @@ func logQATrace(
 	log.Printf(
 		"    📊 F1=%.3f BLEU=%.3f LLM=%.3f | %dms",
 		m.F1, m.BLEU, m.LLMScore, latencyMs,
+	)
+}
+
+func logDirectQATrace(
+	question, expected, predicted string,
+	m metrics.QAMetrics,
+	latencyMs int64,
+	usage *TokenUsage,
+	tokensUsed int,
+) {
+	log.Printf("    📋 Question: %s", question)
+	log.Printf("    🎯 Expected: %s", expected)
+	if usage != nil {
+		if usage.CachedTokens > 0 {
+			log.Printf(
+				"    🔹 Tokens: %d (in:%d cached:%d out:%d)",
+				usage.TotalTokens,
+				usage.PromptTokens,
+				usage.CachedTokens,
+				usage.CompletionTokens,
+			)
+		} else {
+			log.Printf(
+				"    🔹 Tokens: %d (in:%d out:%d)",
+				usage.TotalTokens,
+				usage.PromptTokens,
+				usage.CompletionTokens,
+			)
+		}
+	} else if tokensUsed > 0 {
+		log.Printf("    🔹 Tokens (estimated): %d", tokensUsed)
+	}
+	log.Printf("    💬 Predicted: %s", predicted)
+	log.Printf(
+		"    📊 F1=%.3f BLEU=%.3f LLM=%.3f | %dms",
+		m.F1, m.BLEU, m.LLMScore, latencyMs,
+	)
+}
+
+func logVerboseQAResult(
+	index, total int,
+	qa dataset.QAItem,
+	qaResult *QAResult,
+) {
+	log.Printf("  [QA %d/%d] %s (%s)",
+		index+1, total,
+		qa.QuestionID, qa.Category,
+	)
+	if qaResult == nil {
+		return
+	}
+	if len(qaResult.Steps) > 0 {
+		logQATrace(
+			qa.QuestionID,
+			qa.Question,
+			qa.Answer,
+			qaResult.Predicted,
+			qaResult.Metrics,
+			collectResult{steps: qaResult.Steps},
+			qaResult.LatencyMs,
+		)
+		return
+	}
+	logDirectQATrace(
+		qa.Question,
+		qa.Answer,
+		qaResult.Predicted,
+		qaResult.Metrics,
+		qaResult.LatencyMs,
+		qaResult.TokenUsage,
+		qaResult.TokensUsed,
 	)
 }
 

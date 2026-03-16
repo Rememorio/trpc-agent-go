@@ -8,6 +8,8 @@ replace (
 	trpc.group/trpc-go/trpc-agent-go/memory/pgvector => ../../../memory/pgvector
 	trpc.group/trpc-go/trpc-agent-go/memory/sqlite => ../../../memory/sqlite
 	trpc.group/trpc-go/trpc-agent-go/memory/sqlitevec => ../../../memory/sqlitevec
+	trpc.group/trpc-go/trpc-agent-go/session/pgvector => ../../../session/pgvector
+	trpc.group/trpc-go/trpc-agent-go/storage/postgres => ../../../storage/postgres
 )
 
 require (
@@ -17,6 +19,7 @@ require (
 	trpc.group/trpc-go/trpc-agent-go/memory/pgvector v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/memory/sqlite v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/memory/sqlitevec v1.5.0
+	trpc.group/trpc-go/trpc-agent-go/session/pgvector v1.5.0
 )
 
 require (
@@ -33,7 +36,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.7.1 // indirect
+	github.com/jackc/pgx/v5 v5.7.2 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/ncruces/go-sqlite3 v0.17.1 // indirect
@@ -68,5 +71,5 @@ require (
 	google.golang.org/protobuf v1.34.2 // indirect
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5 // indirect
 	trpc.group/trpc-go/trpc-agent-go/storage/mysql v0.0.0-20251126064502-c8c2594d2519 // indirect
-	trpc.group/trpc-go/trpc-agent-go/storage/postgres v1.1.1 // indirect
+	trpc.group/trpc-go/trpc-agent-go/storage/postgres v1.6.0 // indirect
 )
