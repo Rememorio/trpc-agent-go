@@ -336,14 +336,16 @@ func newAutoMemoryExtractor(
 		)
 	}
 	// When no checkers are configured, ShouldExtract always returns
-	// true so extraction runs on every turn.
+	// true so extraction runs on every turn. We still validate
+	// MemoryAutoPolicy to catch misconfigurations early.
+
+	policy, err := parseSummaryPolicy(opts.MemoryAutoPolicy)
+	if err != nil {
+		return nil, err
+	}
 
 	extOpts := make([]memextractor.Option, 0, 2)
 	if len(checks) > 0 {
-		policy, err := parseSummaryPolicy(opts.MemoryAutoPolicy)
-		if err != nil {
-			return nil, err
-		}
 		switch policy {
 		case summaryPolicyAny:
 			extOpts = append(
