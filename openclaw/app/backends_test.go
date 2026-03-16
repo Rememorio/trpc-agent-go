@@ -72,7 +72,7 @@ func TestNewAutoMemoryExtractor_RequiresModel(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestNewAutoMemoryExtractor_DefaultThreshold(t *testing.T) {
+func TestNewAutoMemoryExtractor_NoCheckers(t *testing.T) {
 	t.Parallel()
 
 	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
@@ -84,15 +84,10 @@ func TestNewAutoMemoryExtractor_DefaultThreshold(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ext)
 
+	// Without checkers, ShouldExtract always returns true.
 	ctx := &memextractor.ExtractionContext{
 		Messages: make([]model.Message, 1),
 	}
-	require.False(t, ext.ShouldExtract(ctx))
-
-	ctx.Messages = make(
-		[]model.Message,
-		defaultMemoryAutoMessageThreshold+1,
-	)
 	require.True(t, ext.ShouldExtract(ctx))
 }
 

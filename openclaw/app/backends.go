@@ -320,7 +320,7 @@ func newAutoMemoryExtractor(
 		return nil, errors.New("memory auto requires a model")
 	}
 
-	checks := make([]memextractor.Checker, 0, 2)
+	var checks []memextractor.Checker
 	if opts.MemoryAutoMessageThreshold > 0 {
 		checks = append(
 			checks,
@@ -335,33 +335,33 @@ func newAutoMemoryExtractor(
 			memextractor.CheckTimeInterval(opts.MemoryAutoTimeInterval),
 		)
 	}
-	if len(checks) == 0 {
-		checks = append(
-			checks,
-			memextractor.CheckMessageThreshold(
-				defaultMemoryAutoMessageThreshold,
-			),
-		)
-	}
-
-	policy, err := parseSummaryPolicy(opts.MemoryAutoPolicy)
-	if err != nil {
-		return nil, err
-	}
+	// When no checkers are configured, ShouldExtract always returns
+	// true so extraction runs on every turn.
 
 	extOpts := make([]memextractor.Option, 0, 2)
-	switch policy {
-	case summaryPolicyAny:
-		extOpts = append(
-			extOpts,
-			memextractor.WithCheckersAny(checks...),
-		)
-	case summaryPolicyAll:
-		for _, check := range checks {
-			extOpts = append(extOpts, memextractor.WithChecker(check))
+	if len(checks) > 0 {
+		policy, err := parseSummaryPolicy(opts.MemoryAutoPolicy)
+		if err != nil {
+			return nil, err
 		}
-	default:
-		return nil, fmt.Errorf("unsupported memory auto policy: %s", policy)
+		switch policy {
+		case summaryPolicyAny:
+			extOpts = append(
+				extOpts,
+				memextractor.WithCheckersAny(checks...),
+			)
+		case summaryPolicyAll:
+			for _, check := range checks {
+				extOpts = append(
+					extOpts,
+					memextractor.WithChecker(check),
+				)
+			}
+		default:
+			return nil, fmt.Errorf(
+				"unsupported memory auto policy: %s", policy,
+			)
+		}
 	}
 
 	return memextractor.NewExtractor(mdl, extOpts...), nil

@@ -53,7 +53,6 @@ const (
 	summaryPolicyAll = "all"
 
 	defaultSessionSummaryEventThreshold = 20
-	defaultMemoryAutoMessageThreshold   = 20
 	defaultSkillsLoadMode               = "turn"
 
 	flagAddSessionSummary = "add-session-summary"
