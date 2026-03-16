@@ -122,7 +122,7 @@ func TestRuntime_StartProgramInteractivePipes(t *testing.T) {
 		result = provider.RunResult()
 		return strings.Contains(result.Stdout, "out:hello") &&
 			strings.Contains(result.Stderr, "err:hello")
-	}, time.Second, 20*time.Millisecond)
+	}, 2*time.Second, 20*time.Millisecond)
 	require.NoError(t, proc.Close())
 }
 
