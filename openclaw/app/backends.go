@@ -360,9 +360,7 @@ func newAutoMemoryExtractor(
 				)
 			}
 		default:
-			return nil, fmt.Errorf(
-				"unsupported memory auto policy: %s", policy,
-			)
+			return nil, fmt.Errorf("unsupported memory auto policy: %s", policy)
 		}
 	}
 
