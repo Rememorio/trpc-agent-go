@@ -88,12 +88,12 @@ var (
 	)
 	flagVectorTopK = flag.Int(
 		"vector-topk",
-		20,
+		30,
 		"Top-k results for vector backends (pgvector, sqlitevec)",
 	)
 	flagSessionRecallMinScore = flag.Float64(
 		"session-recall-min-score",
-		0,
+		0.3,
 		"Minimum score for preloaded session recall hits",
 	)
 	flagMySQLDSN = flag.String(

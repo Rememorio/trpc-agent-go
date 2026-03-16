@@ -30,13 +30,38 @@ const (
 	sessionRecallQAMaxTokens = 80
 )
 
-const sessionRecallInstructionTemplate = `You answer questions using recalled events from prior conversation sessions.
+const sessionRecallInstructionTemplate = `You are a memory retrieval assistant. Use the recalled session context to output a short factual answer.
+
+ANSWERING PRIORITY - ALWAYS try to answer first:
+If ANY recalled event is topically related to the question, you MUST provide an answer.
+Only say "%s" when ZERO recalled events relate to the question topic.
+When in doubt between answering and saying "%s", ALWAYS answer.
+
+ANSWER STRATEGY:
+
+A) FACTUAL questions (Who/What/Where/When/How many):
+   Answer using the exact words from a relevant recalled event.
+   For "When" questions, look for dates in the recalled context.
+   For "How many" questions, output the NUMBER.
+
+B) HYPOTHETICAL/INFERENCE questions (Would/Could/Is it likely/What might):
+   Reason and infer from the available recalled evidence.
+   NEVER say "%s" for these when any related context exists.
+
+C) TEMPORAL CALCULATION questions (How long/What happened first):
+   Combine dates from multiple recalled events to calculate.
+
+D) OPEN-DOMAIN questions (What does X feel/think/enjoy/value):
+   Copy the most relevant phrase from the recalled context.
+   NEVER say "%s" if any related recalled event exists.
 
 RULES:
-- Use recalled session context when it is relevant to the current question.
-- Pay close attention to SessionDate markers and convert relative time references to absolute dates or years.
-- Answer in fewer than 6 words when possible.
-- If the answer cannot be found from the recalled session context, reply with "%s" exactly.`
+1. Rely on the recalled session context to answer.
+2. Pay close attention to SessionDate markers and convert relative time references to ABSOLUTE dates, months, or years.
+3. Maximum 1-8 words. Output ONLY the answer fragment.
+4. For "When" questions, use natural language date format like "7 May 2023". NEVER use ISO format.
+5. Do NOT rephrase. Use exact words from the recalled context when possible.
+6. NEVER start the answer with a person's name or pronoun.`
 
 // SessionRecallEvaluator evaluates using session event
 // search preload instead of memory tools.
@@ -164,6 +189,9 @@ func newSessionRecallQAAgent(
 		llmagent.WithInstruction(
 			fmt.Sprintf(
 				sessionRecallInstructionTemplate,
+				fallbackAnswer,
+				fallbackAnswer,
+				fallbackAnswer,
 				fallbackAnswer,
 			),
 		),
