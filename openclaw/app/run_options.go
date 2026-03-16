@@ -592,7 +592,7 @@ func parseRunOptions(args []string) (runOptions, error) {
 		&opts.MemoryAutoMessageThreshold,
 		"memory-auto-messages",
 		0,
-		"Extract when messages exceed N (0 uses default)",
+		"Extract when messages exceed N (0 disables threshold check)",
 	)
 	fs.DurationVar(
 		&opts.MemoryAutoTimeInterval,
