@@ -118,6 +118,52 @@ func TestNewAutoMemoryExtractor_PolicyAll(t *testing.T) {
 	require.True(t, ext.ShouldExtract(ctx))
 }
 
+func TestNewAutoMemoryExtractor_PolicyAny(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	ext, err := newAutoMemoryExtractor(mdl, runOptions{
+		MemoryAutoEnabled:          true,
+		MemoryAutoPolicy:           summaryPolicyAny,
+		MemoryAutoMessageThreshold: 2,
+		MemoryAutoTimeInterval:     time.Hour,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ext)
+
+	now := time.Now()
+	ctx := &memextractor.ExtractionContext{
+		Messages:      make([]model.Message, 3),
+		LastExtractAt: &now,
+	}
+	// Message threshold is met.
+	require.True(t, ext.ShouldExtract(ctx))
+}
+
+func TestNewAutoMemoryExtractor_InvalidPolicy(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	// Invalid policy without checkers still returns error.
+	_, err = newAutoMemoryExtractor(mdl, runOptions{
+		MemoryAutoEnabled: true,
+		MemoryAutoPolicy:  "invalid",
+	})
+	require.Error(t, err)
+
+	// Invalid policy with checkers also returns error.
+	_, err = newAutoMemoryExtractor(mdl, runOptions{
+		MemoryAutoEnabled:          true,
+		MemoryAutoPolicy:           "invalid",
+		MemoryAutoMessageThreshold: 1,
+	})
+	require.Error(t, err)
+}
+
 func TestNewSessionService_RedisRequiresConfig(t *testing.T) {
 	t.Parallel()
 
