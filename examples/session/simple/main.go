@@ -611,13 +611,15 @@ func (c *multiTurnChat) recallSession(
 
 	results, err := c.searchable.SearchEvents(
 		ctx,
-		session.Key{
-			AppName:   appName,
-			UserID:    c.userID,
-			SessionID: c.sessionID,
+		session.EventSearchRequest{
+			Query: query,
+			UserKey: session.UserKey{
+				AppName: appName,
+				UserID:  c.userID,
+			},
+			SessionIDs: []string{c.sessionID},
+			MaxResults: *searchTopK,
 		},
-		query,
-		session.WithTopK(*searchTopK),
 	)
 	if err != nil {
 		return err

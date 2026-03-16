@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -198,28 +201,33 @@ func TestDefaultOptions(t *testing.T) {
 	assert.True(t, defaultOptions.softDelete)
 }
 
-// --- Tests for session.SearchOption ---
-
-func TestWithTopK(t *testing.T) {
-	opt := session.WithTopK(10)
-	so := session.SearchOptions{}
-	opt(&so)
-	assert.Equal(t, 10, so.TopK)
+func TestWithSyncIndexing(t *testing.T) {
+	opt := WithSyncIndexing(true)
+	opts := ServiceOpts{}
+	opt(&opts)
+	assert.True(t, opts.syncIndexing)
 }
 
-func TestWithTopK_Zero(t *testing.T) {
-	opt := session.WithTopK(0)
-	so := session.SearchOptions{TopK: 5}
-	opt(&so)
-	// Should not change when k <= 0.
-	assert.Equal(t, 5, so.TopK)
-}
-
-func TestWithTopK_Negative(t *testing.T) {
-	opt := session.WithTopK(-3)
-	so := session.SearchOptions{TopK: 7}
-	opt(&so)
-	assert.Equal(t, 7, so.TopK)
+func TestWithIndexTextBuilder(t *testing.T) {
+	builder := func(
+		sess *session.Session,
+		_ *event.Event,
+		baseText string,
+		role model.Role,
+	) string {
+		return fmt.Sprintf("%s:%s:%s", sess.ID, role, baseText)
+	}
+	opt := WithIndexTextBuilder(builder)
+	opts := ServiceOpts{}
+	opt(&opts)
+	require.NotNil(t, opts.indexTextBuilder)
+	got := opts.indexTextBuilder(
+		&session.Session{ID: "sess-1"},
+		nil,
+		"hello",
+		model.RoleAssistant,
+	)
+	assert.Equal(t, "sess-1:assistant:hello", got)
 }
 
 // --- Tests for WithTablePrefix ---

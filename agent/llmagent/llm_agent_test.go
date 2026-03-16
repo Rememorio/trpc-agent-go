@@ -325,6 +325,23 @@ func TestBuildRequestProcessors_PreserveSameBranchWiring(t *testing.T) {
 	require.False(t, crp.PreserveSameBranch)
 }
 
+func TestBuildRequestProcessors_PreloadSessionRecallWiring(t *testing.T) {
+	opts := &Options{}
+	WithPreloadSessionRecall(4)(opts)
+	WithPreloadSessionRecallMinScore(0.6)(opts)
+
+	procs := buildRequestProcessors("tester", opts)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.Equal(t, 4, crp.PreloadSessionRecall)
+	require.Equal(t, 0.6, crp.PreloadSessionRecallMinScore)
+}
+
 func TestBuildRequestProcessors_PostToolPromptInjection(t *testing.T) {
 	const (
 		systemContent = "system"

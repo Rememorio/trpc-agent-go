@@ -109,9 +109,18 @@ type ContentRequestProcessor struct {
 	ReasoningContentMode string
 	// PreloadMemory sets the number of memories to preload into system prompt.
 	// When > 0, the specified number of most recent memories are loaded.
-	// When 0, no memories are preloaded (use tools instead).
-	// When < 0 (default), all memories are loaded.
+	// When 0 (default), no memories are preloaded (use tools instead).
+	// When < 0, all memories are loaded.
 	PreloadMemory int
+	// PreloadSessionRecall sets the number of recalled
+	// session events to inject into the system prompt.
+	// When > 0, query-time search runs across other
+	// sessions for the current user.
+	// When 0 (default), it is disabled.
+	PreloadSessionRecall int
+	// PreloadSessionRecallMinScore filters low-confidence
+	// recall hits before injection.
+	PreloadSessionRecallMinScore float64
 	// SummaryFormatter allows custom formatting of session summary content.
 	// When nil (default), uses the default formatSummaryContent function.
 	SummaryFormatter func(summary string) string
@@ -203,6 +212,22 @@ func WithPreloadMemory(limit int) ContentOption {
 	}
 }
 
+// WithPreloadSessionRecall sets the number of recalled
+// session events to preload into the system prompt.
+func WithPreloadSessionRecall(limit int) ContentOption {
+	return func(p *ContentRequestProcessor) {
+		p.PreloadSessionRecall = limit
+	}
+}
+
+// WithPreloadSessionRecallMinScore sets the minimum
+// search score required for recalled session events.
+func WithPreloadSessionRecallMinScore(minScore float64) ContentOption {
+	return func(p *ContentRequestProcessor) {
+		p.PreloadSessionRecallMinScore = minScore
+	}
+}
+
 // WithSummaryFormatter sets a custom formatter for session summary content.
 func WithSummaryFormatter(formatter func(summary string) string) ContentOption {
 	return func(p *ContentRequestProcessor) {
@@ -240,7 +265,8 @@ func NewContentRequestProcessor(opts ...ContentOption) *ContentRequestProcessor 
 		// Default to append history message.
 		TimelineFilterMode: TimelineFilterAll,
 		// Default to disable memory preloading (use tools instead).
-		PreloadMemory: 0,
+		PreloadMemory:        0,
+		PreloadSessionRecall: 0,
 	}
 
 	// Apply options.
@@ -313,6 +339,12 @@ func (p *ContentRequestProcessor) ProcessRequest(
 		if summaryMsg != nil {
 			invocation.SetState(contentHasSessionSummaryStateKey, true)
 			p.injectSystemContextMessage(req, *summaryMsg)
+		}
+
+		if p.PreloadSessionRecall > 0 && invocation.SessionService != nil {
+			if recallMsg := p.getPreloadSessionRecallMessage(ctx, invocation); recallMsg != nil {
+				p.injectSystemContextMessage(req, *recallMsg)
+			}
 		}
 
 		if skipHistory {
@@ -1568,6 +1600,107 @@ func formatMemoryContent(memories []*memory.Entry) string {
 			fmt.Fprintf(&sb, " (%s)", strings.Join(meta, "; "))
 		}
 		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+func (p *ContentRequestProcessor) getPreloadSessionRecallMessage(
+	ctx context.Context,
+	inv *agent.Invocation,
+) *model.Message {
+	if inv == nil || inv.Session == nil || inv.SessionService == nil {
+		return nil
+	}
+	searchable, ok := inv.SessionService.(session.SearchableService)
+	if !ok {
+		return nil
+	}
+	query := strings.TrimSpace(extractSearchQueryText(inv.Message))
+	if query == "" {
+		return nil
+	}
+	userKey := session.UserKey{
+		AppName: inv.Session.AppName,
+		UserID:  inv.Session.UserID,
+	}
+	if err := userKey.CheckUserKey(); err != nil {
+		return nil
+	}
+	req := session.EventSearchRequest{
+		Query:      query,
+		UserKey:    userKey,
+		MaxResults: p.PreloadSessionRecall,
+		MinScore:   p.PreloadSessionRecallMinScore,
+	}
+	if inv.Session.ID != "" {
+		req.ExcludeSessionIDs = []string{inv.Session.ID}
+	}
+	results, err := searchable.SearchEvents(ctx, req)
+	if err != nil {
+		log.WarnfContext(ctx,
+			"Failed to preload session recall: %v",
+			err,
+		)
+		return nil
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	return &model.Message{
+		Role: model.RoleSystem,
+		Content: formatSessionRecallContent(
+			results,
+		),
+	}
+}
+
+func extractSearchQueryText(msg model.Message) string {
+	if text := strings.TrimSpace(msg.Content); text != "" {
+		return text
+	}
+	var parts []string
+	for _, part := range msg.ContentParts {
+		if part.Text == nil {
+			continue
+		}
+		text := strings.TrimSpace(*part.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func formatSessionRecallContent(
+	results []session.EventSearchResult,
+) string {
+	var sb strings.Builder
+	sb.WriteString("## Related Session Recall\n\n")
+	sb.WriteString("The following events were recalled from other sessions for this user. ")
+	sb.WriteString("Use them only when they help answer the current request.\n\n")
+	for _, result := range results {
+		text := strings.TrimSpace(result.Text)
+		if text == "" {
+			text = "<empty>"
+		}
+		text = strings.ReplaceAll(text, "\n", " ")
+		fmt.Fprintf(
+			&sb,
+			"- [session=%s",
+			result.SessionKey.SessionID,
+		)
+		if !result.SessionCreatedAt.IsZero() {
+			fmt.Fprintf(
+				&sb,
+				" created=%s",
+				result.SessionCreatedAt.Format("2006-01-02"),
+			)
+		}
+		if result.Role != "" {
+			fmt.Fprintf(&sb, " role=%s", result.Role)
+		}
+		fmt.Fprintf(&sb, " score=%.3f] %s\n", result.Score, text)
 	}
 	return sb.String()
 }

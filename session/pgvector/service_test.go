@@ -650,6 +650,49 @@ func TestAsyncIndexEvent_EmptyEmbedding(t *testing.T) {
 	assert.Equal(t, 1, emb.callCount)
 }
 
+func TestBuildIndexText_UsesBuilder(t *testing.T) {
+	s, _, db := newTestService(t, nil)
+	defer db.Close()
+	s.opts.indexTextBuilder = func(
+		sess *session.Session,
+		_ *event.Event,
+		baseText string,
+		role model.Role,
+	) string {
+		return fmt.Sprintf(
+			"[SessionDate: %s] %s: %s",
+			sess.CreatedAt.Format("2006-01-02"),
+			role,
+			baseText,
+		)
+	}
+
+	sess := &session.Session{
+		ID:        "sess-1",
+		AppName:   "app",
+		UserID:    "user",
+		CreatedAt: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+	evt := &event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{
+				{Message: model.Message{
+					Role:    model.RoleAssistant,
+					Content: "hello world",
+				}},
+			},
+		},
+	}
+
+	text, role := s.buildIndexText(sess, evt)
+	assert.Equal(t, model.RoleAssistant, role)
+	assert.Equal(
+		t,
+		"[SessionDate: 2025-01-02] assistant: hello world",
+		text,
+	)
+}
+
 func TestAsyncIndexEvent_Success(t *testing.T) {
 	emb := &mockEmbedder{
 		embedding: []float64{0.1, 0.2, 0.3},
@@ -684,6 +727,66 @@ func TestAsyncIndexEvent_Success(t *testing.T) {
 	s.asyncIndexEvent(context.Background(), sess, evt)
 	assert.Equal(t, 1, emb.callCount)
 	assert.Equal(t, "hello world", emb.lastText)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIndexEventAfterPersist_SyncIndexing(t *testing.T) {
+	emb := &mockEmbedder{
+		embedding: []float64{0.1, 0.2, 0.3},
+	}
+	s, mock, db := newTestService(t, emb)
+	defer db.Close()
+	s.opts.syncIndexing = true
+
+	mock.ExpectExec("UPDATE session_events SET").
+		WithArgs(
+			"[SessionDate: 2025-01-02] assistant: hello world",
+			string(model.RoleAssistant),
+			anyVectorArg{},
+			"app", "user", "sess-1",
+			"inv-1",
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	s.opts.indexTextBuilder = func(
+		sess *session.Session,
+		_ *event.Event,
+		baseText string,
+		role model.Role,
+	) string {
+		return fmt.Sprintf(
+			"[SessionDate: %s] %s: %s",
+			sess.CreatedAt.Format("2006-01-02"),
+			role,
+			baseText,
+		)
+	}
+
+	evt := &event.Event{
+		InvocationID: "inv-1",
+		Response: &model.Response{
+			Choices: []model.Choice{
+				{Message: model.Message{
+					Role:    model.RoleAssistant,
+					Content: "hello world",
+				}},
+			},
+		},
+	}
+	sess := &session.Session{
+		ID:        "sess-1",
+		AppName:   "app",
+		UserID:    "user",
+		CreatedAt: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	s.indexEventAfterPersist(sess, evt)
+	assert.Equal(t, 1, emb.callCount)
+	assert.Equal(
+		t,
+		"[SessionDate: 2025-01-02] assistant: hello world",
+		emb.lastText,
+	)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

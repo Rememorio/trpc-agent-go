@@ -256,6 +256,21 @@ func TestWithPreloadMemory(t *testing.T) {
 	}
 }
 
+func TestWithPreloadSessionRecall(t *testing.T) {
+	opts := &Options{}
+	WithPreloadSessionRecall(6)(opts)
+	require.Equal(t, 6, opts.PreloadSessionRecall)
+
+	WithPreloadSessionRecall(0)(opts)
+	require.Equal(t, 0, opts.PreloadSessionRecall)
+}
+
+func TestWithPreloadSessionRecallMinScore(t *testing.T) {
+	opts := &Options{}
+	WithPreloadSessionRecallMinScore(0.42)(opts)
+	require.Equal(t, 0.42, opts.PreloadSessionRecallMinScore)
+}
+
 func TestWithSkillRunAllowedCommands_CopiesSlice(t *testing.T) {
 	in := []string{"echo", "ls"}
 	opts := &Options{}

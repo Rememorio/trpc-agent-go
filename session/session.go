@@ -22,6 +22,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/log"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 // StateMap is a map of state key-value pairs.
@@ -619,32 +620,81 @@ func WithSummaryFilterKey(filterKey string) SummaryOption {
 	}
 }
 
+// SearchMode selects the retrieval strategy for session
+// event search.
+type SearchMode string
+
+const (
+	// SearchModeDense uses embedding similarity only.
+	SearchModeDense SearchMode = "dense"
+	// SearchModeHybrid is reserved for future dense +
+	// keyword fusion implementations.
+	SearchModeHybrid SearchMode = "hybrid"
+)
+
+// EventSearchRequest describes a session event search.
+type EventSearchRequest struct {
+	// Query is the user query to search against.
+	Query string
+	// UserKey scopes the search namespace. It is
+	// required for all searches.
+	UserKey UserKey
+	// SessionIDs optionally restricts the search to
+	// specific sessions under UserKey. When empty, all
+	// sessions for the user are considered.
+	SessionIDs []string
+	// ExcludeSessionIDs removes specific sessions from
+	// the search scope.
+	ExcludeSessionIDs []string
+	// MaxResults overrides the backend default result
+	// count when > 0.
+	MaxResults int
+	// MinScore filters out low-confidence matches.
+	MinScore float64
+	// FilterKey restricts events using hierarchical
+	// session/event branch semantics.
+	FilterKey string
+	// Roles restricts matches to specific message roles.
+	Roles []model.Role
+	// CreatedAfter restricts matches to events created on
+	// or after this time.
+	CreatedAfter *time.Time
+	// CreatedBefore restricts matches to events created on
+	// or before this time.
+	CreatedBefore *time.Time
+	// SearchMode selects the retrieval strategy. Empty
+	// means SearchModeDense.
+	SearchMode SearchMode
+}
+
 // EventSearchResult wraps a recalled session event with
-// its similarity score.
+// its search metadata.
 type EventSearchResult struct {
-	// Event is the matched event.
+	// SessionKey identifies the matched session.
+	SessionKey Key
+	// SessionCreatedAt is the matched session creation
+	// time, when available.
+	SessionCreatedAt time.Time
+	// EventCreatedAt is the persisted event row creation
+	// time.
+	EventCreatedAt time.Time
+	// Event is the matched event payload.
 	Event event.Event
-	// Score is the cosine similarity score (0..1).
+	// Role is the normalized message role used for
+	// indexing/search.
+	Role model.Role
+	// Text is the indexed text returned for prompt
+	// injection or debugging.
+	Text string
+	// Score is the backend relevance score. For dense
+	// search this is cosine similarity.
 	Score float64
-}
-
-// SearchOption configures SearchEvents behaviour.
-type SearchOption func(*SearchOptions)
-
-// SearchOptions holds options for SearchEvents.
-type SearchOptions struct {
-	// TopK overrides the default max results.
-	TopK int
-}
-
-// WithTopK sets the maximum number of results returned
-// by SearchEvents. Values <= 0 are ignored.
-func WithTopK(k int) SearchOption {
-	return func(o *SearchOptions) {
-		if k > 0 {
-			o.TopK = k
-		}
-	}
+	// DenseScore is the dense retrieval contribution when
+	// available.
+	DenseScore float64
+	// SparseScore is the sparse retrieval contribution
+	// when available.
+	SparseScore float64
 }
 
 // SearchableService extends session.Service with
@@ -654,18 +704,15 @@ func WithTopK(k int) SearchOption {
 // Non-vector backends (sqlite, mysql, redis, etc.) do not
 // need to implement this interface.
 type SearchableService interface {
-	// SearchEvents returns the top-K events most
-	// semantically relevant to the given query text
-	// within a session. Results are ordered by
-	// descending similarity score.
+	// SearchEvents returns the most relevant events for
+	// the given request. Results are ordered by
+	// descending relevance score.
 	// Only events with meaningful text content
 	// (user/assistant messages) are searchable; tool
 	// calls and partial events are excluded.
 	SearchEvents(
 		ctx context.Context,
-		key Key,
-		query string,
-		opts ...SearchOption,
+		req EventSearchRequest,
 	) ([]EventSearchResult, error)
 }
 

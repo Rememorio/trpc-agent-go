@@ -731,8 +731,8 @@ func (s *Service) startAsyncPersistWorker() {
 						AppName: pair.key.AppName,
 						UserID:  pair.key.UserID,
 					}
-					s.asyncIndexEvent(
-						ctx, sess, pair.event,
+					s.indexEventAfterPersist(
+						sess, pair.event,
 					)
 				}
 				cancel()

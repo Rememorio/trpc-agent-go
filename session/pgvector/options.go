@@ -15,8 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/session/sqldb"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/embedder"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
@@ -43,6 +45,15 @@ const (
 	defaultHNSWM          = 16
 	defaultHNSWEf         = 200
 )
+
+// IndexTextBuilder customizes the searchable text stored
+// for an event before embedding.
+type IndexTextBuilder func(
+	sess *session.Session,
+	evt *event.Event,
+	baseText string,
+	role model.Role,
+) string
 
 // ServiceOpts holds all configuration for the pgvector
 // session service.
@@ -92,6 +103,13 @@ type ServiceOpts struct {
 	// Embedder generates event embeddings.
 	embedder     embedder.Embedder
 	embedTimeout time.Duration
+	// syncIndexing forces embedding generation to happen
+	// in the caller/worker path instead of a detached
+	// goroutine.
+	syncIndexing bool
+	// indexTextBuilder customizes the stored searchable
+	// text before embedding.
+	indexTextBuilder IndexTextBuilder
 }
 
 // ServiceOpt is a functional option for the pgvector
@@ -328,6 +346,22 @@ func WithEmbedTimeout(timeout time.Duration) ServiceOpt {
 		if timeout > 0 {
 			o.embedTimeout = timeout
 		}
+	}
+}
+
+// WithSyncIndexing controls whether event embeddings are
+// generated synchronously after persistence.
+func WithSyncIndexing(sync bool) ServiceOpt {
+	return func(o *ServiceOpts) {
+		o.syncIndexing = sync
+	}
+}
+
+// WithIndexTextBuilder customizes the text used for
+// event embeddings.
+func WithIndexTextBuilder(builder IndexTextBuilder) ServiceOpt {
+	return func(o *ServiceOpts) {
+		o.indexTextBuilder = builder
 	}
 }
 

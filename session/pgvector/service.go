@@ -916,7 +916,7 @@ func (s *Service) appendEventInternal(
 				"failed: %w", err,
 		)
 	}
-	s.triggerAsyncIndexEvent(sess, e)
+	s.indexEventAfterPersist(sess, e)
 	return nil
 }
 
@@ -1057,6 +1057,27 @@ func extractEventText(
 	return content, role
 }
 
+func (s *Service) buildIndexText(
+	sess *session.Session,
+	evt *event.Event,
+) (string, model.Role) {
+	text, role := extractEventText(evt)
+	if text == "" {
+		return "", ""
+	}
+	if s.opts.indexTextBuilder != nil {
+		text = strings.TrimSpace(
+			s.opts.indexTextBuilder(
+				sess, evt, text, role,
+			),
+		)
+	}
+	if text == "" {
+		return "", ""
+	}
+	return text, role
+}
+
 // triggerAsyncIndexEvent detaches indexing work from the
 // request context so request cancellation does not skip
 // embedding write-back.
@@ -1077,6 +1098,25 @@ func (s *Service) triggerAsyncIndexEvent(
 	}()
 }
 
+func (s *Service) indexEventAfterPersist(
+	sess *session.Session,
+	evt *event.Event,
+) {
+	if !shouldPersistEvent(evt) {
+		return
+	}
+	if s.opts.syncIndexing {
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			s.opts.embedTimeout,
+		)
+		defer cancel()
+		s.asyncIndexEvent(ctx, sess, evt)
+		return
+	}
+	s.triggerAsyncIndexEvent(sess, evt)
+}
+
 // asyncIndexEvent generates embedding and updates the
 // matching persisted event row. Non-blocking: errors are
 // logged but do not affect the main path.
@@ -1085,7 +1125,7 @@ func (s *Service) asyncIndexEvent(
 	sess *session.Session,
 	evt *event.Event,
 ) {
-	text, role := extractEventText(evt)
+	text, role := s.buildIndexText(sess, evt)
 	if text == "" {
 		return
 	}
