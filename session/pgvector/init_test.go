@@ -191,8 +191,8 @@ func TestAddVectorColumns_Success(t *testing.T) {
 	defer db.Close()
 
 	s.opts.indexDimension = defaultIndexDimension
-	// Expect 3 ALTER TABLE statements.
-	for i := 0; i < 3; i++ {
+	// Expect 4 ALTER TABLE statements.
+	for i := 0; i < 4; i++ {
 		mock.ExpectExec("ALTER TABLE").
 			WillReturnResult(
 				sqlmock.NewResult(0, 0),
@@ -214,6 +214,32 @@ func TestAddVectorColumns_Error(t *testing.T) {
 	err := s.addVectorColumns(context.Background())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "alter table failed")
+}
+
+// --- Tests for createTextSearchIndex ---
+
+func TestCreateTextSearchIndex_Success(t *testing.T) {
+	s, mock, db := newTestService(t, nil)
+	defer db.Close()
+
+	mock.ExpectExec("CREATE INDEX IF NOT EXISTS.*USING gin").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := s.createTextSearchIndex(context.Background())
+	assert.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateTextSearchIndex_Error(t *testing.T) {
+	s, mock, db := newTestService(t, nil)
+	defer db.Close()
+
+	mock.ExpectExec("CREATE INDEX IF NOT EXISTS.*USING gin").
+		WillReturnError(fmt.Errorf("gin index error"))
+
+	err := s.createTextSearchIndex(context.Background())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "create GIN index failed")
 }
 
 // --- Tests for createHNSWIndex ---
@@ -277,13 +303,17 @@ func TestInitDB_Success(t *testing.T) {
 				sqlmock.NewResult(0, 0),
 			)
 	}
-	// addVectorColumns: 3 ALTER TABLE.
-	for i := 0; i < 3; i++ {
+	// addVectorColumns: 4 ALTER TABLE.
+	for i := 0; i < 4; i++ {
 		mock.ExpectExec("ALTER TABLE").
 			WillReturnResult(
 				sqlmock.NewResult(0, 0),
 			)
 	}
+	// createTextSearchIndex.
+	mock.ExpectExec(
+		"CREATE INDEX IF NOT EXISTS.*USING gin",
+	).WillReturnResult(sqlmock.NewResult(0, 0))
 	// createHNSWIndex.
 	mock.ExpectExec(
 		"CREATE INDEX IF NOT EXISTS.*USING hnsw",
@@ -323,12 +353,16 @@ func TestInitDB_HNSWIndexFailureIsNonFatal(
 			)
 	}
 	// addVectorColumns.
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		mock.ExpectExec("ALTER TABLE").
 			WillReturnResult(
 				sqlmock.NewResult(0, 0),
 			)
 	}
+	// createTextSearchIndex.
+	mock.ExpectExec(
+		"CREATE INDEX IF NOT EXISTS.*USING gin",
+	).WillReturnResult(sqlmock.NewResult(0, 0))
 	// createHNSWIndex fails — non-fatal.
 	mock.ExpectExec(
 		"CREATE INDEX IF NOT EXISTS",

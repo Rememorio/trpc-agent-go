@@ -304,6 +304,7 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		processor.WithPreloadMemory(options.PreloadMemory),
 		processor.WithPreloadSessionRecall(options.PreloadSessionRecall),
 		processor.WithPreloadSessionRecallMinScore(options.PreloadSessionRecallMinScore),
+		processor.WithPreloadSessionRecallSearchMode(options.PreloadSessionRecallSearchMode),
 	}
 	if options.ReasoningContentMode != "" {
 		contentOpts = append(contentOpts,

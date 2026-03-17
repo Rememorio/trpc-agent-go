@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 func TestWithChannelBufferSize(t *testing.T) {
@@ -269,6 +270,15 @@ func TestWithPreloadSessionRecallMinScore(t *testing.T) {
 	opts := &Options{}
 	WithPreloadSessionRecallMinScore(0.42)(opts)
 	require.Equal(t, 0.42, opts.PreloadSessionRecallMinScore)
+}
+
+func TestWithPreloadSessionRecallSearchMode(t *testing.T) {
+	opts := &Options{}
+	WithPreloadSessionRecallSearchMode(session.SearchModeDense)(opts)
+	require.Equal(t, session.SearchModeDense, opts.PreloadSessionRecallSearchMode)
+
+	WithPreloadSessionRecallSearchMode(session.SearchMode("invalid"))(opts)
+	require.Equal(t, session.SearchModeHybrid, opts.PreloadSessionRecallSearchMode)
 }
 
 func TestWithSkillRunAllowedCommands_CopiesSlice(t *testing.T) {

@@ -114,7 +114,7 @@ func TestSearchEvents_UnsupportedSearchMode(t *testing.T) {
 				AppName: "app",
 				UserID:  "user",
 			},
-			SearchMode: session.SearchModeHybrid,
+			SearchMode: session.SearchMode("keyword"),
 		},
 	)
 	assert.Error(t, err)
@@ -225,6 +225,157 @@ func TestSearchEvents_Success(t *testing.T) {
 	assert.Equal(t, "inv-1", results[0].Event.InvocationID)
 	assert.InDelta(t, 0.95, results[0].Score, 1e-9)
 	assert.InDelta(t, 0.95, results[0].DenseScore, 1e-9)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSearchEvents_HybridSuccess(t *testing.T) {
+	emb := &mockEmbedder{
+		embedding: []float64{0.1, 0.2, 0.3},
+	}
+	s, mock, db := newTestService(t, emb)
+	defer db.Close()
+
+	makeEventBytes := func(invID string, role model.Role, content string) []byte {
+		evt := event.Event{
+			InvocationID: invID,
+			Response: &model.Response{
+				Choices: []model.Choice{
+					{Message: model.Message{
+						Role:    role,
+						Content: content,
+					}},
+				},
+			},
+		}
+		b, _ := json.Marshal(evt)
+		return b
+	}
+
+	denseRows := sqlmock.NewRows(
+		[]string{
+			"app_name", "user_id", "session_id",
+			"session_created_at", "event_created_at",
+			"event", "content_text", "role", "similarity",
+		},
+	).AddRow(
+		"app", "user", "sess-a",
+		time.Now(), time.Now(),
+		makeEventBytes("inv-a", model.RoleAssistant, "A"),
+		"A", "assistant", 0.91,
+	).AddRow(
+		"app", "user", "sess-b",
+		time.Now(), time.Now().Add(time.Second),
+		makeEventBytes("inv-b", model.RoleAssistant, "B"),
+		"B", "assistant", 0.88,
+	)
+
+	keywordRows := sqlmock.NewRows(
+		[]string{
+			"app_name", "user_id", "session_id",
+			"session_created_at", "event_created_at",
+			"event", "content_text", "role", "similarity",
+		},
+	).AddRow(
+		"app", "user", "sess-b",
+		time.Now(), time.Now().Add(time.Second),
+		makeEventBytes("inv-b", model.RoleAssistant, "B"),
+		"B", "assistant", 0.70,
+	).AddRow(
+		"app", "user", "sess-c",
+		time.Now(), time.Now().Add(2*time.Second),
+		makeEventBytes("inv-c", model.RoleUser, "C"),
+		"C", "user", 0.65,
+	)
+
+	mock.ExpectQuery(`SELECT se\.app_name`).
+		WithArgs(anyVectorArg{}, "app", "user").
+		WillReturnRows(denseRows)
+	mock.ExpectQuery(`ts_rank\(se\.search_vector`).
+		WithArgs("hello", "app", "user").
+		WillReturnRows(keywordRows)
+
+	results, err := s.SearchEvents(
+		context.Background(),
+		session.EventSearchRequest{
+			Query: "hello",
+			UserKey: session.UserKey{
+				AppName: "app",
+				UserID:  "user",
+			},
+			SearchMode: session.SearchModeHybrid,
+			MaxResults: 3,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	assert.Equal(t, "inv-b", results[0].Event.InvocationID)
+	assert.Equal(t, "inv-a", results[1].Event.InvocationID)
+	assert.Equal(t, "inv-c", results[2].Event.InvocationID)
+	assert.InDelta(t, 0.88, results[0].DenseScore, 1e-9)
+	assert.InDelta(t, 0.70, results[0].SparseScore, 1e-9)
+	assert.InDelta(t, 1.0/61.0+1.0/62.0, results[0].Score, 1e-6)
+	assert.InDelta(t, 0.91, results[1].DenseScore, 1e-9)
+	assert.Zero(t, results[1].SparseScore)
+	assert.InDelta(t, 0.65, results[2].SparseScore, 1e-9)
+	assert.Zero(t, results[2].DenseScore)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestSearchEvents_HybridKeywordErrorFallsBackToDense(t *testing.T) {
+	emb := &mockEmbedder{
+		embedding: []float64{0.1, 0.2, 0.3},
+	}
+	s, mock, db := newTestService(t, emb)
+	defer db.Close()
+
+	evt := event.Event{
+		InvocationID: "inv-1",
+		Response: &model.Response{
+			Choices: []model.Choice{
+				{Message: model.Message{
+					Role:    model.RoleAssistant,
+					Content: "Dense only",
+				}},
+			},
+		},
+	}
+	evtBytes, _ := json.Marshal(evt)
+	denseRows := sqlmock.NewRows(
+		[]string{
+			"app_name", "user_id", "session_id",
+			"session_created_at", "event_created_at",
+			"event", "content_text", "role", "similarity",
+		},
+	).AddRow(
+		"app", "user", "sess-1",
+		time.Now(), time.Now(),
+		evtBytes, "Dense only", "assistant", 0.9,
+	)
+
+	mock.ExpectQuery(`SELECT se\.app_name`).
+		WithArgs(anyVectorArg{}, "app", "user").
+		WillReturnRows(denseRows)
+	mock.ExpectQuery(`ts_rank\(se\.search_vector`).
+		WithArgs("hello", "app", "user").
+		WillReturnError(fmt.Errorf("keyword query failed"))
+
+	results, err := s.SearchEvents(
+		context.Background(),
+		session.EventSearchRequest{
+			Query: "hello",
+			UserKey: session.UserKey{
+				AppName: "app",
+				UserID:  "user",
+			},
+			SearchMode: session.SearchModeHybrid,
+			MaxResults: 1,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "inv-1", results[0].Event.InvocationID)
+	assert.InDelta(t, 0.9, results[0].DenseScore, 1e-9)
+	assert.Zero(t, results[0].SparseScore)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -482,6 +633,99 @@ func TestBuildSearchEventsSQL_DefaultTopKAndTableName(t *testing.T) {
 	assert.Contains(t, sql, "JOIN custom_session_states ss")
 	assert.Contains(t, sql, fmt.Sprintf("LIMIT %d", defaultMaxResults))
 	require.Len(t, args, 3)
+}
+
+func TestBuildKeywordSearchEventsSQL_Filters(t *testing.T) {
+	s, _, db := newTestServiceWithSliceSupport(t, nil)
+	defer db.Close()
+
+	after := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	before := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
+	sql, args := s.buildKeywordSearchEventsSQL(
+		session.EventSearchRequest{
+			UserKey: session.UserKey{
+				AppName: "app",
+				UserID:  "user",
+			},
+			SessionIDs:        []string{"sess-1", "sess-2"},
+			ExcludeSessionIDs: []string{"sess-3"},
+			Roles:             []model.Role{model.RoleAssistant},
+			CreatedAfter:      &after,
+			CreatedBefore:     &before,
+			MinScore:          0.7,
+			FilterKey:         "branch/a",
+		},
+		"kyoto trip",
+		9,
+	)
+
+	assert.Contains(t, sql, "se.search_vector @@ plainto_tsquery")
+	assert.Contains(t, sql, "ts_rank(se.search_vector")
+	assert.Contains(t, sql, "se.session_id = ANY")
+	assert.Contains(t, sql, "NOT (se.session_id = ANY")
+	assert.Contains(t, sql, "se.role = ANY")
+	assert.Contains(t, sql, "se.created_at >= ")
+	assert.Contains(t, sql, "se.created_at <= ")
+	assert.NotContains(t, sql, "embedding <=>")
+	assert.Contains(t, sql, "LIMIT 9")
+	require.Len(t, args, 11)
+	assert.Equal(t, "kyoto trip", args[0])
+	assert.Equal(t, "app", args[1])
+	assert.Equal(t, "user", args[2])
+	assert.Equal(t, []string{"sess-1", "sess-2"}, args[3])
+	assert.Equal(t, []string{"sess-3"}, args[4])
+	assert.Equal(t, []string{"assistant"}, args[5])
+	assert.Equal(t, after, args[6])
+	assert.Equal(t, before, args[7])
+	assert.Equal(t, "branch/a", args[8])
+	assert.Equal(t, "branch/a/%", args[9])
+	assert.Equal(t, "branch/a", args[10])
+}
+
+func TestResolveHybridCandidateLimit(t *testing.T) {
+	assert.Equal(t, 9, resolveHybridCandidateLimit(3, 0, 3))
+	assert.Equal(t, 3, resolveHybridCandidateLimit(3, 1, 3))
+	assert.Equal(t, 12, resolveHybridCandidateLimit(3, 4, 3))
+}
+
+func TestMergeHybridEventResults(t *testing.T) {
+	now := time.Now()
+	dense := []session.EventSearchResult{
+		{
+			SessionKey:     session.Key{SessionID: "sess-a"},
+			Event:          event.Event{InvocationID: "inv-a"},
+			EventCreatedAt: now,
+			DenseScore:     0.9,
+		},
+		{
+			SessionKey:     session.Key{SessionID: "sess-b"},
+			Event:          event.Event{InvocationID: "inv-b"},
+			EventCreatedAt: now.Add(time.Second),
+			DenseScore:     0.8,
+		},
+	}
+	keyword := []session.EventSearchResult{
+		{
+			SessionKey:     session.Key{SessionID: "sess-b"},
+			Event:          event.Event{InvocationID: "inv-b"},
+			EventCreatedAt: now.Add(time.Second),
+			SparseScore:    0.7,
+		},
+		{
+			SessionKey:     session.Key{SessionID: "sess-c"},
+			Event:          event.Event{InvocationID: "inv-c"},
+			EventCreatedAt: now.Add(2 * time.Second),
+			SparseScore:    0.6,
+		},
+	}
+
+	results := mergeHybridEventResults(dense, keyword, 60, 3)
+	require.Len(t, results, 3)
+	assert.Equal(t, "inv-b", results[0].Event.InvocationID)
+	assert.Equal(t, "inv-a", results[1].Event.InvocationID)
+	assert.Equal(t, "inv-c", results[2].Event.InvocationID)
+	assert.InDelta(t, 0.8, results[0].DenseScore, 1e-9)
+	assert.InDelta(t, 0.7, results[0].SparseScore, 1e-9)
 }
 
 func TestCompactStrings(t *testing.T) {

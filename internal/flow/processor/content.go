@@ -121,6 +121,10 @@ type ContentRequestProcessor struct {
 	// PreloadSessionRecallMinScore filters low-confidence
 	// recall hits before injection.
 	PreloadSessionRecallMinScore float64
+	// PreloadSessionRecallSearchMode controls the
+	// retrieval mode used for query-time session recall.
+	// Default is hybrid when unset.
+	PreloadSessionRecallSearchMode session.SearchMode
 	// SummaryFormatter allows custom formatting of session summary content.
 	// When nil (default), uses the default formatSummaryContent function.
 	SummaryFormatter func(summary string) string
@@ -228,6 +232,24 @@ func WithPreloadSessionRecallMinScore(minScore float64) ContentOption {
 	}
 }
 
+// WithPreloadSessionRecallSearchMode sets the retrieval
+// mode used for query-time session recall preload.
+// Default is session.SearchModeHybrid.
+func WithPreloadSessionRecallSearchMode(
+	mode session.SearchMode,
+) ContentOption {
+	return func(p *ContentRequestProcessor) {
+		switch mode {
+		case "", session.SearchModeHybrid:
+			p.PreloadSessionRecallSearchMode = session.SearchModeHybrid
+		case session.SearchModeDense:
+			p.PreloadSessionRecallSearchMode = session.SearchModeDense
+		default:
+			p.PreloadSessionRecallSearchMode = session.SearchModeHybrid
+		}
+	}
+}
+
 // WithSummaryFormatter sets a custom formatter for session summary content.
 func WithSummaryFormatter(formatter func(summary string) string) ContentOption {
 	return func(p *ContentRequestProcessor) {
@@ -265,8 +287,9 @@ func NewContentRequestProcessor(opts ...ContentOption) *ContentRequestProcessor 
 		// Default to append history message.
 		TimelineFilterMode: TimelineFilterAll,
 		// Default to disable memory preloading (use tools instead).
-		PreloadMemory:        0,
-		PreloadSessionRecall: 0,
+		PreloadMemory:                  0,
+		PreloadSessionRecall:           0,
+		PreloadSessionRecallSearchMode: session.SearchModeHybrid,
 	}
 
 	// Apply options.
@@ -1665,6 +1688,10 @@ func (p *ContentRequestProcessor) getPreloadSessionRecallMessage(
 		UserKey:    userKey,
 		MaxResults: p.PreloadSessionRecall,
 		MinScore:   p.PreloadSessionRecallMinScore,
+		SearchMode: p.PreloadSessionRecallSearchMode,
+	}
+	if req.SearchMode == "" {
+		req.SearchMode = session.SearchModeHybrid
 	}
 	if inv.Session.ID != "" {
 		req.ExcludeSessionIDs = []string{inv.Session.ID}

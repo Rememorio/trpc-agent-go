@@ -48,6 +48,11 @@ func (s *Service) initDB(ctx context.Context) {
 			"add vector columns failed: %v", err,
 		))
 	}
+	if err := s.createTextSearchIndex(ctx); err != nil {
+		panic(fmt.Sprintf(
+			"create text search index failed: %v", err,
+		))
+	}
 	if err := s.createHNSWIndex(ctx); err != nil {
 		// HNSW index creation may fail if pgvector is not
 		// installed; log a warning instead of panic.
@@ -126,8 +131,9 @@ func createIndexes(
 	return nil
 }
 
-// addVectorColumns adds content_text, role, and embedding
-// columns to session_events if they do not already exist.
+// addVectorColumns adds content_text, role, embedding, and
+// search_vector columns to session_events if they do not
+// already exist.
 func (s *Service) addVectorColumns(
 	ctx context.Context,
 ) error {
@@ -151,6 +157,14 @@ func (s *Service) addVectorColumns(
 			s.tableSessionEvents,
 			s.opts.indexDimension,
 		),
+		fmt.Sprintf(
+			`ALTER TABLE %s `+
+				`ADD COLUMN IF NOT EXISTS `+
+				`search_vector tsvector GENERATED ALWAYS AS (`+
+				`to_tsvector('english', content_text)`+
+				`) STORED`,
+			s.tableSessionEvents,
+		),
 	}
 	for _, stmt := range alterStmts {
 		if _, err := s.pgClient.ExecContext(
@@ -160,6 +174,30 @@ func (s *Service) addVectorColumns(
 				"alter table failed: %w", err,
 			)
 		}
+	}
+	return nil
+}
+
+// createTextSearchIndex creates a GIN index on the
+// generated search_vector column for keyword search.
+func (s *Service) createTextSearchIndex(
+	ctx context.Context,
+) error {
+	indexName := sqldb.BuildIndexNameWithSchema(
+		s.opts.schema, s.opts.tablePrefix,
+		sqldb.TableNameSessionEvents, "search_vector_gin",
+	)
+	sql := fmt.Sprintf(
+		`CREATE INDEX IF NOT EXISTS %s `+
+			`ON %s USING gin (search_vector)`,
+		indexName,
+		s.tableSessionEvents,
+	)
+	_, err := s.pgClient.ExecContext(ctx, sql)
+	if err != nil {
+		return fmt.Errorf(
+			"create GIN index failed: %w", err,
+		)
 	}
 	return nil
 }

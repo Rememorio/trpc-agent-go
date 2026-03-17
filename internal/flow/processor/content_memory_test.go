@@ -61,6 +61,19 @@ func TestWithPreloadSessionRecall(t *testing.T) {
 	)
 	assert.Equal(t, 4, p.PreloadSessionRecall)
 	assert.Equal(t, 0.55, p.PreloadSessionRecallMinScore)
+	assert.Equal(t, session.SearchModeHybrid, p.PreloadSessionRecallSearchMode)
+}
+
+func TestWithPreloadSessionRecallSearchMode(t *testing.T) {
+	p := NewContentRequestProcessor(
+		WithPreloadSessionRecallSearchMode(session.SearchModeDense),
+	)
+	assert.Equal(t, session.SearchModeDense, p.PreloadSessionRecallSearchMode)
+
+	p = NewContentRequestProcessor(
+		WithPreloadSessionRecallSearchMode(session.SearchMode("invalid")),
+	)
+	assert.Equal(t, session.SearchModeHybrid, p.PreloadSessionRecallSearchMode)
 }
 
 func TestFormatMemoriesForPrompt(t *testing.T) {
@@ -567,6 +580,7 @@ func TestGetPreloadSessionRecallMessage(t *testing.T) {
 		assert.True(t, mockSvc.searchCalled)
 		assert.Equal(t, 3, mockSvc.lastReq.MaxResults)
 		assert.Equal(t, 0.65, mockSvc.lastReq.MinScore)
+		assert.Equal(t, session.SearchModeHybrid, mockSvc.lastReq.SearchMode)
 		assert.Equal(t, []string{"sess-current"}, mockSvc.lastReq.ExcludeSessionIDs)
 		assert.Equal(t, "Where did we travel?", mockSvc.lastReq.Query)
 	})
@@ -596,6 +610,34 @@ func TestGetPreloadSessionRecallMessage(t *testing.T) {
 		assert.Nil(t, msg)
 		assert.True(t, mockSvc.searchCalled)
 		assert.Equal(t, "Recall the Kyoto trip", mockSvc.lastReq.Query)
+		assert.Equal(t, session.SearchModeHybrid, mockSvc.lastReq.SearchMode)
+	})
+
+	t.Run("custom search mode overrides default", func(t *testing.T) {
+		p := NewContentRequestProcessor(
+			WithPreloadSessionRecall(2),
+			WithPreloadSessionRecallSearchMode(session.SearchModeDense),
+		)
+		mockSvc := &mockSearchableSessionService{
+			Service:       inmemory.NewSessionService(),
+			searchResults: []session.EventSearchResult{},
+		}
+		inv := agent.NewInvocation(
+			agent.WithInvocationMessage(model.Message{
+				Role:    model.RoleUser,
+				Content: "Where did we travel?",
+			}),
+			agent.WithInvocationSession(&session.Session{
+				ID:      "sess-current",
+				AppName: "app",
+				UserID:  "user",
+			}),
+		)
+		inv.SessionService = mockSvc
+		msg := p.getPreloadSessionRecallMessage(context.Background(), inv)
+		assert.Nil(t, msg)
+		assert.True(t, mockSvc.searchCalled)
+		assert.Equal(t, session.SearchModeDense, mockSvc.lastReq.SearchMode)
 	})
 }
 
@@ -749,6 +791,7 @@ func TestProcessRequest_WithPreloadSessionRecall(t *testing.T) {
 		}
 		p.ProcessRequest(context.Background(), inv, req, nil)
 		assert.True(t, mockSvc.searchCalled)
+		assert.Equal(t, session.SearchModeHybrid, mockSvc.lastReq.SearchMode)
 		assert.GreaterOrEqual(t, len(req.Messages), 2)
 		assert.Contains(t, req.Messages[0].Content, "You are a helpful assistant.")
 		assert.Contains(t, req.Messages[0].Content, "Related Session Recall")

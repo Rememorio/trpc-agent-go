@@ -329,6 +329,7 @@ func TestBuildRequestProcessors_PreloadSessionRecallWiring(t *testing.T) {
 	opts := &Options{}
 	WithPreloadSessionRecall(4)(opts)
 	WithPreloadSessionRecallMinScore(0.6)(opts)
+	WithPreloadSessionRecallSearchMode(session.SearchModeDense)(opts)
 
 	procs := buildRequestProcessors("tester", opts)
 	var crp *processor.ContentRequestProcessor
@@ -340,6 +341,7 @@ func TestBuildRequestProcessors_PreloadSessionRecallWiring(t *testing.T) {
 	require.NotNil(t, crp)
 	require.Equal(t, 4, crp.PreloadSessionRecall)
 	require.Equal(t, 0.6, crp.PreloadSessionRecallMinScore)
+	require.Equal(t, session.SearchModeDense, crp.PreloadSessionRecallSearchMode)
 }
 
 func TestBuildRequestProcessors_PostToolPromptInjection(t *testing.T) {

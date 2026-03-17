@@ -44,6 +44,8 @@ const (
 	defaultMaxResults     = 5
 	defaultHNSWM          = 16
 	defaultHNSWEf         = 200
+	defaultHybridRRFK     = 60
+	defaultCandidateRatio = 3
 )
 
 // IndexTextBuilder customizes the searchable text stored
@@ -99,6 +101,8 @@ type ServiceOpts struct {
 	maxResults     int
 	hnswM          int
 	hnswEf         int
+	hybridRRFK     int
+	candidateRatio int
 
 	// Embedder generates event embeddings.
 	embedder     embedder.Embedder
@@ -128,6 +132,8 @@ var defaultOptions = ServiceOpts{
 	maxResults:         defaultMaxResults,
 	hnswM:              defaultHNSWM,
 	hnswEf:             defaultHNSWEf,
+	hybridRRFK:         defaultHybridRRFK,
+	candidateRatio:     defaultCandidateRatio,
 	embedTimeout:       defaultEmbedTimeout,
 }
 
@@ -401,6 +407,26 @@ func WithHNSWEfConstruction(ef int) ServiceOpt {
 	return func(o *ServiceOpts) {
 		if ef > 0 {
 			o.hnswEf = ef
+		}
+	}
+}
+
+// WithHybridRRFK sets the RRF constant used when
+// SearchModeHybrid is enabled (default: 60).
+func WithHybridRRFK(k int) ServiceOpt {
+	return func(o *ServiceOpts) {
+		if k > 0 {
+			o.hybridRRFK = k
+		}
+	}
+}
+
+// WithHybridCandidateRatio sets how many candidates each
+// hybrid branch fetches before fusion (default: 3x).
+func WithHybridCandidateRatio(ratio int) ServiceOpt {
+	return func(o *ServiceOpts) {
+		if ratio > 0 {
+			o.candidateRatio = ratio
 		}
 	}
 }

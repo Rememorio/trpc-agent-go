@@ -627,8 +627,8 @@ type SearchMode string
 const (
 	// SearchModeDense uses embedding similarity only.
 	SearchModeDense SearchMode = "dense"
-	// SearchModeHybrid is reserved for future dense +
-	// keyword fusion implementations.
+	// SearchModeHybrid combines dense similarity and
+	// keyword search using rank fusion.
 	SearchModeHybrid SearchMode = "hybrid"
 )
 
@@ -665,6 +665,14 @@ type EventSearchRequest struct {
 	// SearchMode selects the retrieval strategy. Empty
 	// means SearchModeDense.
 	SearchMode SearchMode
+	// HybridRRFK controls the Reciprocal Rank Fusion
+	// constant when SearchModeHybrid is used. When <= 0,
+	// the backend default is used.
+	HybridRRFK int
+	// HybridCandidateRatio controls how many candidates
+	// each hybrid branch fetches before fusion. When <= 0,
+	// the backend default is used.
+	HybridCandidateRatio int
 }
 
 // EventSearchResult wraps a recalled session event with
@@ -687,7 +695,8 @@ type EventSearchResult struct {
 	// injection or debugging.
 	Text string
 	// Score is the backend relevance score. For dense
-	// search this is cosine similarity.
+	// search this is cosine similarity; for hybrid search
+	// this is the fused rank score.
 	Score float64
 	// DenseScore is the dense retrieval contribution when
 	// available.

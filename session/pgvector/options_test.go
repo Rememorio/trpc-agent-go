@@ -198,6 +198,10 @@ func TestDefaultOptions(t *testing.T) {
 		defaultOptions.hnswM)
 	assert.Equal(t, defaultHNSWEf,
 		defaultOptions.hnswEf)
+	assert.Equal(t, defaultHybridRRFK,
+		defaultOptions.hybridRRFK)
+	assert.Equal(t, defaultCandidateRatio,
+		defaultOptions.candidateRatio)
 	assert.True(t, defaultOptions.softDelete)
 }
 
@@ -228,6 +232,34 @@ func TestWithIndexTextBuilder(t *testing.T) {
 		model.RoleAssistant,
 	)
 	assert.Equal(t, "sess-1:assistant:hello", got)
+}
+
+func TestWithHybridRRFK(t *testing.T) {
+	opt := WithHybridRRFK(42)
+	opts := ServiceOpts{}
+	opt(&opts)
+	assert.Equal(t, 42, opts.hybridRRFK)
+}
+
+func TestWithHybridRRFK_Zero(t *testing.T) {
+	opt := WithHybridRRFK(0)
+	opts := ServiceOpts{hybridRRFK: defaultHybridRRFK}
+	opt(&opts)
+	assert.Equal(t, defaultHybridRRFK, opts.hybridRRFK)
+}
+
+func TestWithHybridCandidateRatio(t *testing.T) {
+	opt := WithHybridCandidateRatio(4)
+	opts := ServiceOpts{}
+	opt(&opts)
+	assert.Equal(t, 4, opts.candidateRatio)
+}
+
+func TestWithHybridCandidateRatio_Zero(t *testing.T) {
+	opt := WithHybridCandidateRatio(0)
+	opts := ServiceOpts{candidateRatio: defaultCandidateRatio}
+	opt(&opts)
+	assert.Equal(t, defaultCandidateRatio, opts.candidateRatio)
 }
 
 // --- Tests for WithTablePrefix ---
