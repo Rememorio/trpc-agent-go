@@ -439,16 +439,18 @@ appRunner := runner.NewRunner(
 
 ### 记忆服务 (Memory Service)
 
-记忆服务支持多种存储后端（InMemory、SQLite、SQLiteVec、Redis、MySQL、PostgreSQL、pgvector），可根据场景选择。
+记忆服务支持多种存储后端（InMemory、SQLite、SQLiteVec、ChromaDB、Redis、MySQL、PostgreSQL、pgvector），可根据场景选择。
 
 #### 配置示例
 
 ```go
 import (
     memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
+    memorychromadb "trpc.group/trpc-go/trpc-agent-go/memory/chromadb"
     memoryredis "trpc.group/trpc-go/trpc-agent-go/memory/redis"
     memorymysql "trpc.group/trpc-go/trpc-agent-go/memory/mysql"
     memorypostgres "trpc.group/trpc-go/trpc-agent-go/memory/postgres"
+    openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
 )
 
 // 1. 内存存储（开发/测试）
@@ -462,7 +464,20 @@ if err != nil {
     // 处理错误
 }
 
-// 3. MySQL 存储（生产环境 - ACID 保证）
+// 3. ChromaDB 存储（向量检索）。
+emb := openaiembedder.New(
+    openaiembedder.WithModel("text-embedding-3-small"),
+)
+chromadbService, err := memorychromadb.NewService(
+    memorychromadb.WithBaseURL("http://localhost:8000"),
+    memorychromadb.WithCollectionName("memories"),
+    memorychromadb.WithEmbedder(emb),
+)
+if err != nil {
+    // 处理错误
+}
+
+// 4. MySQL 存储（生产环境 - ACID 保证）
 mysqlDSN := "user:password@tcp(localhost:3306)/dbname?parseTime=true"
 mysqlService, err := memorymysql.NewService(
     memorymysql.WithMySQLClientDSN(mysqlDSN),
@@ -472,7 +487,7 @@ if err != nil {
     // 处理错误
 }
 
-// 4. PostgreSQL 存储（生产环境 - JSONB 支持）
+// 5. PostgreSQL 存储（生产环境 - JSONB 支持）
 postgresService, err := memorypostgres.NewService(
     memorypostgres.WithHost("localhost"),
     memorypostgres.WithPort(5432),
@@ -491,6 +506,7 @@ if err != nil {
 | 场景               | 推荐后端         | 原因                       |
 | ------------------ | ---------------- | -------------------------- |
 | 本地开发           | InMemory         | 零配置，快速启动           |
+| 托管向量检索       | ChromaDB         | HTTP API，元数据过滤灵活   |
 | 高并发读写         | Redis            | 内存级性能，支持分布式     |
 | 需要复杂查询       | MySQL/PostgreSQL | 关系型数据库，SQL 支持     |
 | 需要 JSON 高级操作 | PostgreSQL       | JSONB 类型，高效 JSON 查询 |
@@ -623,6 +639,12 @@ go run main.go
 # 使用 Redis 存储
 export REDIS_ADDR=localhost:6379
 go run main.go -memory redis
+
+# 使用 ChromaDB 存储
+export CHROMADB_BASE_URL=http://localhost:8000
+export CHROMADB_COLLECTION=memories
+export CHROMADB_EMBEDDER_MODEL=text-embedding-3-small
+go run main.go -memory chromadb
 
 # 使用 MySQL 存储（带软删除）
 export MYSQL_HOST=localhost
@@ -1004,6 +1026,52 @@ redisService, err := memoryredis.NewService(
 )
 ```
 
+### ChromaDB 存储
+
+**适用场景**：自建或托管的向量记忆检索，需要元数据过滤和混合搜索。
+
+```go
+import (
+    memorychromadb "trpc.group/trpc-go/trpc-agent-go/memory/chromadb"
+    openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+)
+
+embedder := openaiembedder.New(
+    openaiembedder.WithModel("text-embedding-3-small"),
+)
+
+chromadbService, err := memorychromadb.NewService(
+    memorychromadb.WithBaseURL("http://localhost:8000"),
+    memorychromadb.WithCollectionName("memories"),
+    memorychromadb.WithEmbedder(embedder),
+)
+if err != nil {
+    // 处理错误
+}
+defer chromadbService.Close()
+```
+
+**配置选项**：
+
+- `WithBaseURL(url)`: ChromaDB HTTP 地址
+- `WithAuthToken(token)`: ChromaDB Cloud 或代理鉴权使用的 Bearer Token
+- `WithTenant(name)`: ChromaDB Cloud 场景下的 tenant
+- `WithDatabase(name)`: ChromaDB Cloud 场景下的 database
+- `WithCollectionName(name)`: 集合名，默认为 `memories`
+- `WithEmbedder(embedder)`: 文本 embedder，用于生成向量（必需）
+- `WithMaxResults(limit)`: 最大搜索结果数，默认 10
+- `WithMemoryLimit(limit)`: 每用户记忆上限
+- `WithSkipCollectionInit(skip)`: 跳过集合创建，只查找已存在集合
+- Auto 模式：`WithExtractor`、`WithAsyncMemoryNum`、`WithMemoryQueueSize`、
+  `WithMemoryJobTimeout`
+- 工具：`WithCustomTool`、`WithToolEnabled`
+
+**注意事项**：
+
+- 该后端需要可访问的 ChromaDB 服务。
+- 搜索依赖 embedding，同时支持向量与关键词融合的混合检索。
+- `WithTenant` 与 `WithDatabase` 主要用于 ChromaDB Cloud 风格部署。
+
 ### MySQL 存储
 
 **适用场景**：生产环境、需要 ACID 保证、复杂查询
@@ -1188,17 +1256,17 @@ defer pgvectorService.Close()
 
 ### 后端对比与选择
 
-| 特性         | InMemory | SQLite     | SQLiteVec | Redis  | MySQL    | PostgreSQL | pgvector |
-| ------------ | -------- | ---------- | -------- | ------ | -------- | ---------- | -------- |
-| **持久化**   | ❌       | ✅         | ✅       | ✅     | ✅       | ✅         | ✅       |
-| **分布式**   | ❌       | ❌         | ❌       | ✅     | ✅       | ✅         | ✅       |
-| **事务**     | ❌       | ✅ ACID    | ✅ ACID  | 部分   | ✅ ACID  | ✅ ACID    | ✅ ACID  |
-| **查询**     | 简单     | SQL        | SQL+向量 | 中等   | SQL      | SQL        | SQL+向量 |
-| **JSON**     | ❌       | 基础       | 基础     | 基础   | JSON     | JSONB      | JSONB    |
-| **性能**     | 极高     | 中高       | 中高     | 高     | 中高     | 中高       | 中高     |
-| **配置**     | 零配置   | 简单       | 中等     | 简单   | 中等     | 中等       | 中等     |
-| **软删除**   | ❌       | ✅         | ✅       | ❌     | ✅       | ✅         | ✅       |
-| **适用场景** | 开发测试 | 本地持久化 | 本地向量 | 高并发 | 企业应用 | 高级特性   | 向量搜索 |
+| 特性         | InMemory | SQLite     | SQLiteVec | ChromaDB | Redis  | MySQL    | PostgreSQL | pgvector |
+| ------------ | -------- | ---------- | -------- | -------- | ------ | -------- | ---------- | -------- |
+| **持久化**   | ❌       | ✅         | ✅       | ✅       | ✅     | ✅       | ✅         | ✅       |
+| **分布式**   | ❌       | ❌         | ❌       | ✅       | ✅     | ✅       | ✅         | ✅       |
+| **事务**     | ❌       | ✅ ACID    | ✅ ACID  | 服务端管理 | 部分 | ✅ ACID  | ✅ ACID    | ✅ ACID  |
+| **查询**     | 简单     | SQL        | SQL+向量 | API+向量 | 中等   | SQL      | SQL        | SQL+向量 |
+| **JSON**     | ❌       | 基础       | 基础     | 基础     | 基础   | JSON     | JSONB      | JSONB    |
+| **性能**     | 极高     | 中高       | 中高     | 高       | 高     | 中高     | 中高       | 中高     |
+| **配置**     | 零配置   | 简单       | 中等     | 中等     | 简单   | 中等     | 中等       | 中等     |
+| **软删除**   | ❌       | ✅         | ✅       | ❌       | ❌     | ✅       | ✅         | ✅       |
+| **适用场景** | 开发测试 | 本地持久化 | 本地向量 | 托管向量 | 高并发 | 企业应用 | 高级特性   | 向量搜索 |
 
 **选择建议**：
 
@@ -1206,6 +1274,7 @@ defer pgvectorService.Close()
 开发/测试 → InMemory（零配置，快速启动）
 本地持久化 → SQLite（单文件数据库，易部署）
 本地向量检索 → SQLiteVec（单文件数据库 + embedding）
+托管向量检索 → ChromaDB（HTTP API + embedding + 元数据过滤）
 高并发读写 → Redis（内存级性能）
 需要 ACID → MySQL/PostgreSQL（事务保证）
 复杂 JSON → PostgreSQL（JSONB 索引和查询）
@@ -1266,7 +1335,7 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 搜索行为取决于后端：
 
 - 对 `inmemory` / `redis` / `mysql` / `postgres`：`SearchMemories` 使用**Token 匹配**（不是语义搜索）。
-- 对 `pgvector`：`SearchMemories` 使用**向量相似度检索**，并且需要配置 Embedder。
+- 对 `sqlitevec`、`chromadb`、`pgvector`：`SearchMemories` 使用**向量相似度检索**，并且需要配置 Embedder。
 
 **Token 匹配细节**（非 pgvector 后端）：
 
@@ -1299,7 +1368,7 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 **建议**：
 
 - 使用明确关键词和主题标签提高命中率
-- 如需语义相似度检索，使用 pgvector 后端
+- 如需语义相似度检索，使用 `sqlitevec`、`chromadb` 或 `pgvector`
 
 ### 软删除的注意事项
 

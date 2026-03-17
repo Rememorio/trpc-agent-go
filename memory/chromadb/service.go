@@ -12,14 +12,10 @@
 package chromadb
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -27,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	chroma "github.com/amikos-tech/chroma-go/pkg/api/v2"
+	chromaemb "github.com/amikos-tech/chroma-go/pkg/embeddings"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	imemory "trpc.group/trpc-go/trpc-agent-go/memory/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -35,6 +33,8 @@ import (
 
 const (
 	defaultRequestTimeout = 10 * time.Second
+	defaultCountPageSize  = 1000
+	defaultRRFK           = 60
 
 	metaKeyAppName      = "app_name"
 	metaKeyUserID       = "user_id"
@@ -53,10 +53,21 @@ type chromaRecord struct {
 	ID       string
 	Document string
 	Metadata map[string]any
+	Score    float64
+}
+
+type chromaFilter struct {
+	AppName string
+	UserID  string
+	Kind    memory.Kind
 }
 
 type chromaClient interface {
-	EnsureCollection(ctx context.Context, name string) (string, error)
+	ResolveCollection(
+		ctx context.Context,
+		name string,
+		createIfMissing bool,
+	) (string, error)
 	Upsert(
 		ctx context.Context,
 		collectionID string,
@@ -67,23 +78,27 @@ type chromaClient interface {
 		ctx context.Context,
 		collectionID string,
 		ids []string,
-		where map[string]any,
+		filter chromaFilter,
 		limit int,
 	) ([]chromaRecord, error)
 	Delete(
 		ctx context.Context,
 		collectionID string,
 		ids []string,
-		where map[string]any,
+		filter chromaFilter,
 	) error
 	Query(
 		ctx context.Context,
 		collectionID string,
 		queryEmbedding []float64,
 		nResults int,
-		where map[string]any,
+		filter chromaFilter,
 	) ([]chromaRecord, error)
-	Count(ctx context.Context, collectionID string, where map[string]any) (int, error)
+	Count(
+		ctx context.Context,
+		collectionID string,
+		filter chromaFilter,
+	) (int, error)
 	Close() error
 }
 
@@ -115,40 +130,37 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		opts.maxResults = defaultMaxResults
 	}
 	if opts.extractor != nil {
-		imemory.ApplyAutoModeDefaults(opts.enabledTools, opts.userExplicitlySet)
+		imemory.ApplyAutoModeDefaults(
+			opts.enabledTools,
+			opts.userExplicitlySet,
+		)
 	}
+
 	client := opts.client
 	if client == nil {
-		if strings.TrimSpace(opts.baseURL) == "" {
-			return nil, errors.New("baseURL is required")
+		builtinClient, err := newChromaGoClient(opts)
+		if err != nil {
+			return nil, err
 		}
-		httpClient := opts.httpClient
-		if httpClient == nil {
-			httpClient = &http.Client{Timeout: defaultRequestTimeout}
-		}
-		client = &httpChromaClient{
-			baseURL:    strings.TrimRight(opts.baseURL, "/"),
-			authToken:  strings.TrimSpace(opts.authToken),
-			tenant:     strings.TrimSpace(opts.tenant),
-			database:   strings.TrimSpace(opts.database),
-			httpClient: httpClient,
-		}
+		client = builtinClient
 	}
+
 	s := &Service{
 		opts:        opts,
 		client:      client,
 		cachedTools: make(map[string]tool.Tool),
 	}
-	if !opts.skipCollectionInit {
-		collectionID, err := client.EnsureCollection(ctxWithoutCancel(),
-			opts.collectionName)
-		if err != nil {
-			return nil, fmt.Errorf("ensure collection: %w", err)
-		}
-		s.collectionID = collectionID
-	} else {
-		s.collectionID = opts.collectionName
+
+	collectionID, err := client.ResolveCollection(
+		ctxWithoutCancel(),
+		opts.collectionName,
+		!opts.skipCollectionInit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve collection: %w", err)
 	}
+	s.collectionID = collectionID
+
 	s.precomputedTools = imemory.BuildToolsList(
 		opts.extractor,
 		opts.toolCreators,
@@ -185,15 +197,25 @@ func (s *Service) AddMemory(
 		return err
 	}
 	now := time.Now().UTC()
-	mem := &memory.Memory{Memory: memoryStr, Topics: topics, LastUpdated: &now}
+	mem := &memory.Memory{
+		Memory:      memoryStr,
+		Topics:      topics,
+		LastUpdated: &now,
+	}
 	imemory.ApplyMetadata(mem, memory.ResolveAddOptions(opts))
 	memoryID := imemory.GenerateMemoryID(mem, userKey.AppName, userKey.UserID)
+
 	existing, exists, err := s.getMemoryByID(ctx, userKey, memoryID)
 	if err != nil {
 		return err
 	}
+
 	if s.opts.memoryLimit > 0 && !exists {
-		count, err := s.client.Count(ctx, s.collectionID, userFilter(userKey))
+		count, err := s.client.Count(
+			ctx,
+			s.collectionID,
+			userFilter(userKey),
+		)
 		if err != nil {
 			return fmt.Errorf("check memory count: %w", err)
 		}
@@ -206,6 +228,7 @@ func (s *Service) AddMemory(
 			)
 		}
 	}
+
 	embedding, err := s.opts.embedder.GetEmbedding(ctx, memoryStr)
 	if err != nil {
 		return fmt.Errorf("generate embedding: %w", err)
@@ -213,17 +236,23 @@ func (s *Service) AddMemory(
 	if err := s.checkEmbeddingDimensions(embedding); err != nil {
 		return err
 	}
+
 	createdAt := now
 	if exists {
 		createdAt = existing.CreatedAt.UTC()
 	}
+
 	record := chromaRecord{
 		ID:       memoryID,
 		Document: memoryStr,
 		Metadata: buildMetadata(userKey, mem, createdAt, now),
 	}
-	if err := s.client.Upsert(ctx, s.collectionID,
-		[]chromaRecord{record}, [][]float64{embedding}); err != nil {
+	if err := s.client.Upsert(
+		ctx,
+		s.collectionID,
+		[]chromaRecord{record},
+		[][]float64{embedding},
+	); err != nil {
 		return fmt.Errorf("upsert memory: %w", err)
 	}
 	return nil
@@ -240,7 +269,10 @@ func (s *Service) UpdateMemory(
 	if err := memoryKey.CheckMemoryKey(); err != nil {
 		return err
 	}
-	userKey := memory.UserKey{AppName: memoryKey.AppName, UserID: memoryKey.UserID}
+	userKey := memory.UserKey{
+		AppName: memoryKey.AppName,
+		UserID:  memoryKey.UserID,
+	}
 	existing, exists, err := s.getMemoryByID(ctx, userKey, memoryKey.MemoryID)
 	if err != nil {
 		return err
@@ -248,6 +280,7 @@ func (s *Service) UpdateMemory(
 	if !exists {
 		return fmt.Errorf("memory with id %s not found", memoryKey.MemoryID)
 	}
+
 	now := time.Now().UTC()
 	newID := imemory.ApplyMemoryUpdate(
 		existing,
@@ -267,22 +300,37 @@ func (s *Service) UpdateMemory(
 			return fmt.Errorf("memory with id %s already exists", newID)
 		}
 	}
-	embedding, err := s.opts.embedder.GetEmbedding(ctx, existing.Memory.Memory)
+
+	embedding, err := s.opts.embedder.GetEmbedding(
+		ctx,
+		existing.Memory.Memory,
+	)
 	if err != nil {
 		return fmt.Errorf("generate embedding: %w", err)
 	}
 	if err := s.checkEmbeddingDimensions(embedding); err != nil {
 		return err
 	}
+
 	record := chromaRecord{
 		ID:       newID,
 		Document: existing.Memory.Memory,
-		Metadata: buildMetadata(userKey, existing.Memory, existing.CreatedAt.UTC(), now),
+		Metadata: buildMetadata(
+			userKey,
+			existing.Memory,
+			existing.CreatedAt.UTC(),
+			now,
+		),
 	}
-	if err := s.client.Upsert(ctx, s.collectionID,
-		[]chromaRecord{record}, [][]float64{embedding}); err != nil {
+	if err := s.client.Upsert(
+		ctx,
+		s.collectionID,
+		[]chromaRecord{record},
+		[][]float64{embedding},
+	); err != nil {
 		return fmt.Errorf("upsert memory: %w", err)
 	}
+
 	if newID != memoryKey.MemoryID {
 		if err := s.client.Delete(
 			ctx,
@@ -293,6 +341,7 @@ func (s *Service) UpdateMemory(
 			return fmt.Errorf("delete replaced memory: %w", err)
 		}
 	}
+
 	if result := memory.ResolveUpdateResult(opts); result != nil {
 		result.MemoryID = newID
 	}
@@ -311,8 +360,12 @@ func (s *Service) DeleteMemory(
 		AppName: memoryKey.AppName,
 		UserID:  memoryKey.UserID,
 	})
-	if err := s.client.Delete(ctx, s.collectionID,
-		[]string{memoryKey.MemoryID}, where); err != nil {
+	if err := s.client.Delete(
+		ctx,
+		s.collectionID,
+		[]string{memoryKey.MemoryID},
+		where,
+	); err != nil {
 		return fmt.Errorf("delete memory: %w", err)
 	}
 	return nil
@@ -326,8 +379,12 @@ func (s *Service) ClearMemories(
 	if err := userKey.CheckUserKey(); err != nil {
 		return err
 	}
-	if err := s.client.Delete(ctx, s.collectionID, nil,
-		userFilter(userKey)); err != nil {
+	if err := s.client.Delete(
+		ctx,
+		s.collectionID,
+		nil,
+		userFilter(userKey),
+	); err != nil {
 		return fmt.Errorf("clear memories: %w", err)
 	}
 	return nil
@@ -342,8 +399,13 @@ func (s *Service) ReadMemories(
 	if err := userKey.CheckUserKey(); err != nil {
 		return nil, err
 	}
-	records, err := s.client.Get(ctx, s.collectionID, nil,
-		userFilter(userKey), 0)
+	records, err := s.client.Get(
+		ctx,
+		s.collectionID,
+		nil,
+		userFilter(userKey),
+		limit,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("read memories: %w", err)
 	}
@@ -368,11 +430,13 @@ func (s *Service) SearchMemories(
 	if err := userKey.CheckUserKey(); err != nil {
 		return nil, err
 	}
+
 	searchOpts := memory.ResolveSearchOptions(query, opts)
 	query = strings.TrimSpace(searchOpts.Query)
 	if query == "" {
 		return []*memory.Entry{}, nil
 	}
+
 	embedding, err := s.opts.embedder.GetEmbedding(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("generate query embedding: %w", err)
@@ -380,28 +444,77 @@ func (s *Service) SearchMemories(
 	if err := s.checkEmbeddingDimensions(embedding); err != nil {
 		return nil, err
 	}
+
 	limit := resolveSearchLimit(s.opts.maxResults, searchOpts.MaxResults)
-	nResults := limit
-	if shouldFetchAllSearchCandidates(searchOpts) {
-		count, err := s.client.Count(ctx, s.collectionID, userFilter(userKey))
-		if err != nil {
-			return nil, fmt.Errorf("count search memories: %w", err)
-		}
-		if count == 0 {
-			return []*memory.Entry{}, nil
-		}
-		nResults = count
-	}
-	records, err := s.client.Query(ctx, s.collectionID,
-		embedding, nResults, userFilter(userKey))
-	if err != nil {
-		return nil, fmt.Errorf("search memories: %w", err)
-	}
-	entries, err := recordsToEntries(records, userKey)
+	results, err := s.executeVectorSearch(
+		ctx,
+		userKey,
+		embedding,
+		searchOpts,
+		limit,
+	)
 	if err != nil {
 		return nil, err
 	}
-	return applySearchOptions(entries, searchOpts, limit), nil
+
+	if searchOpts.Kind != "" && searchOpts.KindFallback &&
+		len(results) < imemory.MinKindFallbackResults {
+		fallbackOpts := searchOpts
+		fallbackOpts.Kind = ""
+		fallbackOpts.KindFallback = false
+
+		fallbackResults, fallbackErr := s.executeVectorSearch(
+			ctx,
+			userKey,
+			embedding,
+			fallbackOpts,
+			limit,
+		)
+		if fallbackErr == nil && len(fallbackResults) > 0 {
+			results = imemory.MergeSearchResults(
+				results,
+				fallbackResults,
+				searchOpts.Kind,
+				limit,
+			)
+		}
+	}
+
+	if searchOpts.HybridSearch {
+		keywordResults, kwErr := s.executeKeywordSearch(
+			ctx,
+			userKey,
+			searchOpts,
+			limit,
+		)
+		if kwErr == nil && len(keywordResults) > 0 {
+			results = mergeHybridResults(
+				results,
+				keywordResults,
+				searchOpts.HybridRRFK,
+				limit,
+			)
+		}
+	}
+
+	if !searchOpts.HybridSearch && searchOpts.SimilarityThreshold > 0 {
+		filtered := results[:0]
+		for _, result := range results {
+			if result.Score >= searchOpts.SimilarityThreshold {
+				filtered = append(filtered, result)
+			}
+		}
+		results = filtered
+	}
+
+	if searchOpts.Deduplicate && len(results) > 1 {
+		results = imemory.DeduplicateResults(results)
+	}
+
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
 }
 
 // Tools returns the list of available memory tools.
@@ -429,6 +542,102 @@ func (s *Service) Close() error {
 		return s.client.Close()
 	}
 	return nil
+}
+
+func (s *Service) executeVectorSearch(
+	ctx context.Context,
+	userKey memory.UserKey,
+	queryEmbedding []float64,
+	opts memory.SearchOptions,
+	maxResults int,
+) ([]*memory.Entry, error) {
+	filter := userFilter(userKey)
+	if opts.Kind != "" {
+		filter.Kind = opts.Kind
+	}
+
+	nResults := maxResults
+	if shouldFetchAllSearchCandidates(opts) {
+		count, err := s.client.Count(ctx, s.collectionID, filter)
+		if err != nil {
+			return nil, fmt.Errorf("count search memories: %w", err)
+		}
+		if count == 0 {
+			return []*memory.Entry{}, nil
+		}
+		nResults = count
+	}
+
+	records, err := s.client.Query(
+		ctx,
+		s.collectionID,
+		queryEmbedding,
+		nResults,
+		filter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("search memories: %w", err)
+	}
+	entries, err := recordsToEntries(records, userKey)
+	if err != nil {
+		return nil, err
+	}
+	entries = filterEntriesBySearchOptions(entries, opts)
+	if opts.OrderByEventTime {
+		sortByEventTime(entries)
+	}
+	return entries, nil
+}
+
+func (s *Service) executeKeywordSearch(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+) ([]*memory.Entry, error) {
+	filter := userFilter(userKey)
+	if opts.Kind != "" {
+		filter.Kind = opts.Kind
+	}
+
+	records, err := s.client.Get(ctx, s.collectionID, nil, filter, 0)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := recordsToEntries(records, userKey)
+	if err != nil {
+		return nil, err
+	}
+	entries = filterEntriesBySearchOptions(entries, opts)
+
+	results := make([]*memory.Entry, 0, len(entries))
+	for _, entry := range entries {
+		score := imemory.ScoreMemoryEntry(entry, opts.Query)
+		if score <= 0 {
+			continue
+		}
+		entryCopy := *entry
+		entryCopy.Score = score
+		results = append(results, &entryCopy)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		if !results[i].UpdatedAt.Equal(results[j].UpdatedAt) {
+			return results[i].UpdatedAt.After(results[j].UpdatedAt)
+		}
+		if !results[i].CreatedAt.Equal(results[j].CreatedAt) {
+			return results[i].CreatedAt.After(results[j].CreatedAt)
+		}
+		return results[i].ID < results[j].ID
+	})
+
+	if maxResults > 0 && len(results) > maxResults {
+		results = results[:maxResults]
+	}
+	return results, nil
 }
 
 func (s *Service) getMemoryByID(
@@ -483,6 +692,23 @@ func sortEntriesByTime(entries []*memory.Entry) {
 	})
 }
 
+func sortByEventTime(entries []*memory.Entry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		ti := entries[i].Memory.EventTime
+		tj := entries[j].Memory.EventTime
+		switch {
+		case ti == nil && tj != nil:
+			return false
+		case ti != nil && tj == nil:
+			return true
+		case ti != nil && tj != nil && !ti.Equal(*tj):
+			return ti.Before(*tj)
+		default:
+			return false
+		}
+	})
+}
+
 func buildMetadata(
 	userKey memory.UserKey,
 	mem *memory.Memory,
@@ -524,7 +750,9 @@ func recordsToEntries(
 		if err != nil {
 			return nil, err
 		}
-		participants, err := parseParticipants(record.Metadata[metaKeyParticipants])
+		participants, err := parseParticipants(
+			record.Metadata[metaKeyParticipants],
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -547,21 +775,27 @@ func recordsToEntries(
 		if userID == "" {
 			userID = fallbackUserKey.UserID
 		}
+
 		entry := &memory.Entry{
 			ID:      record.ID,
 			AppName: appName,
 			UserID:  userID,
 			Memory: &memory.Memory{
-				Memory:       record.Document,
-				Topics:       topics,
-				LastUpdated:  &updatedAt,
-				Kind:         memory.Kind(strings.TrimSpace(stringFromAny(record.Metadata[metaKeyKind]))),
+				Memory:      record.Document,
+				Topics:      topics,
+				LastUpdated: &updatedAt,
+				Kind: memory.Kind(strings.TrimSpace(
+					stringFromAny(record.Metadata[metaKeyKind]),
+				)),
 				EventTime:    eventTime,
 				Participants: participants,
-				Location:     strings.TrimSpace(stringFromAny(record.Metadata[metaKeyLocation])),
+				Location: strings.TrimSpace(
+					stringFromAny(record.Metadata[metaKeyLocation]),
+				),
 			},
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
+			Score:     record.Score,
 		}
 		imemory.NormalizeEntry(entry)
 		entries = append(entries, entry)
@@ -646,51 +880,11 @@ func resolveSearchLimit(defaultLimit int, override int) int {
 }
 
 func shouldFetchAllSearchCandidates(opts memory.SearchOptions) bool {
-	return opts.Kind != "" ||
-		opts.TimeAfter != nil ||
+	return opts.TimeAfter != nil ||
 		opts.TimeBefore != nil ||
 		opts.OrderByEventTime ||
 		opts.KindFallback ||
 		opts.Deduplicate
-}
-
-func applySearchOptions(
-	entries []*memory.Entry,
-	opts memory.SearchOptions,
-	limit int,
-) []*memory.Entry {
-	results := cloneEntries(filterEntriesBySearchOptions(entries, opts))
-	if opts.Kind != "" && opts.KindFallback &&
-		len(results) < imemory.MinKindFallbackResults {
-		fallbackOpts := opts
-		fallbackOpts.Kind = ""
-		fallbackOpts.KindFallback = false
-		fallback := cloneEntries(filterEntriesBySearchOptions(entries, fallbackOpts))
-		results = imemory.MergeSearchResults(results, fallback, opts.Kind, limit)
-	}
-	if opts.Deduplicate && len(results) > 1 {
-		results = imemory.DeduplicateResults(results)
-	}
-	if opts.OrderByEventTime {
-		sort.SliceStable(results, func(i, j int) bool {
-			ti := results[i].Memory.EventTime
-			tj := results[j].Memory.EventTime
-			switch {
-			case ti == nil && tj != nil:
-				return false
-			case ti != nil && tj == nil:
-				return true
-			case ti != nil && tj != nil && !ti.Equal(*tj):
-				return ti.Before(*tj)
-			default:
-				return false
-			}
-		})
-	}
-	if limit > 0 && len(results) > limit {
-		results = results[:limit]
-	}
-	return results
 }
 
 func filterEntriesBySearchOptions(
@@ -728,36 +922,10 @@ func matchesSearchOptions(
 	return true
 }
 
-func cloneEntries(entries []*memory.Entry) []*memory.Entry {
-	cloned := make([]*memory.Entry, 0, len(entries))
-	for _, entry := range entries {
-		if entry == nil {
-			continue
-		}
-		entryCopy := *entry
-		if entry.Memory != nil {
-			memoryCopy := *entry.Memory
-			memoryCopy.Topics = slices.Clone(entry.Memory.Topics)
-			memoryCopy.Participants = slices.Clone(entry.Memory.Participants)
-			if entry.Memory.LastUpdated != nil {
-				lastUpdated := *entry.Memory.LastUpdated
-				memoryCopy.LastUpdated = &lastUpdated
-			}
-			if entry.Memory.EventTime != nil {
-				eventTime := *entry.Memory.EventTime
-				memoryCopy.EventTime = &eventTime
-			}
-			entryCopy.Memory = &memoryCopy
-		}
-		cloned = append(cloned, &entryCopy)
-	}
-	return cloned
-}
-
-func userFilter(userKey memory.UserKey) map[string]any {
-	return map[string]any{
-		metaKeyAppName: userKey.AppName,
-		metaKeyUserID:  userKey.UserID,
+func userFilter(userKey memory.UserKey) chromaFilter {
+	return chromaFilter{
+		AppName: userKey.AppName,
+		UserID:  userKey.UserID,
 	}
 }
 
@@ -765,106 +933,141 @@ func ctxWithoutCancel() context.Context {
 	return context.Background()
 }
 
-type httpChromaClient struct {
-	baseURL    string
-	authToken  string
-	tenant     string
-	database   string
-	httpClient *http.Client
+func mergeHybridResults(
+	vectorResults []*memory.Entry,
+	keywordResults []*memory.Entry,
+	k int,
+	maxResults int,
+) []*memory.Entry {
+	if k <= 0 {
+		k = defaultRRFK
+	}
 
-	pathMu             sync.RWMutex
-	collectionPathMode string
+	type rrfEntry struct {
+		entry *memory.Entry
+		score float64
+	}
+
+	scores := make(
+		map[string]*rrfEntry,
+		len(vectorResults)+len(keywordResults),
+	)
+	for rank, entry := range vectorResults {
+		scores[entry.ID] = &rrfEntry{
+			entry: entry,
+			score: 1.0 / float64(k+rank+1),
+		}
+	}
+	for rank, entry := range keywordResults {
+		rrfScore := 1.0 / float64(k+rank+1)
+		if existing, ok := scores[entry.ID]; ok {
+			existing.score += rrfScore
+			continue
+		}
+		scores[entry.ID] = &rrfEntry{
+			entry: entry,
+			score: rrfScore,
+		}
+	}
+
+	merged := make([]*rrfEntry, 0, len(scores))
+	for _, entry := range scores {
+		merged = append(merged, entry)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].score > merged[j].score
+	})
+
+	results := make([]*memory.Entry, 0, minInt(len(merged), maxResults))
+	for i, entry := range merged {
+		if maxResults > 0 && i >= maxResults {
+			break
+		}
+		entry.entry.Score = entry.score
+		results = append(results, entry.entry)
+	}
+	return results
 }
 
-type ensureCollectionRequest struct {
-	Name        string `json:"name"`
-	GetOrCreate bool   `json:"get_or_create"`
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
-type collectionResponse struct {
-	ID string `json:"id"`
+type chromaGoClient struct {
+	client        chroma.Client
+	collectionsMu sync.RWMutex
+	collections   map[string]chroma.Collection
 }
 
-type getRequest struct {
-	IDs     []string       `json:"ids,omitempty"`
-	Where   map[string]any `json:"where,omitempty"`
-	Limit   int            `json:"limit,omitempty"`
-	Include []string       `json:"include,omitempty"`
+func newChromaGoClient(opts ServiceOpts) (*chromaGoClient, error) {
+	baseURL := strings.TrimSpace(opts.baseURL)
+	if baseURL == "" {
+		return nil, errors.New("baseURL is required")
+	}
+
+	clientOpts := make([]chroma.ClientOption, 0, 5)
+	clientOpts = append(clientOpts, chroma.WithBaseURL(baseURL))
+	if opts.httpClient != nil {
+		clientOpts = append(clientOpts, chroma.WithHTTPClient(opts.httpClient))
+	} else {
+		clientOpts = append(clientOpts, chroma.WithTimeout(defaultRequestTimeout))
+	}
+
+	tenant := strings.TrimSpace(opts.tenant)
+	database := strings.TrimSpace(opts.database)
+	switch {
+	case tenant != "" && database != "":
+		clientOpts = append(
+			clientOpts,
+			chroma.WithDatabaseAndTenant(database, tenant),
+		)
+	case tenant != "":
+		clientOpts = append(clientOpts, chroma.WithTenant(tenant))
+	}
+
+	authToken := strings.TrimSpace(opts.authToken)
+	if authToken != "" {
+		clientOpts = append(clientOpts, chroma.WithDefaultHeaders(map[string]string{
+			"Authorization":  "Bearer " + authToken,
+			"X-Chroma-Token": authToken,
+		}))
+	}
+
+	client, err := chroma.NewHTTPClient(clientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("create chroma client: %w", err)
+	}
+	return &chromaGoClient{
+		client:      client,
+		collections: make(map[string]chroma.Collection),
+	}, nil
 }
 
-type countRequest struct {
-	Where   map[string]any `json:"where,omitempty"`
-	Limit   int            `json:"limit"`
-	Offset  int            `json:"offset,omitempty"`
-	Include []string       `json:"include"`
-}
-
-type countResponse struct {
-	IDs []string `json:"ids"`
-}
-
-type upsertRequest struct {
-	IDs        []string         `json:"ids"`
-	Embeddings [][]float64      `json:"embeddings"`
-	Documents  []string         `json:"documents"`
-	Metadatas  []map[string]any `json:"metadatas"`
-}
-
-type queryRequest struct {
-	QueryEmbeddings [][]float64    `json:"query_embeddings"`
-	NResults        int            `json:"n_results"`
-	Where           map[string]any `json:"where,omitempty"`
-	Include         []string       `json:"include,omitempty"`
-}
-
-type deleteRequest struct {
-	IDs   []string       `json:"ids,omitempty"`
-	Where map[string]any `json:"where,omitempty"`
-}
-
-type getResponse struct {
-	IDs       []string        `json:"ids"`
-	Documents json.RawMessage `json:"documents"`
-	Metadatas json.RawMessage `json:"metadatas"`
-}
-
-type queryResponse struct {
-	IDs       json.RawMessage `json:"ids"`
-	Documents json.RawMessage `json:"documents"`
-	Metadatas json.RawMessage `json:"metadatas"`
-}
-
-type chromaAPIError struct {
-	StatusCode int
-	Message    string
-}
-
-func (e *chromaAPIError) Error() string {
-	return fmt.Sprintf("chromadb api error: %s", e.Message)
-}
-
-func (c *httpChromaClient) EnsureCollection(
+func (c *chromaGoClient) ResolveCollection(
 	ctx context.Context,
 	name string,
+	createIfMissing bool,
 ) (string, error) {
-	payload := ensureCollectionRequest{Name: name, GetOrCreate: true}
-	var resp collectionResponse
-	if err := c.doJSONPaths(
-		ctx,
-		http.MethodPost,
-		c.collectionsPaths(),
-		payload,
-		&resp,
-	); err != nil {
+	var (
+		collection chroma.Collection
+		err        error
+	)
+	if createIfMissing {
+		collection, err = c.client.GetOrCreateCollection(ctx, name)
+	} else {
+		collection, err = c.client.GetCollection(ctx, name)
+	}
+	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(resp.ID) == "" {
-		return "", errors.New("empty collection id")
-	}
-	return resp.ID, nil
+	c.cacheCollection(collection)
+	return collection.ID(), nil
 }
 
-func (c *httpChromaClient) Upsert(
+func (c *chromaGoClient) Upsert(
 	ctx context.Context,
 	collectionID string,
 	records []chromaRecord,
@@ -873,390 +1076,349 @@ func (c *httpChromaClient) Upsert(
 	if len(records) != len(embeddings) {
 		return errors.New("records and embeddings length mismatch")
 	}
-	ids := make([]string, 0, len(records))
-	docs := make([]string, 0, len(records))
-	metadatas := make([]map[string]any, 0, len(records))
-	for i := range records {
-		ids = append(ids, records[i].ID)
-		docs = append(docs, records[i].Document)
-		metadatas = append(metadatas, records[i].Metadata)
+
+	collection, err := c.collectionByID(collectionID)
+	if err != nil {
+		return err
 	}
-	payload := upsertRequest{
-		IDs:        ids,
-		Embeddings: embeddings,
-		Documents:  docs,
-		Metadatas:  metadatas,
+
+	ids := make([]chroma.DocumentID, 0, len(records))
+	texts := make([]string, 0, len(records))
+	metadatas := make([]chroma.DocumentMetadata, 0, len(records))
+	chromaEmbeddings := make([]chromaemb.Embedding, 0, len(records))
+
+	for i, record := range records {
+		metadata, err := chroma.NewDocumentMetadataFromMap(record.Metadata)
+		if err != nil {
+			return fmt.Errorf("build metadata: %w", err)
+		}
+		ids = append(ids, chroma.DocumentID(record.ID))
+		texts = append(texts, record.Document)
+		metadatas = append(metadatas, metadata)
+		chromaEmbeddings = append(
+			chromaEmbeddings,
+			chromaemb.NewEmbeddingFromFloat32(
+				float64SliceToFloat32(embeddings[i]),
+			),
+		)
 	}
-	return c.doJSONPaths(
+
+	return collection.Upsert(
 		ctx,
-		http.MethodPost,
-		c.collectionActionPaths(collectionID, "upsert"),
-		payload,
-		nil,
+		chroma.WithIDs(ids...),
+		chroma.WithTexts(texts...),
+		chroma.WithMetadatas(metadatas...),
+		chroma.WithEmbeddings(chromaEmbeddings...),
 	)
 }
 
-func (c *httpChromaClient) Get(
+func (c *chromaGoClient) Get(
 	ctx context.Context,
 	collectionID string,
 	ids []string,
-	where map[string]any,
+	filter chromaFilter,
 	limit int,
 ) ([]chromaRecord, error) {
-	payload := getRequest{
-		IDs:     ids,
-		Where:   where,
-		Limit:   limit,
-		Include: []string{"documents", "metadatas"},
-	}
-	var resp getResponse
-	if err := c.doJSONPaths(
-		ctx,
-		http.MethodPost,
-		c.collectionActionPaths(collectionID, "get"),
-		payload,
-		&resp,
-	); err != nil {
+	collection, err := c.collectionByID(collectionID)
+	if err != nil {
 		return nil, err
 	}
-	documents, err := decodeFlatStrings(resp.Documents)
-	if err != nil {
-		return nil, fmt.Errorf("decode documents: %w", err)
+
+	if len(ids) > 0 || limit > 0 {
+		opts := c.buildGetOptions(ids, filter, limit, 0)
+		result, err := collection.Get(ctx, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return getResultToRecords(result), nil
 	}
-	metadatas, err := decodeFlatMetadatas(resp.Metadatas)
-	if err != nil {
-		return nil, fmt.Errorf("decode metadatas: %w", err)
+
+	records := make([]chromaRecord, 0)
+	for offset := 0; ; offset += defaultCountPageSize {
+		opts := c.buildGetOptions(ids, filter, defaultCountPageSize, offset)
+		result, err := collection.Get(ctx, opts...)
+		if err != nil {
+			return nil, err
+		}
+		pageRecords := getResultToRecords(result)
+		records = append(records, pageRecords...)
+		if len(pageRecords) < defaultCountPageSize {
+			return records, nil
+		}
 	}
-	return zipFlatRecords(resp.IDs, documents, metadatas), nil
 }
 
-func (c *httpChromaClient) Delete(
+func (c *chromaGoClient) Delete(
 	ctx context.Context,
 	collectionID string,
 	ids []string,
-	where map[string]any,
+	filter chromaFilter,
 ) error {
-	payload := deleteRequest{IDs: ids, Where: where}
-	return c.doJSONPaths(
-		ctx,
-		http.MethodPost,
-		c.collectionActionPaths(collectionID, "delete"),
-		payload,
-		nil,
-	)
+	collection, err := c.collectionByID(collectionID)
+	if err != nil {
+		return err
+	}
+
+	opts := make([]chroma.CollectionDeleteOption, 0, 2)
+	if len(ids) > 0 {
+		documentIDs := make([]chroma.DocumentID, 0, len(ids))
+		for _, id := range ids {
+			documentIDs = append(documentIDs, chroma.DocumentID(id))
+		}
+		opts = append(opts, chroma.WithIDs(documentIDs...))
+	}
+	if where := buildWhereFilter(filter); where != nil {
+		opts = append(opts, chroma.WithWhere(where))
+	}
+	return collection.Delete(ctx, opts...)
 }
 
-func (c *httpChromaClient) Query(
+func (c *chromaGoClient) Query(
 	ctx context.Context,
 	collectionID string,
 	queryEmbedding []float64,
 	nResults int,
-	where map[string]any,
+	filter chromaFilter,
 ) ([]chromaRecord, error) {
-	payload := queryRequest{
-		QueryEmbeddings: [][]float64{queryEmbedding},
-		NResults:        nResults,
-		Where:           where,
-		Include:         []string{"documents", "metadatas"},
-	}
-	var resp queryResponse
-	if err := c.doJSONPaths(
-		ctx,
-		http.MethodPost,
-		c.collectionActionPaths(collectionID, "query"),
-		payload,
-		&resp,
-	); err != nil {
+	collection, err := c.collectionByID(collectionID)
+	if err != nil {
 		return nil, err
 	}
-	idRows, err := decodeNestedStrings(resp.IDs)
+
+	opts := []chroma.CollectionQueryOption{
+		chroma.WithQueryEmbeddings(
+			chromaemb.NewEmbeddingFromFloat32(
+				float64SliceToFloat32(queryEmbedding),
+			),
+		),
+		chroma.WithNResults(nResults),
+		chroma.WithInclude(
+			chroma.IncludeDocuments,
+			chroma.IncludeMetadatas,
+			chroma.IncludeDistances,
+		),
+	}
+	if where := buildWhereFilter(filter); where != nil {
+		opts = append(opts, chroma.WithWhere(where))
+	}
+
+	result, err := collection.Query(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("decode ids: %w", err)
+		return nil, err
 	}
-	docRows, err := decodeNestedStrings(resp.Documents)
-	if err != nil {
-		return nil, fmt.Errorf("decode documents: %w", err)
-	}
-	metaRows, err := decodeNestedMetadatas(resp.Metadatas)
-	if err != nil {
-		return nil, fmt.Errorf("decode metadatas: %w", err)
-	}
-	if len(idRows) == 0 {
-		return []chromaRecord{}, nil
-	}
-	ids := idRows[0]
-	docs := []string{}
-	if len(docRows) > 0 {
-		docs = docRows[0]
-	}
-	metadatas := []map[string]any{}
-	if len(metaRows) > 0 {
-		metadatas = metaRows[0]
-	}
-	return zipFlatRecords(ids, docs, metadatas), nil
+	return queryResultToRecords(result), nil
 }
 
-func (c *httpChromaClient) Count(
+func (c *chromaGoClient) Count(
 	ctx context.Context,
 	collectionID string,
-	where map[string]any,
+	filter chromaFilter,
 ) (int, error) {
-	const pageSize = 1000
+	collection, err := c.collectionByID(collectionID)
+	if err != nil {
+		return 0, err
+	}
 
 	total := 0
-	for offset := 0; ; offset += pageSize {
-		payload := countRequest{
-			Where:   where,
-			Limit:   pageSize,
-			Offset:  offset,
-			Include: []string{},
-		}
-		var resp countResponse
-		if err := c.doJSONPaths(
-			ctx,
-			http.MethodPost,
-			c.collectionActionPaths(collectionID, "get"),
-			payload,
-			&resp,
-		); err != nil {
+	for offset := 0; ; offset += defaultCountPageSize {
+		opts := c.buildGetOptions(
+			nil,
+			filter,
+			defaultCountPageSize,
+			offset,
+		)
+		result, err := collection.Get(ctx, opts...)
+		if err != nil {
 			return 0, err
 		}
-		total += len(resp.IDs)
-		if len(resp.IDs) < pageSize {
+		count := len(result.GetIDs())
+		total += count
+		if count < defaultCountPageSize {
 			return total, nil
 		}
 	}
 }
 
-func (c *httpChromaClient) Close() error {
-	return nil
-}
-
-func (c *httpChromaClient) collectionsPaths() []string {
-	v1 := "/api/v1/collections"
-	if !c.hasCloudCollectionContext() {
-		return []string{v1}
-	}
-	v2 := fmt.Sprintf(
-		"/api/v2/tenants/%s/databases/%s/collections",
-		url.PathEscape(strings.TrimSpace(c.tenant)),
-		url.PathEscape(strings.TrimSpace(c.database)),
-	)
-	c.pathMu.RLock()
-	mode := c.collectionPathMode
-	c.pathMu.RUnlock()
-	switch mode {
-	case "v1":
-		return []string{v1}
-	case "v2":
-		return []string{v2}
-	default:
-		return []string{v2, v1}
-	}
-}
-
-func (c *httpChromaClient) collectionActionPaths(
-	collectionID string,
-	action string,
-) []string {
-	paths := c.collectionsPaths()
-	escapedCollectionID := url.PathEscape(collectionID)
-	for i := range paths {
-		paths[i] = paths[i] + "/" + escapedCollectionID + "/" + action
-	}
-	return paths
-}
-
-func (c *httpChromaClient) hasCloudCollectionContext() bool {
-	return strings.TrimSpace(c.tenant) != "" &&
-		strings.TrimSpace(c.database) != ""
-}
-
-func (c *httpChromaClient) rememberCollectionPath(path string) {
-	if !c.hasCloudCollectionContext() {
-		return
-	}
-	mode := "v1"
-	if strings.HasPrefix(path, "/api/v2/") {
-		mode = "v2"
-	}
-	c.pathMu.Lock()
-	c.collectionPathMode = mode
-	c.pathMu.Unlock()
-}
-
-func (c *httpChromaClient) doJSONPaths(
-	ctx context.Context,
-	method string,
-	paths []string,
-	payload any,
-	out any,
-) error {
-	var lastNotFound error
-	for _, path := range paths {
-		err := c.doJSON(ctx, method, path, payload, out)
-		if err == nil {
-			c.rememberCollectionPath(path)
-			return nil
-		}
-		var apiErr *chromaAPIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
-			return err
-		}
-		lastNotFound = err
-	}
-	if lastNotFound != nil {
-		return lastNotFound
-	}
-	return errors.New("no chromadb api path configured")
-}
-
-func (c *httpChromaClient) doJSON(
-	ctx context.Context,
-	method string,
-	path string,
-	payload any,
-	out any,
-) error {
-	var body io.Reader
-	if payload != nil {
-		bytesPayload, err := json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("marshal request: %w", err)
-		}
-		body = bytes.NewReader(bytesPayload)
-	}
-	url := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
-		req.Header.Set("X-Chroma-Token", c.authToken)
-	}
-	if c.tenant != "" {
-		req.Header.Set("X-Chroma-Tenant", c.tenant)
-	}
-	if c.database != "" {
-		req.Header.Set("X-Chroma-Database", c.database)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("do request: %w", err)
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		msg := strings.TrimSpace(string(respBody))
-		if msg == "" {
-			msg = resp.Status
-		}
-		return &chromaAPIError{StatusCode: resp.StatusCode, Message: msg}
-	}
-	if out == nil {
+func (c *chromaGoClient) Close() error {
+	if c.client == nil {
 		return nil
 	}
-	if len(respBody) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("unmarshal response: %w", err)
-	}
-	return nil
+	return c.client.Close()
 }
 
-func zipFlatRecords(
+func (c *chromaGoClient) buildGetOptions(
 	ids []string,
-	documents []string,
-	metadatas []map[string]any,
-) []chromaRecord {
-	n := len(ids)
-	records := make([]chromaRecord, 0, n)
-	for i := 0; i < n; i++ {
-		document := ""
-		if i < len(documents) {
-			document = documents[i]
+	filter chromaFilter,
+	limit int,
+	offset int,
+) []chroma.CollectionGetOption {
+	opts := make([]chroma.CollectionGetOption, 0, 4)
+	if len(ids) > 0 {
+		documentIDs := make([]chroma.DocumentID, 0, len(ids))
+		for _, id := range ids {
+			documentIDs = append(documentIDs, chroma.DocumentID(id))
 		}
-		metadata := map[string]any{}
+		opts = append(opts, chroma.WithIDs(documentIDs...))
+	}
+	if where := buildWhereFilter(filter); where != nil {
+		opts = append(opts, chroma.WithWhere(where))
+	}
+	if limit > 0 {
+		opts = append(opts, chroma.WithLimit(limit))
+	}
+	if offset > 0 {
+		opts = append(opts, chroma.WithOffset(offset))
+	}
+	opts = append(
+		opts,
+		chroma.WithInclude(
+			chroma.IncludeDocuments,
+			chroma.IncludeMetadatas,
+		),
+	)
+	return opts
+}
+
+func (c *chromaGoClient) cacheCollection(collection chroma.Collection) {
+	c.collectionsMu.Lock()
+	c.collections[collection.ID()] = collection
+	c.collectionsMu.Unlock()
+}
+
+func (c *chromaGoClient) collectionByID(
+	collectionID string,
+) (chroma.Collection, error) {
+	c.collectionsMu.RLock()
+	collection, ok := c.collections[collectionID]
+	c.collectionsMu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("collection %s not found", collectionID)
+	}
+	return collection, nil
+}
+
+func buildWhereFilter(filter chromaFilter) chroma.WhereFilter {
+	clauses := make([]chroma.WhereClause, 0, 3)
+	if filter.AppName != "" {
+		clauses = append(
+			clauses,
+			chroma.EqString(metaKeyAppName, filter.AppName),
+		)
+	}
+	if filter.UserID != "" {
+		clauses = append(
+			clauses,
+			chroma.EqString(metaKeyUserID, filter.UserID),
+		)
+	}
+	if filter.Kind != "" {
+		clauses = append(
+			clauses,
+			chroma.EqString(metaKeyKind, string(filter.Kind)),
+		)
+	}
+	switch len(clauses) {
+	case 0:
+		return nil
+	case 1:
+		return clauses[0]
+	default:
+		return chroma.And(clauses...)
+	}
+}
+
+func getResultToRecords(result chroma.GetResult) []chromaRecord {
+	ids := result.GetIDs()
+	documents := result.GetDocuments()
+	metadatas := result.GetMetadatas()
+
+	records := make([]chromaRecord, 0, len(ids))
+	for i, id := range ids {
+		record := chromaRecord{
+			ID:       string(id),
+			Metadata: map[string]any{},
+		}
+		if i < len(documents) && documents[i] != nil {
+			record.Document = documents[i].ContentString()
+		}
 		if i < len(metadatas) && metadatas[i] != nil {
-			metadata = metadatas[i]
+			record.Metadata = documentMetadataToMap(metadatas[i])
 		}
-		records = append(records, chromaRecord{
-			ID:       ids[i],
-			Document: document,
-			Metadata: metadata,
-		})
+		records = append(records, record)
 	}
 	return records
 }
 
-func decodeFlatStrings(raw json.RawMessage) ([]string, error) {
-	if len(raw) == 0 {
-		return []string{}, nil
+func queryResultToRecords(result chroma.QueryResult) []chromaRecord {
+	idGroups := result.GetIDGroups()
+	if len(idGroups) == 0 {
+		return []chromaRecord{}
 	}
-	var flat []string
-	if err := json.Unmarshal(raw, &flat); err == nil {
-		return flat, nil
+
+	ids := idGroups[0]
+	documentGroups := result.GetDocumentsGroups()
+	metadataGroups := result.GetMetadatasGroups()
+	distanceGroups := result.GetDistancesGroups()
+
+	var documents chroma.Documents
+	if len(documentGroups) > 0 {
+		documents = documentGroups[0]
 	}
-	var nested [][]string
-	if err := json.Unmarshal(raw, &nested); err == nil {
-		if len(nested) == 0 {
-			return []string{}, nil
+	var metadatas chroma.DocumentMetadatas
+	if len(metadataGroups) > 0 {
+		metadatas = metadataGroups[0]
+	}
+	var distances chromaemb.Distances
+	if len(distanceGroups) > 0 {
+		distances = distanceGroups[0]
+	}
+
+	records := make([]chromaRecord, 0, len(ids))
+	for i, id := range ids {
+		record := chromaRecord{
+			ID:       string(id),
+			Metadata: map[string]any{},
 		}
-		return nested[0], nil
-	}
-	return nil, errors.New("unsupported string response shape")
-}
-
-func decodeNestedStrings(raw json.RawMessage) ([][]string, error) {
-	if len(raw) == 0 {
-		return [][]string{}, nil
-	}
-	var nested [][]string
-	if err := json.Unmarshal(raw, &nested); err == nil {
-		return nested, nil
-	}
-	var flat []string
-	if err := json.Unmarshal(raw, &flat); err == nil {
-		return [][]string{flat}, nil
-	}
-	return nil, errors.New("unsupported nested string response shape")
-}
-
-func decodeFlatMetadatas(raw json.RawMessage) ([]map[string]any, error) {
-	if len(raw) == 0 {
-		return []map[string]any{}, nil
-	}
-	var flat []map[string]any
-	if err := json.Unmarshal(raw, &flat); err == nil {
-		return flat, nil
-	}
-	var nested [][]map[string]any
-	if err := json.Unmarshal(raw, &nested); err == nil {
-		if len(nested) == 0 {
-			return []map[string]any{}, nil
+		if i < len(documents) && documents[i] != nil {
+			record.Document = documents[i].ContentString()
 		}
-		return nested[0], nil
+		if i < len(metadatas) && metadatas[i] != nil {
+			record.Metadata = documentMetadataToMap(metadatas[i])
+		}
+		if i < len(distances) {
+			record.Score = distanceToSimilarity(float64(distances[i]))
+		}
+		records = append(records, record)
 	}
-	return nil, errors.New("unsupported metadata response shape")
+	return records
 }
 
-func decodeNestedMetadatas(raw json.RawMessage) ([][]map[string]any, error) {
-	if len(raw) == 0 {
-		return [][]map[string]any{}, nil
+func documentMetadataToMap(
+	metadata chroma.DocumentMetadata,
+) map[string]any {
+	if metadata == nil {
+		return map[string]any{}
 	}
-	var nested [][]map[string]any
-	if err := json.Unmarshal(raw, &nested); err == nil {
-		return nested, nil
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		return map[string]any{}
 	}
-	var flat []map[string]any
-	if err := json.Unmarshal(raw, &flat); err == nil {
-		return [][]map[string]any{flat}, nil
+	result := make(map[string]any)
+	_ = json.Unmarshal(payload, &result)
+	return result
+}
+
+func distanceToSimilarity(distance float64) float64 {
+	if distance <= 0 {
+		return 1
 	}
-	return nil, errors.New("unsupported nested metadata response shape")
+	return 1 / (1 + distance)
+}
+
+func float64SliceToFloat32(values []float64) []float32 {
+	converted := make([]float32, len(values))
+	for i, value := range values {
+		converted[i] = float32(value)
+	}
+	return converted
 }

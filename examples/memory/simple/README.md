@@ -88,6 +88,12 @@ runner := runner.NewRunner(
 | `SQLITE_MEMORY_DSN`       | SQLite DSN                   | `file:memories.db?_busy_timeout=5000` |
 | `SQLITEVEC_MEMORY_DSN`    | SQLiteVec DSN                | `file:memories_vec.db?_busy_timeout=5000` |
 | `SQLITEVEC_EMBEDDER_MODEL` | SQLiteVec embedder model     | `text-embedding-3-small` |
+| `CHROMADB_BASE_URL`       | ChromaDB HTTP endpoint       | `http://localhost:8000` |
+| `CHROMADB_AUTH_TOKEN`     | ChromaDB bearer token        | ``                       |
+| `CHROMADB_TENANT`         | ChromaDB tenant              | ``                       |
+| `CHROMADB_DATABASE`       | ChromaDB database            | ``                       |
+| `CHROMADB_COLLECTION`     | ChromaDB collection name     | `memories`               |
+| `CHROMADB_EMBEDDER_MODEL` | ChromaDB embedder model      | `text-embedding-3-small` |
 | `REDIS_ADDR`              | Redis server address         | `localhost:6379`         |
 | `PG_HOST`                 | PostgreSQL host              | `localhost`              |
 | `PG_PORT`                 | PostgreSQL port              | `5432`                   |
@@ -122,7 +128,7 @@ separate embedding endpoint / API key:
 | Argument       | Description                                                             | Default Value   |
 | -------------- | ----------------------------------------------------------------------- | --------------- |
 | `-model`       | Name of the model to use                                                | `deepseek-chat` |
-| `-memory`      | Memory service: `inmemory`, `sqlite`, `sqlitevec`, `redis`, `mysql`, `postgres`, or `pgvector` | `inmemory` |
+| `-memory`      | Memory service: `inmemory`, `sqlite`, `sqlitevec`, `chromadb`, `redis`, `mysql`, `postgres`, or `pgvector` | `inmemory` |
 | `-soft-delete` | Enable soft delete for SQLite/SQLiteVec/MySQL/PostgreSQL/pgvector memory service  | `false`         |
 | `-streaming`   | Enable streaming mode for responses                                     | `true`          |
 
@@ -182,6 +188,12 @@ go run main.go -memory sqlite
 export SQLITEVEC_MEMORY_DSN="file:memories_vec.db?_busy_timeout=5000"
 export SQLITEVEC_EMBEDDER_MODEL="text-embedding-3-small"
 go run main.go -memory sqlitevec
+
+# ChromaDB memory service (HTTP server + vector search)
+export CHROMADB_BASE_URL="http://localhost:8000"
+export CHROMADB_COLLECTION="memories"
+export CHROMADB_EMBEDDER_MODEL="text-embedding-3-small"
+go run main.go -memory chromadb
 
 # Redis memory service (using default or environment variable)
 go run main.go -memory redis
@@ -304,11 +316,14 @@ The example demonstrates a custom clear tool with enhanced logging:
 
 ### Memory Service Integration
 
-- Supports multiple backends: in-memory, Redis, MySQL, PostgreSQL, and pgvector
+- Supports multiple backends: in-memory, SQLite, SQLiteVec, ChromaDB,
+  Redis, MySQL, PostgreSQL, and pgvector
 - Uses `memoryinmemory.NewMemoryService()` for in-memory storage
 - Uses `memoryredis.NewService()` for Redis-based storage
 - Uses `memorymysql.NewService()` for MySQL-based storage
 - Uses `memorypostgres.NewService()` for PostgreSQL-based storage
+- Uses `memorychromadb.NewService()` for ChromaDB-based storage with vector
+  similarity search
 - Uses `memorypgvector.NewService()` for pgvector-based storage with vector similarity search
 - Memory tools directly access the memory service
 - Two-step integration: Step 1 (manual tool registration) + Step 2 (runner service setup)

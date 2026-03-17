@@ -24,7 +24,8 @@ A simple example that demonstrates manual memory tool integration where LLM agen
   delete, clear)
 - Custom tool implementations
 - Streaming and non-streaming response modes
-- Multiple storage backends (in-memory, SQLite, Redis, MySQL, PostgreSQL, pgvector)
+- Multiple storage backends (in-memory, SQLite, SQLiteVec, ChromaDB,
+  Redis, MySQL, PostgreSQL, pgvector)
 
 **Use Cases:**
 
@@ -102,6 +103,7 @@ All examples support multiple storage backends:
 | `inmemory` | In-memory storage (default)                 | `-memory=inmemory` |
 | `sqlite`   | SQLite file storage                         | `-memory=sqlite`   |
 | `sqlitevec` | SQLite + sqlite-vec vector search (embeddings) | `-memory=sqlitevec` |
+| `chromadb` | ChromaDB vector storage (embeddings)        | `-memory=chromadb` |
 | `redis`    | Redis-based storage                         | `-memory=redis`    |
 | `mysql`    | MySQL-based storage                         | `-memory=mysql`    |
 | `postgres` | PostgreSQL-based storage                    | `-memory=postgres` |
@@ -182,6 +184,12 @@ Memory provides 6 tools with different availability in each mode:
 | `SQLITE_MEMORY_DSN`       | SQLite DSN for memory store  | `file:memories.db?_busy_timeout=5000` |
 | `SQLITEVEC_MEMORY_DSN`    | SQLiteVec DSN for memory store | `file:memories_vec.db?_busy_timeout=5000` |
 | `SQLITEVEC_EMBEDDER_MODEL` | Embedder model for SQLiteVec | `text-embedding-3-small` |
+| `CHROMADB_BASE_URL`       | ChromaDB HTTP endpoint       | `http://localhost:8000` |
+| `CHROMADB_AUTH_TOKEN`     | ChromaDB bearer token        | (empty) |
+| `CHROMADB_TENANT`         | ChromaDB tenant              | (empty) |
+| `CHROMADB_DATABASE`       | ChromaDB database            | (empty) |
+| `CHROMADB_COLLECTION`     | ChromaDB collection name     | `memories` |
+| `CHROMADB_EMBEDDER_MODEL` | Embedder model for ChromaDB  | `text-embedding-3-small` |
 | `OPENAI_EMBEDDING_API_KEY` | API key for embedding model (optional) | (empty) |
 | `OPENAI_EMBEDDING_BASE_URL` | Base URL for embedding API (optional) | (empty) |
 | `OPENAI_EMBEDDING_MODEL`  | Override embedding model name (optional) | (empty) |
@@ -246,6 +254,12 @@ go run main.go
 
 # Redis memory service (using default or environment variable)
 go run main.go -memory redis
+
+# ChromaDB memory service (local server or Chroma Cloud).
+export CHROMADB_BASE_URL=http://localhost:8000
+export CHROMADB_COLLECTION=memories
+export CHROMADB_EMBEDDER_MODEL=text-embedding-3-small
+go run main.go -memory chromadb
 
 # MySQL memory service (using environment variables)
 export MYSQL_HOST=localhost

@@ -342,17 +342,19 @@ appRunner := runner.NewRunner(
 
 ### Memory Service
 
-Configure the memory service in code. Five backends are supported: in-memory,
-Redis, MySQL, PostgreSQL, and pgvector.
+Configure the memory service in code. Supported backends include in-memory,
+SQLite, SQLiteVec, ChromaDB, Redis, MySQL, PostgreSQL, and pgvector.
 
 #### Configuration Example
 
 ```go
 import (
     memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
+    memorychromadb "trpc.group/trpc-go/trpc-agent-go/memory/chromadb"
     memoryredis "trpc.group/trpc-go/trpc-agent-go/memory/redis"
     memorymysql "trpc.group/trpc-go/trpc-agent-go/memory/mysql"
     memorypostgres "trpc.group/trpc-go/trpc-agent-go/memory/postgres"
+    openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
 )
 
 // In-memory implementation for development and testing.
@@ -362,6 +364,19 @@ memService := memoryinmemory.NewMemoryService()
 redisService, err := memoryredis.NewService(
     memoryredis.WithRedisClientURL("redis://localhost:6379"),
     memoryredis.WithToolEnabled(memory.DeleteToolName, true), // Enable delete.
+)
+if err != nil {
+    // Handle error.
+}
+
+// ChromaDB implementation for vector memory search.
+emb := openaiembedder.New(
+    openaiembedder.WithModel("text-embedding-3-small"),
+)
+chromadbService, err := memorychromadb.NewService(
+    memorychromadb.WithBaseURL("http://localhost:8000"),
+    memorychromadb.WithCollectionName("memories"),
+    memorychromadb.WithEmbedder(emb),
 )
 if err != nil {
     // Handle error.
@@ -391,14 +406,14 @@ if err != nil {
 // Register memory tools with the Agent.
 llmAgent := llmagent.New(
     "memory-assistant",
-    llmagent.WithTools(memService.Tools()), // Or redisService.Tools(), mysqlService.Tools(), or postgresService.Tools().
+    llmagent.WithTools(memService.Tools()), // Or chromadbService.Tools(), redisService.Tools(), mysqlService.Tools(), or postgresService.Tools().
 )
 
 // Set memory service in the Runner.
 runner := runner.NewRunner(
     "app",
     llmAgent,
-    runner.WithMemoryService(memService), // Or redisService, mysqlService, or postgresService.
+    runner.WithMemoryService(memService), // Or chromadbService, redisService, mysqlService, or postgresService.
 )
 ```
 
@@ -533,6 +548,12 @@ go run main.go
 # Use Redis storage
 export REDIS_ADDR=localhost:6379
 go run main.go -memory redis
+
+# Use ChromaDB storage
+export CHROMADB_BASE_URL=http://localhost:8000
+export CHROMADB_COLLECTION=memories
+export CHROMADB_EMBEDDER_MODEL=text-embedding-3-small
+go run main.go -memory chromadb
 
 # Use MySQL storage (with soft delete)
 export MYSQL_HOST=localhost
@@ -911,6 +932,55 @@ redisService, err := memoryredis.NewService(
 )
 ```
 
+### ChromaDB Storage
+
+**Use case**: Managed or self-hosted vector memory search with metadata filters
+and hybrid retrieval.
+
+```go
+import (
+    memorychromadb "trpc.group/trpc-go/trpc-agent-go/memory/chromadb"
+    openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
+)
+
+embedder := openaiembedder.New(
+    openaiembedder.WithModel("text-embedding-3-small"),
+)
+
+chromadbService, err := memorychromadb.NewService(
+    memorychromadb.WithBaseURL("http://localhost:8000"),
+    memorychromadb.WithCollectionName("memories"),
+    memorychromadb.WithEmbedder(embedder),
+)
+if err != nil {
+    // handle error
+}
+defer chromadbService.Close()
+```
+
+**Configuration options**:
+
+- `WithBaseURL(url)`: ChromaDB HTTP endpoint
+- `WithAuthToken(token)`: Bearer token for ChromaDB Cloud or proxied auth
+- `WithTenant(name)`: Tenant for ChromaDB Cloud deployments
+- `WithDatabase(name)`: Database for ChromaDB Cloud deployments
+- `WithCollectionName(name)`: Collection name (default `memories`)
+- `WithEmbedder(embedder)`: Text embedder for vector generation (required)
+- `WithMaxResults(limit)`: Max search results (default 10)
+- `WithMemoryLimit(limit)`: Memory limit per user
+- `WithSkipCollectionInit(skip)`: Skip collection creation and only look up
+  existing collections
+- Auto mode: `WithExtractor`, `WithAsyncMemoryNum`, `WithMemoryQueueSize`,
+  `WithMemoryJobTimeout`
+- Tools: `WithCustomTool`, `WithToolEnabled`
+
+**Notes**:
+
+- This backend requires a reachable ChromaDB server.
+- Search uses embeddings and also supports hybrid keyword fusion.
+- `WithTenant` and `WithDatabase` are mainly needed for ChromaDB Cloud style
+  deployments.
+
 ### MySQL Storage
 
 **Use case**: Production, ACID guarantees, complex queries
@@ -1095,17 +1165,17 @@ defer pgvectorService.Close()
 
 ### Backend Comparison
 
-| Feature           | InMemory  | SQLite            | SQLiteVec        | Redis            | MySQL      | PostgreSQL        | pgvector      |
-| ----------------- | --------- | ----------------- | ---------------- | ---------------- | ---------- | ----------------- | ------------- |
-| **Persistence**   | ❌        | ✅                | ✅               | ✅               | ✅         | ✅                | ✅            |
-| **Distributed**   | ❌        | ❌                | ❌               | ✅               | ✅         | ✅                | ✅            |
-| **Transactions**  | ❌        | ✅ ACID           | ✅ ACID          | Partial          | ✅ ACID    | ✅ ACID           | ✅ ACID       |
-| **Queries**       | Simple    | SQL               | SQL + Vector     | Medium           | SQL        | SQL               | SQL + Vector  |
-| **JSON**          | ❌        | Basic             | Basic            | Basic            | JSON       | JSONB             | JSONB         |
-| **Performance**   | Very High | Med-High          | Med-High         | High             | Med-High   | Med-High          | Med-High      |
-| **Configuration** | Zero      | Simple            | Medium           | Simple           | Medium     | Medium            | Medium        |
-| **Soft Delete**   | ❌        | ✅                | ✅               | ❌               | ✅         | ✅                | ✅            |
-| **Use Case**      | Dev/Test  | Local Persistence | Local Vector     | High Concurrency | Enterprise | Advanced Features | Vector Search |
+| Feature           | InMemory  | SQLite            | SQLiteVec        | ChromaDB         | Redis            | MySQL      | PostgreSQL        | pgvector      |
+| ----------------- | --------- | ----------------- | ---------------- | ---------------- | ---------------- | ---------- | ----------------- | ------------- |
+| **Persistence**   | ❌        | ✅                | ✅               | ✅               | ✅               | ✅         | ✅                | ✅            |
+| **Distributed**   | ❌        | ❌                | ❌               | ✅               | ✅               | ✅         | ✅                | ✅            |
+| **Transactions**  | ❌        | ✅ ACID           | ✅ ACID          | Service-managed  | Partial          | ✅ ACID    | ✅ ACID           | ✅ ACID       |
+| **Queries**       | Simple    | SQL               | SQL + Vector     | API + Vector     | Medium           | SQL        | SQL               | SQL + Vector  |
+| **JSON**          | ❌        | Basic             | Basic            | Basic            | Basic            | JSON       | JSONB             | JSONB         |
+| **Performance**   | Very High | Med-High          | Med-High         | High             | High             | Med-High   | Med-High          | Med-High      |
+| **Configuration** | Zero      | Simple            | Medium           | Medium           | Simple           | Medium     | Medium            | Medium        |
+| **Soft Delete**   | ❌        | ✅                | ✅               | ❌               | ❌               | ✅         | ✅                | ✅            |
+| **Use Case**      | Dev/Test  | Local Persistence | Local Vector     | Managed Vector   | High Concurrency | Enterprise | Advanced Features | Vector Search |
 
 **Selection guide**:
 
@@ -1113,11 +1183,12 @@ defer pgvectorService.Close()
 Development/Testing → InMemory (zero config, fast)
 Local Persistence → SQLite (single-file DB, easy setup)
 Local Vector Search → SQLiteVec (single-file DB + embeddings)
+Managed Vector Search → ChromaDB (HTTP API + embeddings + metadata filters)
 High Concurrency → Redis (memory-level performance)
 ACID Requirements → MySQL/PostgreSQL (transaction guarantees)
 Complex JSON → PostgreSQL (JSONB indexing and queries)
 Vector Search → pgvector (similarity search with embeddings)
-Audit Trail → MySQL/PostgreSQL/pgvector (soft delete support)
+Audit Trail → MySQL/PostgreSQL/pgvector/SQLite/SQLiteVec (soft delete support)
 ```
 
 **Register PostgreSQL Instance (Optional):**
@@ -1141,23 +1212,25 @@ postgresService, err := memorypostgres.NewService(
 
 ### Storage Backend Comparison
 
-| Feature                  | In-Memory | SQLite     | SQLiteVec    | Redis      | MySQL          | PostgreSQL     | pgvector      |
-| ------------------------ | --------- | ---------- | ----------- | ---------- | -------------- | -------------- | ------------- |
-| Data Persistence         | ❌        | ✅         | ✅          | ✅         | ✅             | ✅             | ✅            |
-| Distributed Support      | ❌        | ❌         | ❌          | ✅         | ✅             | ✅             | ✅            |
-| Transaction Support      | ❌        | ✅ (ACID)  | ✅ (ACID)   | Partial    | ✅ (ACID)      | ✅ (ACID)      | ✅ (ACID)     |
-| Query Capability         | Simple    | SQL        | SQL + Vector | Medium     | Powerful (SQL) | Powerful (SQL) | SQL + Vectors |
-| JSON Support             | ❌        | Basic      | Basic       | Partial    | ✅ (JSON)      | ✅ (JSONB)     | ✅ (JSONB)    |
-| Performance              | Very High | Med-High   | Medium-High | High       | Medium-High    | Medium-High    | Medium-High   |
-| Configuration Complexity | Low       | Low        | Medium      | Medium     | Medium         | Medium         | Medium        |
-| Use Case                 | Dev/Test  | Local Dev  | Local Vector | Production | Production     | Production     | Vector Search |
-| Monitoring Tools         | None      | None       | None        | Rich       | Very Rich      | Very Rich      | Very Rich     |
+| Feature                  | In-Memory | SQLite     | SQLiteVec    | ChromaDB       | Redis      | MySQL          | PostgreSQL     | pgvector      |
+| ------------------------ | --------- | ---------- | ----------- | -------------- | ---------- | -------------- | -------------- | ------------- |
+| Data Persistence         | ❌        | ✅         | ✅          | ✅             | ✅         | ✅             | ✅             | ✅            |
+| Distributed Support      | ❌        | ❌         | ❌          | ✅             | ✅         | ✅             | ✅             | ✅            |
+| Transaction Support      | ❌        | ✅ (ACID)  | ✅ (ACID)   | Service-managed | Partial    | ✅ (ACID)      | ✅ (ACID)      | ✅ (ACID)     |
+| Query Capability         | Simple    | SQL        | SQL + Vector | API + Vector   | Medium     | Powerful (SQL) | Powerful (SQL) | SQL + Vectors |
+| JSON Support             | ❌        | Basic      | Basic       | Basic          | Partial    | ✅ (JSON)      | ✅ (JSONB)     | ✅ (JSONB)    |
+| Performance              | Very High | Med-High   | Medium-High | High           | High       | Medium-High    | Medium-High    | Medium-High   |
+| Configuration Complexity | Low       | Low        | Medium      | Medium         | Medium     | Medium         | Medium         | Medium        |
+| Use Case                 | Dev/Test  | Local Dev  | Local Vector | Managed Vector | Production | Production     | Production     | Vector Search |
+| Monitoring Tools         | None      | None       | None        | Server-side    | Rich       | Very Rich      | Very Rich      | Very Rich     |
 
 **Selection Guide:**
 
 - **Development/Testing**: Use in-memory storage for fast iteration
 - **Local Development (Persistent)**: Use SQLite when you want persistence without operating an external database
 - **Local Development (Vector Search)**: Use SQLiteVec when you want semantic search in a single-file SQLite DB
+- **Managed Vector Search**: Use ChromaDB storage when you want a dedicated
+  vector database with HTTP access and metadata filtering
 - **Production (High Performance)**: Use Redis storage for high concurrency scenarios
 - **Production (Data Integrity)**: Use MySQL storage when ACID guarantees and complex queries are needed
 - **Production (PostgreSQL)**: Use PostgreSQL storage when JSONB support and advanced PostgreSQL features are needed
@@ -1217,7 +1290,8 @@ memory.AddMemory(ctx, userKey, "User likes programming", []string{"hobby"})
 Search behavior depends on the backend:
 
 - For `inmemory` / `redis` / `mysql` / `postgres`: `SearchMemories` uses **token matching** (not semantic search).
-- For `pgvector`: `SearchMemories` uses **vector similarity search** and requires an embedder.
+- For `sqlitevec`, `chromadb`, and `pgvector`: `SearchMemories` uses **vector
+  similarity search** and requires an embedder.
 
 **Token matching details** (non-pgvector backends):
 
@@ -1250,7 +1324,8 @@ Search: "写代码" ❌ No match (different words)
 **Recommendations**:
 
 - Use explicit keywords and topic tags to improve hit rate
-- If you need semantic similarity search, use the pgvector backend
+- If you need semantic similarity search, use `sqlitevec`, `chromadb`, or
+  `pgvector`
 
 ### Soft Delete Considerations
 

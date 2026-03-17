@@ -21,6 +21,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	openaiembedder "trpc.group/trpc-go/trpc-agent-go/knowledge/embedder/openai"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
+	memorychromadb "trpc.group/trpc-go/trpc-agent-go/memory/chromadb"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
 	memorymysql "trpc.group/trpc-go/trpc-agent-go/memory/mysql"
@@ -43,6 +44,7 @@ const (
 	MemoryInMemory  MemoryType = "inmemory"
 	MemorySQLite    MemoryType = "sqlite"
 	MemorySQLiteVec MemoryType = "sqlitevec"
+	MemoryChromaDB  MemoryType = "chromadb"
 	MemoryRedis     MemoryType = "redis"
 	MemoryPostgres  MemoryType = "postgres"
 	MemoryPGVector  MemoryType = "pgvector"
@@ -92,8 +94,8 @@ func DefaultRunnerConfig() RunnerConfig {
 // - Auto mode: cfg.Extractor != nil, automatically extracts memories from conversations
 //
 // Parameters:
-//   - memoryType: one of inmemory, sqlite, sqlitevec, redis, postgres,
-//     pgvector, mysql
+//   - memoryType: one of inmemory, sqlite, sqlitevec, chromadb, redis,
+//     postgres, pgvector, mysql
 //   - cfg: memory service configuration
 //   - SoftDelete: enable soft delete for SQL backends
 //   - Extractor: memory extractor for auto mode (nil = manual mode)
@@ -105,6 +107,9 @@ func DefaultRunnerConfig() RunnerConfig {
 //
 //	sqlite:     SQLITE_MEMORY_DSN (default: file:memories.db?_busy_timeout=5000)
 //	sqlitevec:  SQLITEVEC_MEMORY_DSN (default: file:memories_vec.db?_busy_timeout=5000)
+//	chromadb:   CHROMADB_BASE_URL, CHROMADB_AUTH_TOKEN, CHROMADB_TENANT,
+//	            CHROMADB_DATABASE, CHROMADB_COLLECTION,
+//	            CHROMADB_EMBEDDER_MODEL
 //	redis:      REDIS_ADDR (default: localhost:6379)
 //	postgres:   PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE
 //	pgvector:   PGVECTOR_HOST, PGVECTOR_PORT, PGVECTOR_USER, PGVECTOR_PASSWORD, PGVECTOR_DATABASE, PGVECTOR_EMBEDDER_MODEL
@@ -115,6 +120,8 @@ func NewMemoryServiceByType(memoryType MemoryType, cfg MemoryServiceConfig) (mem
 		return newSQLiteMemoryService(cfg)
 	case MemorySQLiteVec:
 		return newSQLiteVecMemoryService(cfg)
+	case MemoryChromaDB:
+		return newChromaDBMemoryService(cfg)
 	case MemoryRedis:
 		return newRedisMemoryService(cfg)
 	case MemoryPostgres:
@@ -191,6 +198,17 @@ const (
 	openAIEmbeddingAPIKeyEnvKey  = "OPENAI_EMBEDDING_API_KEY"
 	openAIEmbeddingBaseURLEnvKey = "OPENAI_EMBEDDING_BASE_URL"
 	openAIEmbeddingModelEnvKey   = "OPENAI_EMBEDDING_MODEL"
+)
+
+const (
+	chromaDBBaseURLEnvKey       = "CHROMADB_BASE_URL"
+	defaultChromaDBBaseURL      = "http://localhost:8000"
+	chromaDBAuthTokenEnvKey     = "CHROMADB_AUTH_TOKEN"
+	chromaDBTenantEnvKey        = "CHROMADB_TENANT"
+	chromaDBDatabaseEnvKey      = "CHROMADB_DATABASE"
+	chromaDBCollectionEnvKey    = "CHROMADB_COLLECTION"
+	chromaDBEmbedderModelEnvKey = "CHROMADB_EMBEDDER_MODEL"
+	defaultChromaDBCollection   = "memories"
 )
 
 func getEmbeddingModel(defaultModel string) string {
@@ -273,6 +291,54 @@ func newSQLiteVecMemoryService(cfg MemoryServiceConfig) (memory.Service, error) 
 	}
 
 	return svc, nil
+}
+
+func newChromaDBMemoryService(cfg MemoryServiceConfig) (memory.Service, error) {
+	baseURL := GetEnvOrDefault(chromaDBBaseURLEnvKey, defaultChromaDBBaseURL)
+	embedderModel := GetEnvOrDefault(
+		chromaDBEmbedderModelEnvKey,
+		openaiembedder.DefaultModel,
+	)
+	embedder := newOpenAIEmbedder(embedderModel)
+
+	opts := []memorychromadb.ServiceOpt{
+		memorychromadb.WithBaseURL(baseURL),
+		memorychromadb.WithEmbedder(embedder),
+	}
+	if authToken := os.Getenv(chromaDBAuthTokenEnvKey); authToken != "" {
+		opts = append(opts, memorychromadb.WithAuthToken(authToken))
+	}
+	if tenant := os.Getenv(chromaDBTenantEnvKey); tenant != "" {
+		opts = append(opts, memorychromadb.WithTenant(tenant))
+	}
+	if database := os.Getenv(chromaDBDatabaseEnvKey); database != "" {
+		opts = append(opts, memorychromadb.WithDatabase(database))
+	}
+	if collection := os.Getenv(chromaDBCollectionEnvKey); collection != "" {
+		opts = append(opts, memorychromadb.WithCollectionName(collection))
+	}
+	if cfg.Extractor != nil {
+		opts = append(opts, memorychromadb.WithExtractor(cfg.Extractor))
+		if cfg.AsyncMemoryNum > 0 {
+			opts = append(
+				opts,
+				memorychromadb.WithAsyncMemoryNum(cfg.AsyncMemoryNum),
+			)
+		}
+		if cfg.MemoryQueueSize > 0 {
+			opts = append(
+				opts,
+				memorychromadb.WithMemoryQueueSize(cfg.MemoryQueueSize),
+			)
+		}
+		if cfg.MemoryJobTimeout > 0 {
+			opts = append(
+				opts,
+				memorychromadb.WithMemoryJobTimeout(cfg.MemoryJobTimeout),
+			)
+		}
+	}
+	return memorychromadb.NewService(opts...)
 }
 
 // newInMemoryMemoryService creates an in-memory memory service.
@@ -533,6 +599,28 @@ func PrintMemoryInfo(memoryType MemoryType, softDelete bool) {
 	case MemoryRedis:
 		addr := GetEnvOrDefault("REDIS_ADDR", "localhost:6379")
 		fmt.Printf("Redis: %s\n", addr)
+	case MemoryChromaDB:
+		baseURL := GetEnvOrDefault(
+			chromaDBBaseURLEnvKey,
+			defaultChromaDBBaseURL,
+		)
+		collection := GetEnvOrDefault(
+			chromaDBCollectionEnvKey,
+			defaultChromaDBCollection,
+		)
+		embedderModel := GetEnvOrDefault(
+			chromaDBEmbedderModelEnvKey,
+			openaiembedder.DefaultModel,
+		)
+		fmt.Printf("ChromaDB: %s\n", baseURL)
+		fmt.Printf("Collection: %s\n", collection)
+		fmt.Printf("Embedder model: %s\n", getEmbeddingModel(embedderModel))
+		if tenant := os.Getenv(chromaDBTenantEnvKey); tenant != "" {
+			fmt.Printf("Tenant: %s\n", tenant)
+		}
+		if database := os.Getenv(chromaDBDatabaseEnvKey); database != "" {
+			fmt.Printf("Database: %s\n", database)
+		}
 	case MemoryPostgres:
 		host := GetEnvOrDefault("PG_HOST", "localhost")
 		port := GetEnvOrDefault("PG_PORT", "5432")

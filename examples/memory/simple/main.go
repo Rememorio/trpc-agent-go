@@ -15,6 +15,7 @@
 //	go run main.go -memory=inmemory
 //	go run main.go -memory=sqlite
 //	go run main.go -memory=sqlitevec
+//	go run main.go -memory=chromadb
 //	go run main.go -memory=redis
 //	go run main.go -memory=mysql
 //	go run main.go -memory=postgres
@@ -28,6 +29,11 @@
 //	sqlitevec:
 //		export SQLITEVEC_MEMORY_DSN="file:memories_vec.db?_busy_timeout=5000"
 //		export SQLITEVEC_EMBEDDER_MODEL="text-embedding-3-small"
+//
+//	chromadb:
+//		export CHROMADB_BASE_URL="http://localhost:8000"
+//		export CHROMADB_COLLECTION="memories"
+//		export CHROMADB_EMBEDDER_MODEL="text-embedding-3-small"
 //
 //	redis:
 //		export REDIS_ADDR="localhost:6379"
@@ -85,7 +91,7 @@ var (
 		"memory",
 		"inmemory",
 		"Name of the memory service to use, "+
-			"inmemory / sqlite / sqlitevec / redis / "+
+			"inmemory / sqlite / sqlitevec / chromadb / redis / "+
 			"mysql / postgres / pgvector",
 	)
 	streaming = flag.Bool(

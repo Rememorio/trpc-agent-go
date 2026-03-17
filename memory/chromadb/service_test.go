@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"sort"
 	"strconv"
@@ -24,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	chroma "github.com/amikos-tech/chroma-go/pkg/api/v2"
+	chromaemb "github.com/amikos-tech/chroma-go/pkg/embeddings"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -42,7 +43,10 @@ type mismatchEmbedder struct {
 	returnLn int
 }
 
-func (m *mockEmbedder) GetEmbedding(_ context.Context, text string) ([]float64, error) {
+func (m *mockEmbedder) GetEmbedding(
+	_ context.Context,
+	text string,
+) ([]float64, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -99,7 +103,9 @@ func (f *fakeExtractor) Extract(
 	return nil, nil
 }
 
-func (f *fakeExtractor) ShouldExtract(_ *extractor.ExtractionContext) bool {
+func (f *fakeExtractor) ShouldExtract(
+	_ *extractor.ExtractionContext,
+) bool {
 	return true
 }
 
@@ -112,28 +118,34 @@ func (f *fakeExtractor) Metadata() map[string]any {
 }
 
 type mockChromaClient struct {
-	mu          sync.Mutex
-	collection  string
-	records     map[string]chromaRecord
-	errEnsure   error
-	errUpsert   error
-	errGet      error
-	errDelete   error
-	errQuery    error
-	errCount    error
-	closeCalled bool
+	mu                 sync.Mutex
+	collection         string
+	records            map[string]chromaRecord
+	errResolve         error
+	errUpsert          error
+	errGet             error
+	errDelete          error
+	errQuery           error
+	errCount           error
+	closeCalled        bool
+	lastCreateIfAbsent bool
 }
 
 func newMockChromaClient() *mockChromaClient {
-	return &mockChromaClient{collection: "c1", records: map[string]chromaRecord{}}
+	return &mockChromaClient{
+		collection: "c1",
+		records:    map[string]chromaRecord{},
+	}
 }
 
-func (m *mockChromaClient) EnsureCollection(
+func (m *mockChromaClient) ResolveCollection(
 	_ context.Context,
 	_ string,
+	createIfMissing bool,
 ) (string, error) {
-	if m.errEnsure != nil {
-		return "", m.errEnsure
+	m.lastCreateIfAbsent = createIfMissing
+	if m.errResolve != nil {
+		return "", m.errResolve
 	}
 	return m.collection, nil
 }
@@ -150,6 +162,10 @@ func (m *mockChromaClient) Upsert(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, record := range records {
+		if existing, ok := m.records[record.ID]; ok &&
+			record.Score == 0 && existing.Score != 0 {
+			record.Score = existing.Score
+		}
 		m.records[record.ID] = record
 	}
 	return nil
@@ -159,7 +175,7 @@ func (m *mockChromaClient) Get(
 	_ context.Context,
 	_ string,
 	ids []string,
-	where map[string]any,
+	filter chromaFilter,
 	limit int,
 ) ([]chromaRecord, error) {
 	if m.errGet != nil {
@@ -167,10 +183,12 @@ func (m *mockChromaClient) Get(
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	idSet := map[string]struct{}{}
+
+	idSet := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		idSet[id] = struct{}{}
 	}
+
 	out := make([]chromaRecord, 0, len(m.records))
 	for _, record := range m.records {
 		if len(idSet) > 0 {
@@ -178,7 +196,7 @@ func (m *mockChromaClient) Get(
 				continue
 			}
 		}
-		if !matchWhere(record.Metadata, where) {
+		if !matchFilter(record.Metadata, filter) {
 			continue
 		}
 		out = append(out, record)
@@ -194,24 +212,26 @@ func (m *mockChromaClient) Delete(
 	_ context.Context,
 	_ string,
 	ids []string,
-	where map[string]any,
+	filter chromaFilter,
 ) error {
 	if m.errDelete != nil {
 		return m.errDelete
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	idSet := map[string]struct{}{}
+
+	idSet := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		idSet[id] = struct{}{}
 	}
+
 	for id, record := range m.records {
 		if len(idSet) > 0 {
 			if _, ok := idSet[id]; !ok {
 				continue
 			}
 		}
-		if !matchWhere(record.Metadata, where) {
+		if !matchFilter(record.Metadata, filter) {
 			continue
 		}
 		delete(m.records, id)
@@ -224,15 +244,21 @@ func (m *mockChromaClient) Query(
 	_ string,
 	_ []float64,
 	nResults int,
-	where map[string]any,
+	filter chromaFilter,
 ) ([]chromaRecord, error) {
 	if m.errQuery != nil {
 		return nil, m.errQuery
 	}
-	items, err := m.Get(context.Background(), m.collection, nil, where, 0)
+	items, err := m.Get(context.Background(), m.collection, nil, filter, 0)
 	if err != nil {
 		return nil, err
 	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Score != items[j].Score {
+			return items[i].Score > items[j].Score
+		}
+		return items[i].ID < items[j].ID
+	})
 	if nResults > 0 && len(items) > nResults {
 		items = items[:nResults]
 	}
@@ -242,12 +268,12 @@ func (m *mockChromaClient) Query(
 func (m *mockChromaClient) Count(
 	_ context.Context,
 	_ string,
-	where map[string]any,
+	filter chromaFilter,
 ) (int, error) {
 	if m.errCount != nil {
 		return 0, m.errCount
 	}
-	items, err := m.Get(context.Background(), m.collection, nil, where, 0)
+	items, err := m.Get(context.Background(), m.collection, nil, filter, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -259,16 +285,23 @@ func (m *mockChromaClient) Close() error {
 	return nil
 }
 
-func matchWhere(metadata map[string]any, where map[string]any) bool {
-	for k, v := range where {
-		if metadata[k] != v {
-			return false
-		}
+func matchFilter(metadata map[string]any, filter chromaFilter) bool {
+	if filter.AppName != "" &&
+		stringFromAny(metadata[metaKeyAppName]) != filter.AppName {
+		return false
+	}
+	if filter.UserID != "" &&
+		stringFromAny(metadata[metaKeyUserID]) != filter.UserID {
+		return false
+	}
+	if filter.Kind != "" &&
+		stringFromAny(metadata[metaKeyKind]) != string(filter.Kind) {
+		return false
 	}
 	return true
 }
 
-func TestNewService_Validation(t *testing.T) {
+func TestNewServiceValidation(t *testing.T) {
 	_, err := NewService()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "embedder is required")
@@ -286,16 +319,16 @@ func TestNewService_Validation(t *testing.T) {
 	assert.Contains(t, err.Error(), "collectionName is required")
 
 	client := newMockChromaClient()
-	client.errEnsure = errors.New("boom")
+	client.errResolve = errors.New("boom")
 	_, err = NewService(
 		WithEmbedder(&mockEmbedder{dim: 2}),
 		withChromaClient(client),
 	)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ensure collection")
+	assert.Contains(t, err.Error(), "resolve collection")
 }
 
-func TestService_CRUD_Flow(t *testing.T) {
+func TestServiceCRUDFlow(t *testing.T) {
 	client := newMockChromaClient()
 	svc, err := NewService(
 		WithEmbedder(&mockEmbedder{dim: 3}),
@@ -339,8 +372,9 @@ func TestService_CRUD_Flow(t *testing.T) {
 	afterUpdate, err := svc.ReadMemories(ctx, user, 0)
 	require.NoError(t, err)
 	foundUpdated := false
-	for _, e := range afterUpdate {
-		if e.ID == memKey.MemoryID && e.Memory.Memory == "alpha-updated" {
+	for _, entry := range afterUpdate {
+		if entry.ID == memKey.MemoryID &&
+			entry.Memory.Memory == "alpha-updated" {
 			foundUpdated = true
 			break
 		}
@@ -364,7 +398,7 @@ func TestService_CRUD_Flow(t *testing.T) {
 	require.Len(t, otherEntries, 1)
 }
 
-func TestService_AddMemoryLimit_AndExists(t *testing.T) {
+func TestServiceAddMemoryLimitAndExists(t *testing.T) {
 	client := newMockChromaClient()
 	svc, err := NewService(
 		WithEmbedder(&mockEmbedder{dim: 2}),
@@ -385,7 +419,376 @@ func TestService_AddMemoryLimit_AndExists(t *testing.T) {
 	assert.Contains(t, err.Error(), "memory limit exceeded")
 }
 
-func TestService_ErrorBranches(t *testing.T) {
+func TestServiceSearchEmptyAndToolsAutoMemory(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		WithExtractor(&fakeExtractor{}),
+		WithToolEnabled(memory.LoadToolName, true),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	results, err := svc.SearchMemories(
+		context.Background(),
+		memory.UserKey{AppName: "app", UserID: "u1"},
+		" ",
+	)
+	require.NoError(t, err)
+	require.Empty(t, results)
+
+	tools := svc.Tools()
+	require.NotEmpty(t, tools)
+
+	names := make([]string, 0, len(tools))
+	for _, item := range tools {
+		names = append(names, item.Declaration().Name)
+	}
+	slices.Sort(names)
+	assert.Contains(t, names, memory.SearchToolName)
+	assert.Contains(t, names, memory.LoadToolName)
+
+	require.NoError(t, svc.EnqueueAutoMemoryJob(context.Background(), nil))
+}
+
+func TestServiceEpisodicMetadataRoundTrip(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha",
+		[]string{"travel"},
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &eventTime,
+			Participants: []string{"Alice", "Bob"},
+			Location:     "Kyoto",
+		}),
+	))
+
+	got, err := svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].Memory)
+	require.Equal(t, memory.KindEpisode, got[0].Memory.Kind)
+	require.NotNil(t, got[0].Memory.EventTime)
+	require.Equal(t, eventTime, *got[0].Memory.EventTime)
+	require.Equal(t, []string{"Alice", "Bob"}, got[0].Memory.Participants)
+	require.Equal(t, "Kyoto", got[0].Memory.Location)
+}
+
+func TestServiceUpdateMemoryPreservesMetadataWhenNotProvided(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &eventTime,
+			Participants: []string{"Alice"},
+			Location:     "Kyoto",
+		}),
+	))
+
+	got, err := svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	updateResult := &memory.UpdateResult{}
+	require.NoError(t, svc.UpdateMemory(
+		ctx,
+		memory.Key{
+			AppName:  user.AppName,
+			UserID:   user.UserID,
+			MemoryID: got[0].ID,
+		},
+		"alpha",
+		[]string{"updated"},
+		memory.WithUpdateResult(updateResult),
+	))
+	require.Equal(t, got[0].ID, updateResult.MemoryID)
+
+	got, err = svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, memory.KindEpisode, got[0].Memory.Kind)
+	require.NotNil(t, got[0].Memory.EventTime)
+	require.Equal(t, eventTime, *got[0].Memory.EventTime)
+	require.Equal(t, []string{"Alice"}, got[0].Memory.Participants)
+	require.Equal(t, "Kyoto", got[0].Memory.Location)
+	require.Equal(t, []string{"updated"}, got[0].Memory.Topics)
+}
+
+func TestServiceSearchWithEpisodicOptions(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		WithMaxResults(10),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+	day1 := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:      memory.KindEpisode,
+			EventTime: &day2,
+		}),
+	))
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha older",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:      memory.KindEpisode,
+			EventTime: &day1,
+		}),
+	))
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha fact",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind: memory.KindFact,
+		}),
+	))
+
+	setScores(client, map[string]float64{
+		findIDByMemory(client, "alpha"):       0.9,
+		findIDByMemory(client, "alpha older"): 0.8,
+		findIDByMemory(client, "alpha fact"):  0.7,
+	})
+
+	results, err := svc.SearchMemories(
+		ctx,
+		user,
+		"alpha",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:            "alpha",
+			Kind:             memory.KindEpisode,
+			TimeAfter:        &day1,
+			OrderByEventTime: true,
+			KindFallback:     true,
+			MaxResults:       10,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	require.Equal(t, memory.KindEpisode, results[0].Memory.Kind)
+	require.NotNil(t, results[0].Memory.EventTime)
+	require.Equal(t, day1, *results[0].Memory.EventTime)
+	require.Equal(t, memory.KindEpisode, results[1].Memory.Kind)
+	require.NotNil(t, results[1].Memory.EventTime)
+	require.Equal(t, day2, *results[1].Memory.EventTime)
+	require.Equal(t, memory.KindFact, results[2].Memory.Kind)
+}
+
+func TestServiceSearchSimilarityThresholdAndScore(t *testing.T) {
+	client := newMockChromaClient()
+	now := time.Now().UTC().UnixNano()
+	client.records["high"] = chromaRecord{
+		ID:       "high",
+		Document: "alpha high",
+		Score:    0.95,
+		Metadata: map[string]any{
+			metaKeyAppName:     "app",
+			metaKeyUserID:      "u1",
+			metaKeyTopics:      "[]",
+			metaKeyCreatedAtNs: now,
+			metaKeyUpdatedAtNs: now,
+			metaKeyKind:        string(memory.KindFact),
+		},
+	}
+	client.records["low"] = chromaRecord{
+		ID:       "low",
+		Document: "alpha low",
+		Score:    0.20,
+		Metadata: map[string]any{
+			metaKeyAppName:     "app",
+			metaKeyUserID:      "u1",
+			metaKeyTopics:      "[]",
+			metaKeyCreatedAtNs: now,
+			metaKeyUpdatedAtNs: now,
+			metaKeyKind:        string(memory.KindFact),
+		},
+	}
+
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	results, err := svc.SearchMemories(
+		context.Background(),
+		memory.UserKey{AppName: "app", UserID: "u1"},
+		"alpha",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:               "alpha",
+			SimilarityThreshold: 0.5,
+			MaxResults:          10,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "high", results[0].ID)
+	require.Equal(t, 0.95, results[0].Score)
+}
+
+func TestServiceSearchHybridSearch(t *testing.T) {
+	client := newMockChromaClient()
+	now := time.Now().UTC().UnixNano()
+	client.records["vector-top"] = chromaRecord{
+		ID:       "vector-top",
+		Document: "generic memory",
+		Score:    0.90,
+		Metadata: map[string]any{
+			metaKeyAppName:     "app",
+			metaKeyUserID:      "u1",
+			metaKeyTopics:      "[]",
+			metaKeyCreatedAtNs: now,
+			metaKeyUpdatedAtNs: now,
+			metaKeyKind:        string(memory.KindFact),
+		},
+	}
+	client.records["keyword-top"] = chromaRecord{
+		ID:       "keyword-top",
+		Document: "special-book-title",
+		Score:    0.10,
+		Metadata: map[string]any{
+			metaKeyAppName:     "app",
+			metaKeyUserID:      "u1",
+			metaKeyTopics:      "[]",
+			metaKeyCreatedAtNs: now,
+			metaKeyUpdatedAtNs: now,
+			metaKeyKind:        string(memory.KindFact),
+		},
+	}
+
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	results, err := svc.SearchMemories(
+		context.Background(),
+		memory.UserKey{AppName: "app", UserID: "u1"},
+		"special-book-title",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:        "special-book-title",
+			HybridSearch: true,
+			MaxResults:   10,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	require.Equal(t, "keyword-top", results[0].ID)
+	require.Greater(t, results[0].Score, 0.0)
+}
+
+func TestOptionsCustomToolAndDisable(t *testing.T) {
+	opts := defaultOptions.clone()
+	customName := memory.DeleteToolName
+	WithCustomTool(customName, func() tool.Tool {
+		return &fakeTool{name: customName}
+	})(&opts)
+	WithToolEnabled(memory.SearchToolName, false)(&opts)
+	_, okCustom := opts.enabledTools[customName]
+	_, okSearch := opts.enabledTools[memory.SearchToolName]
+	assert.True(t, okCustom)
+	assert.False(t, okSearch)
+}
+
+type fakeTool struct {
+	name string
+}
+
+func (f *fakeTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: f.name}
+}
+
+func TestOptionsSettersCoverage(t *testing.T) {
+	opts := ServiceOpts{}
+	WithBaseURL("http://localhost")(&opts)
+	WithAuthToken("token")(&opts)
+	WithTenant("tenant")(&opts)
+	WithDatabase("db")(&opts)
+	WithHTTPClient(&http.Client{Timeout: time.Second})(&opts)
+	WithCollectionName("c")(&opts)
+	WithMaxResults(7)(&opts)
+	WithMemoryLimit(9)(&opts)
+	WithSkipCollectionInit(true)(&opts)
+	WithAsyncMemoryNum(0)(&opts)
+	WithMemoryQueueSize(0)(&opts)
+	WithMemoryJobTimeout(time.Second)(&opts)
+	WithToolEnabled("invalid", true)(&opts)
+	WithCustomTool("invalid", nil)(&opts)
+	require.Equal(t, "http://localhost", opts.baseURL)
+	require.Equal(t, "token", opts.authToken)
+	require.Equal(t, "tenant", opts.tenant)
+	require.Equal(t, "db", opts.database)
+	require.Equal(t, "c", opts.collectionName)
+	require.Equal(t, 7, opts.maxResults)
+	require.Equal(t, 9, opts.memoryLimit)
+	require.True(t, opts.skipCollectionInit)
+	require.NotZero(t, opts.asyncMemoryNum)
+	require.NotZero(t, opts.memoryQueueSize)
+}
+
+func TestServiceSkipCollectionInitUsesLookupOnly(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		WithCollectionName("my-col"),
+		WithSkipCollectionInit(true),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+	require.Equal(t, "c1", svc.collectionID)
+	require.False(t, client.lastCreateIfAbsent)
+}
+
+func TestServiceErrorBranches(t *testing.T) {
 	client := newMockChromaClient()
 	svc, err := NewService(
 		WithEmbedder(&mockEmbedder{dim: 3}),
@@ -454,8 +857,10 @@ func TestService_ErrorBranches(t *testing.T) {
 		user,
 		"new",
 		memory.WithSearchOptions(memory.SearchOptions{
-			Query: "new",
-			Kind:  memory.KindFact,
+			Query:       "new",
+			TimeAfter:   timePtr(time.Now().UTC()),
+			MaxResults:  10,
+			Deduplicate: true,
 		}),
 	)
 	require.Error(t, err)
@@ -480,599 +885,7 @@ func TestService_ErrorBranches(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestService_SearchEmpty_AndTools_AutoMemory(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		WithExtractor(&fakeExtractor{}),
-		WithToolEnabled(memory.LoadToolName, true),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-
-	results, err := svc.SearchMemories(
-		context.Background(),
-		memory.UserKey{AppName: "app", UserID: "u1"},
-		" ",
-	)
-	require.NoError(t, err)
-	require.Empty(t, results)
-
-	tools := svc.Tools()
-	require.NotEmpty(t, tools)
-
-	names := make([]string, 0, len(tools))
-	for _, item := range tools {
-		names = append(names, item.Declaration().Name)
-	}
-	slices.Sort(names)
-	assert.Contains(t, names, memory.SearchToolName)
-	assert.Contains(t, names, memory.LoadToolName)
-
-	require.NoError(t, svc.EnqueueAutoMemoryJob(context.Background(), nil))
-}
-
-func TestService_EpisodicMetadataRoundTrip(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-
-	ctx := context.Background()
-	user := memory.UserKey{AppName: "app", UserID: "u1"}
-	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
-
-	require.NoError(t, svc.AddMemory(
-		ctx,
-		user,
-		"alpha",
-		[]string{"travel"},
-		memory.WithMetadata(&memory.Metadata{
-			Kind:         memory.KindEpisode,
-			EventTime:    &eventTime,
-			Participants: []string{"Alice", "Bob"},
-			Location:     "Kyoto",
-		}),
-	))
-
-	got, err := svc.ReadMemories(ctx, user, 1)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.NotNil(t, got[0].Memory)
-	require.Equal(t, memory.KindEpisode, got[0].Memory.Kind)
-	require.NotNil(t, got[0].Memory.EventTime)
-	require.Equal(t, eventTime, *got[0].Memory.EventTime)
-	require.Equal(t, []string{"Alice", "Bob"}, got[0].Memory.Participants)
-	require.Equal(t, "Kyoto", got[0].Memory.Location)
-}
-
-func TestService_UpdateMemory_PreservesMetadataWhenNotProvided(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-
-	ctx := context.Background()
-	user := memory.UserKey{AppName: "app", UserID: "u1"}
-	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
-
-	require.NoError(t, svc.AddMemory(
-		ctx,
-		user,
-		"alpha",
-		nil,
-		memory.WithMetadata(&memory.Metadata{
-			Kind:         memory.KindEpisode,
-			EventTime:    &eventTime,
-			Participants: []string{"Alice"},
-			Location:     "Kyoto",
-		}),
-	))
-
-	got, err := svc.ReadMemories(ctx, user, 1)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-
-	updateResult := &memory.UpdateResult{}
-	require.NoError(t, svc.UpdateMemory(
-		ctx,
-		memory.Key{
-			AppName:  user.AppName,
-			UserID:   user.UserID,
-			MemoryID: got[0].ID,
-		},
-		"alpha",
-		[]string{"updated"},
-		memory.WithUpdateResult(updateResult),
-	))
-	require.Equal(t, got[0].ID, updateResult.MemoryID)
-
-	got, err = svc.ReadMemories(ctx, user, 1)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, memory.KindEpisode, got[0].Memory.Kind)
-	require.NotNil(t, got[0].Memory.EventTime)
-	require.Equal(t, eventTime, *got[0].Memory.EventTime)
-	require.Equal(t, []string{"Alice"}, got[0].Memory.Participants)
-	require.Equal(t, "Kyoto", got[0].Memory.Location)
-	require.Equal(t, []string{"updated"}, got[0].Memory.Topics)
-}
-
-func TestService_UpdateMemory_SameIdentityKeepsID(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-
-	ctx := context.Background()
-	user := memory.UserKey{AppName: "app", UserID: "u1"}
-
-	require.NoError(t, svc.AddMemory(ctx, user, "alpha", []string{"old"}))
-
-	got, err := svc.ReadMemories(ctx, user, 1)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-
-	oldID := got[0].ID
-	updateResult := &memory.UpdateResult{}
-	require.NoError(t, svc.UpdateMemory(
-		ctx,
-		memory.Key{
-			AppName:  user.AppName,
-			UserID:   user.UserID,
-			MemoryID: oldID,
-		},
-		"alpha",
-		[]string{"new"},
-		memory.WithUpdateResult(updateResult),
-	))
-	require.Equal(t, oldID, updateResult.MemoryID)
-
-	got, err = svc.ReadMemories(ctx, user, 1)
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, oldID, got[0].ID)
-	require.Equal(t, []string{"new"}, got[0].Memory.Topics)
-}
-
-func TestService_Search_WithEpisodicOptions(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		WithMaxResults(10),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-
-	ctx := context.Background()
-	user := memory.UserKey{AppName: "app", UserID: "u1"}
-	day1 := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
-	day2 := time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC)
-
-	require.NoError(t, svc.AddMemory(
-		ctx,
-		user,
-		"alpha",
-		nil,
-		memory.WithMetadata(&memory.Metadata{
-			Kind:      memory.KindEpisode,
-			EventTime: &day2,
-		}),
-	))
-	require.NoError(t, svc.AddMemory(
-		ctx,
-		user,
-		"alpha older",
-		nil,
-		memory.WithMetadata(&memory.Metadata{
-			Kind:      memory.KindEpisode,
-			EventTime: &day1,
-		}),
-	))
-	require.NoError(t, svc.AddMemory(
-		ctx,
-		user,
-		"alpha fact",
-		nil,
-		memory.WithMetadata(&memory.Metadata{
-			Kind: memory.KindFact,
-		}),
-	))
-
-	results, err := svc.SearchMemories(
-		ctx,
-		user,
-		"alpha",
-		memory.WithSearchOptions(memory.SearchOptions{
-			Query:            "alpha",
-			Kind:             memory.KindEpisode,
-			TimeAfter:        &day1,
-			OrderByEventTime: true,
-			KindFallback:     true,
-			MaxResults:       10,
-		}),
-	)
-	require.NoError(t, err)
-	require.Len(t, results, 3)
-	require.Equal(t, memory.KindEpisode, results[0].Memory.Kind)
-	require.NotNil(t, results[0].Memory.EventTime)
-	require.Equal(t, day1, *results[0].Memory.EventTime)
-	require.Equal(t, memory.KindEpisode, results[1].Memory.Kind)
-	require.NotNil(t, results[1].Memory.EventTime)
-	require.Equal(t, day2, *results[1].Memory.EventTime)
-	require.Equal(t, memory.KindFact, results[2].Memory.Kind)
-}
-
-func TestOptions_CustomToolAndDisable(t *testing.T) {
-	opts := defaultOptions.clone()
-	customName := memory.DeleteToolName
-	WithCustomTool(customName, func() tool.Tool {
-		return &fakeTool{name: customName}
-	})(&opts)
-	WithToolEnabled(memory.SearchToolName, false)(&opts)
-	_, okCustom := opts.enabledTools[customName]
-	_, okSearch := opts.enabledTools[memory.SearchToolName]
-	assert.True(t, okCustom)
-	assert.False(t, okSearch)
-}
-
-type fakeTool struct {
-	name string
-}
-
-func (f *fakeTool) Declaration() *tool.Declaration {
-	return &tool.Declaration{Name: f.name}
-}
-
-func TestHelpers_DecodeAndConvert(t *testing.T) {
-	flat, err := decodeFlatStrings(json.RawMessage("[\"a\",\"b\"]"))
-	require.NoError(t, err)
-	require.Equal(t, []string{"a", "b"}, flat)
-
-	flat, err = decodeFlatStrings(json.RawMessage("[[\"c\"]]"))
-	require.NoError(t, err)
-	require.Equal(t, []string{"c"}, flat)
-
-	_, err = decodeFlatStrings(json.RawMessage("{}"))
-	require.Error(t, err)
-
-	nested, err := decodeNestedStrings(json.RawMessage("[\"a\"]"))
-	require.NoError(t, err)
-	require.Len(t, nested, 1)
-
-	metas, err := decodeFlatMetadatas(json.RawMessage("[{\"k\":1}]"))
-	require.NoError(t, err)
-	require.Len(t, metas, 1)
-
-	nestedMeta, err := decodeNestedMetadatas(
-		json.RawMessage("[[{\"k\":1}]]"),
-	)
-	require.NoError(t, err)
-	require.Len(t, nestedMeta, 1)
-
-	_, err = decodeNestedMetadatas(json.RawMessage("{}"))
-	require.Error(t, err)
-
-	assert.Equal(t, int64(3), int64FromAny(3))
-	assert.Equal(t, int64(5), int64FromAny("5"))
-	assert.Equal(t, int64(0), int64FromAny("x"))
-	assert.Equal(t, "s", stringFromAny("s"))
-	assert.Equal(t, "", stringFromAny(1))
-	require.Nil(t, timePtrFromAny(nil))
-	require.NotNil(t, timePtrFromAny(int64(7)))
-}
-
-func TestHTTPClient_BasicRequests(t *testing.T) {
-	var seenAuth string
-	var seenToken string
-	var seenTenant string
-	var seenDatabase string
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/collections", func(w http.ResponseWriter, r *http.Request) {
-		seenAuth = r.Header.Get("Authorization")
-		seenToken = r.Header.Get("X-Chroma-Token")
-		seenTenant = r.Header.Get("X-Chroma-Tenant")
-		seenDatabase = r.Header.Get("X-Chroma-Database")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"id\":\"col-1\"}"))
-	})
-	mux.HandleFunc("/api/v1/collections/col-1/upsert", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/api/v1/collections/col-1/get", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		body := "{" +
-			"\"ids\":[\"m1\"]," +
-			"\"documents\":[\"doc\"]," +
-			"\"metadatas\":[{" +
-			"\"app_name\":\"app\"," +
-			"\"user_id\":\"u1\"," +
-			"\"topics\":\"[]\"," +
-			"\"created_at_ns\":1," +
-			"\"updated_at_ns\":2" +
-			"}]" +
-			"}"
-		_, _ = w.Write([]byte(body))
-	})
-	mux.HandleFunc("/api/v1/collections/col-1/query", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		body := "{" +
-			"\"ids\":[[\"m1\"]]," +
-			"\"documents\":[[\"doc\"]]," +
-			"\"metadatas\":[[{" +
-			"\"app_name\":\"app\"," +
-			"\"user_id\":\"u1\"," +
-			"\"topics\":\"[]\"," +
-			"\"created_at_ns\":1," +
-			"\"updated_at_ns\":2" +
-			"}]]" +
-			"}"
-		_, _ = w.Write([]byte(body))
-	})
-	mux.HandleFunc("/api/v1/collections/col-1/delete", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		authToken:  "token",
-		tenant:     "tenant",
-		database:   "database",
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-
-	ctx := context.Background()
-	collectionID, err := client.EnsureCollection(ctx, "mem")
-	require.NoError(t, err)
-	require.Equal(t, "col-1", collectionID)
-	require.Equal(t, "Bearer token", seenAuth)
-	require.Equal(t, "token", seenToken)
-	require.Equal(t, "tenant", seenTenant)
-	require.Equal(t, "database", seenDatabase)
-
-	err = client.Upsert(ctx, "col-1", []chromaRecord{{ID: "m1"}},
-		[][]float64{{1, 2}})
-	require.NoError(t, err)
-
-	items, err := client.Get(ctx, "col-1", nil, nil, 0)
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-	require.Equal(t, "m1", items[0].ID)
-
-	items, err = client.Query(ctx, "col-1", []float64{1, 2}, 1, nil)
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-
-	count, err := client.Count(ctx, "col-1", nil)
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-
-	err = client.Delete(ctx, "col-1", []string{"m1"}, nil)
-	require.NoError(t, err)
-}
-
-func TestHTTPClient_CloudV2Requests(t *testing.T) {
-	var seenAuth string
-	var seenToken string
-	var seenTenant string
-	var seenDatabase string
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections", func(w http.ResponseWriter, r *http.Request) {
-		seenAuth = r.Header.Get("Authorization")
-		seenToken = r.Header.Get("X-Chroma-Token")
-		seenTenant = r.Header.Get("X-Chroma-Tenant")
-		seenDatabase = r.Header.Get("X-Chroma-Database")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"id\":\"col-1\"}"))
-	})
-	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/upsert", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/get", func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Limit   int            `json:"limit"`
-			Where   map[string]any `json:"where"`
-			Include []string       `json:"include"`
-		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		w.Header().Set("Content-Type", "application/json")
-		if payload.Limit == 1000 {
-			require.Equal(t, map[string]any{"user_id": "u1"}, payload.Where)
-			require.Empty(t, payload.Include)
-			_, _ = w.Write([]byte("{\"ids\":[\"m1\"]}"))
-			return
-		}
-		_, _ = w.Write([]byte("{" +
-			"\"ids\":[\"m1\"]," +
-			"\"documents\":[\"doc\"]," +
-			"\"metadatas\":[{" +
-			"\"app_name\":\"app\"," +
-			"\"user_id\":\"u1\"," +
-			"\"topics\":\"[]\"," +
-			"\"created_at_ns\":1," +
-			"\"updated_at_ns\":2" +
-			"}]" +
-			"}"))
-	})
-	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/query", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{" +
-			"\"ids\":[[\"m1\"]]," +
-			"\"documents\":[[\"doc\"]]," +
-			"\"metadatas\":[[{" +
-			"\"app_name\":\"app\"," +
-			"\"user_id\":\"u1\"," +
-			"\"topics\":\"[]\"," +
-			"\"created_at_ns\":1," +
-			"\"updated_at_ns\":2" +
-			"}]]" +
-			"}"))
-	})
-	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/delete", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		authToken:  "token",
-		tenant:     "tenant",
-		database:   "database",
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-
-	ctx := context.Background()
-	collectionID, err := client.EnsureCollection(ctx, "mem")
-	require.NoError(t, err)
-	require.Equal(t, "col-1", collectionID)
-	require.Equal(t, "Bearer token", seenAuth)
-	require.Equal(t, "token", seenToken)
-	require.Equal(t, "tenant", seenTenant)
-	require.Equal(t, "database", seenDatabase)
-
-	err = client.Upsert(ctx, "col-1", []chromaRecord{{ID: "m1"}}, [][]float64{{1, 2}})
-	require.NoError(t, err)
-
-	items, err := client.Get(ctx, "col-1", nil, nil, 0)
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-
-	items, err = client.Query(ctx, "col-1", []float64{1, 2}, 1, nil)
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-
-	count, err := client.Count(ctx, "col-1", map[string]any{"user_id": "u1"})
-	require.NoError(t, err)
-	require.Equal(t, 1, count)
-
-	err = client.Delete(ctx, "col-1", []string{"m1"}, nil)
-	require.NoError(t, err)
-}
-
-func TestHTTPClient_CountUsesIDsOnlyPagination(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/collections/c/get", func(w http.ResponseWriter, r *http.Request) {
-		var payload struct {
-			Limit   int            `json:"limit"`
-			Offset  int            `json:"offset"`
-			Where   map[string]any `json:"where"`
-			Include []string       `json:"include"`
-		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
-		require.Equal(t, 1000, payload.Limit)
-		require.Equal(t, map[string]any{"user_id": "u1"}, payload.Where)
-		require.Empty(t, payload.Include)
-
-		w.Header().Set("Content-Type", "application/json")
-		switch payload.Offset {
-		case 0:
-			ids := make([]string, 1000)
-			for i := range ids {
-				ids[i] = strconv.Itoa(i)
-			}
-			body, err := json.Marshal(map[string]any{"ids": ids})
-			require.NoError(t, err)
-			_, _ = w.Write(body)
-		case 1000:
-			_, _ = w.Write([]byte("{\"ids\":[\"1000\",\"1001\",\"1002\"]}"))
-		default:
-			t.Fatalf("unexpected offset %d", payload.Offset)
-		}
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-
-	count, err := client.Count(
-		context.Background(),
-		"c",
-		map[string]any{"user_id": "u1"},
-	)
-	require.NoError(t, err)
-	require.Equal(t, 1003, count)
-}
-
-func TestHTTPClient_ErrorStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("boom"))
-	}))
-	defer server.Close()
-
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-	_, err := client.EnsureCollection(context.Background(), "x")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "chromadb api error")
-}
-
-func TestOptions_SettersCoverage(t *testing.T) {
-	opts := ServiceOpts{}
-	WithBaseURL("http://localhost")(&opts)
-	WithAuthToken("token")(&opts)
-	WithTenant("tenant")(&opts)
-	WithDatabase("db")(&opts)
-	WithHTTPClient(&http.Client{Timeout: time.Second})(&opts)
-	WithCollectionName("c")(&opts)
-	WithMaxResults(7)(&opts)
-	WithMemoryLimit(9)(&opts)
-	WithSkipCollectionInit(true)(&opts)
-	WithAsyncMemoryNum(0)(&opts)
-	WithMemoryQueueSize(0)(&opts)
-	WithMemoryJobTimeout(time.Second)(&opts)
-	WithToolEnabled("invalid", true)(&opts)
-	WithCustomTool("invalid", nil)(&opts)
-	require.Equal(t, "http://localhost", opts.baseURL)
-	require.Equal(t, "token", opts.authToken)
-	require.Equal(t, "tenant", opts.tenant)
-	require.Equal(t, "db", opts.database)
-	require.Equal(t, "c", opts.collectionName)
-	require.Equal(t, 7, opts.maxResults)
-	require.Equal(t, 9, opts.memoryLimit)
-	require.True(t, opts.skipCollectionInit)
-	require.NotZero(t, opts.asyncMemoryNum)
-	require.NotZero(t, opts.memoryQueueSize)
-}
-
-func TestService_NewServiceSkipCollectionInit(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		WithCollectionName("my-col"),
-		WithSkipCollectionInit(true),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-	require.Equal(t, "my-col", svc.collectionID)
-}
-
-func TestService_UpdateAndDeleteErrorBranches(t *testing.T) {
+func TestServiceUpdateAndDeleteErrorBranches(t *testing.T) {
 	client := newMockChromaClient()
 	svc, err := NewService(
 		WithEmbedder(&mockEmbedder{dim: 2}),
@@ -1087,7 +900,11 @@ func TestService_UpdateAndDeleteErrorBranches(t *testing.T) {
 	entries, err := svc.ReadMemories(ctx, user, 0)
 	require.NoError(t, err)
 	require.NotEmpty(t, entries)
-	key := memory.Key{AppName: "app", UserID: "u1", MemoryID: entries[0].ID}
+	key := memory.Key{
+		AppName:  "app",
+		UserID:   "u1",
+		MemoryID: entries[0].ID,
+	}
 
 	client.errUpsert = errors.New("up")
 	err = svc.UpdateMemory(ctx, key, "b", nil)
@@ -1101,7 +918,7 @@ func TestService_UpdateAndDeleteErrorBranches(t *testing.T) {
 	assert.Contains(t, err.Error(), "delete memory")
 }
 
-func TestService_ReadAndGetByIDBranches(t *testing.T) {
+func TestServiceReadAndGetByIDBranches(t *testing.T) {
 	client := newMockChromaClient()
 	now := time.Now().UTC().UnixNano()
 	client.records["r1"] = chromaRecord{
@@ -1115,6 +932,7 @@ func TestService_ReadAndGetByIDBranches(t *testing.T) {
 			metaKeyUpdatedAtNs: now,
 		},
 	}
+
 	svc, err := NewService(
 		WithEmbedder(&mockEmbedder{dim: 2}),
 		withChromaClient(client),
@@ -1140,12 +958,13 @@ func TestService_ReadAndGetByIDBranches(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestUtilityFunctions_Branches(t *testing.T) {
+func TestUtilityFunctionsBranches(t *testing.T) {
 	require.Nil(t, ctxWithoutCancel().Err())
 
 	topics, err := parseTopics(nil)
 	require.NoError(t, err)
 	require.Nil(t, topics)
+
 	topics, err = parseTopics("")
 	require.NoError(t, err)
 	require.Nil(t, topics)
@@ -1170,168 +989,829 @@ func TestUtilityFunctions_Branches(t *testing.T) {
 	require.Equal(t, int64(7), int64FromAny(json.Number("7")))
 
 	now := time.Now().UTC()
-	e1 := &memory.Entry{UpdatedAt: now, CreatedAt: now.Add(-time.Second)}
-	e2 := &memory.Entry{UpdatedAt: now, CreatedAt: now}
+	e1 := &memory.Entry{
+		UpdatedAt: now,
+		CreatedAt: now.Add(-time.Second),
+	}
+	e2 := &memory.Entry{
+		UpdatedAt: now,
+		CreatedAt: now,
+	}
 	entries2 := []*memory.Entry{e1, e2}
 	sortEntriesByTime(entries2)
 	require.Same(t, e2, entries2[0])
-}
 
-func TestHTTPClient_EnsureCollectionEmptyID(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{}"))
-	}))
-	defer server.Close()
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-	_, err := client.EnsureCollection(context.Background(), "x")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty collection id")
-}
+	require.Equal(t, 1.0, distanceToSimilarity(0))
+	require.InDelta(t, 0.5, distanceToSimilarity(1), 1e-9)
 
-func TestHTTPClient_UpsertLengthMismatch(t *testing.T) {
-	client := &httpChromaClient{}
-	err := client.Upsert(context.Background(), "c", []chromaRecord{{ID: "1"}}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "length mismatch")
-}
-
-func TestHTTPClient_GetAndQueryDecodeErrors(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/collections/c/get", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{\"ids\":[\"1\"],\"documents\":{},\"metadatas\":[]}"))
+	filter := buildWhereFilter(chromaFilter{
+		AppName: "app",
+		UserID:  "u1",
+		Kind:    memory.KindFact,
 	})
-	mux.HandleFunc("/api/v1/collections/c/query", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{\"ids\":{},\"documents\":[],\"metadatas\":[]}"))
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-	_, err := client.Get(context.Background(), "c", nil, nil, 0)
-	require.Error(t, err)
-	_, err = client.Query(context.Background(), "c", []float64{1}, 1, nil)
-	require.Error(t, err)
+	require.NotNil(t, filter)
 }
 
-func TestHTTPClient_QueryEmptyRowsAndClose(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/collections/c/query", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{\"ids\":[],\"documents\":[],\"metadatas\":[]}"))
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	client := &httpChromaClient{
-		baseURL:    server.URL,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-	items, err := client.Query(context.Background(), "c", []float64{1}, 1, nil)
-	require.NoError(t, err)
-	require.Empty(t, items)
-	require.NoError(t, client.Close())
-}
-
-func TestHTTPClient_DoJSONBranches(t *testing.T) {
-	client := &httpChromaClient{
-		baseURL:    "://bad-url",
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-	err := client.doJSON(
-		context.Background(),
-		http.MethodPost,
-		"/x",
-		map[string]any{"bad": make(chan int)},
-		nil,
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "marshal request")
-
-	err = client.doJSON(
-		context.Background(),
-		http.MethodPost,
-		"/x",
-		map[string]any{"ok": 1},
-		nil,
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "build request")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("not-json"))
-	}))
-	defer server.Close()
-	client = &httpChromaClient{
-		baseURL:    server.URL,
-		httpClient: &http.Client{Timeout: time.Second},
-	}
-	var out map[string]any
-	err = client.doJSON(
-		context.Background(),
-		http.MethodPost,
-		"/",
-		map[string]any{"ok": 1},
-		&out,
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unmarshal response")
-}
-
-func TestService_ValidationBranches(t *testing.T) {
-	client := newMockChromaClient()
-	svc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		withChromaClient(client),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, svc.Close()) }()
-
-	_, err = svc.SearchMemories(context.Background(), memory.UserKey{}, "x")
-	require.Error(t, err)
-
-	svc.opts.embedder = &mockEmbedder{dim: 2, err: errors.New("e")}
-	_, err = svc.SearchMemories(
-		context.Background(),
-		memory.UserKey{AppName: "app", UserID: "u"},
-		"x",
-	)
-	require.Error(t, err)
-
-	err = svc.UpdateMemory(context.Background(), memory.Key{}, "x", nil)
-	require.Error(t, err)
-
-	err = svc.ClearMemories(context.Background(), memory.UserKey{})
-	require.Error(t, err)
-
-	plainSvc, err := NewService(
-		WithEmbedder(&mockEmbedder{dim: 2}),
-		withChromaClient(newMockChromaClient()),
-	)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, plainSvc.Close()) }()
-	require.NoError(t, plainSvc.EnqueueAutoMemoryJob(context.Background(), nil))
-}
-
-func TestDecodeFlatMetadatas_AllBranches(t *testing.T) {
-	items, err := decodeFlatMetadatas(nil)
-	require.NoError(t, err)
-	require.Empty(t, items)
-
-	items, err = decodeFlatMetadatas(json.RawMessage("[[{\"k\":1}]]"))
-	require.NoError(t, err)
-	require.Len(t, items, 1)
-
-	_, err = decodeFlatMetadatas(json.RawMessage("{}"))
-	require.Error(t, err)
-}
-
-func TestWithToolEnabled_InitMapBranch(t *testing.T) {
+func TestWithToolEnabledInitMapBranch(t *testing.T) {
 	opts := ServiceOpts{}
 	WithToolEnabled(memory.AddToolName, true)(&opts)
 	_, ok := opts.enabledTools[memory.AddToolName]
 	require.True(t, ok)
 	require.True(t, opts.userExplicitlySet[memory.AddToolName])
+}
+
+type fakeChromaRootClient struct {
+	getOrCreateCollection chroma.Collection
+	getCollection         chroma.Collection
+	getOrCreateErr        error
+	getErr                error
+	closeCalled           bool
+}
+
+func (f *fakeChromaRootClient) PreFlight(context.Context) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) Heartbeat(context.Context) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) GetVersion(
+	context.Context,
+) (string, error) {
+	return "", nil
+}
+
+func (f *fakeChromaRootClient) GetIdentity(
+	context.Context,
+) (chroma.Identity, error) {
+	return chroma.Identity{}, nil
+}
+
+func (f *fakeChromaRootClient) GetTenant(
+	context.Context,
+	chroma.Tenant,
+) (chroma.Tenant, error) {
+	return chroma.NewDefaultTenant(), nil
+}
+
+func (f *fakeChromaRootClient) UseTenant(
+	context.Context,
+	chroma.Tenant,
+) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) UseDatabase(
+	context.Context,
+	chroma.Database,
+) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) CreateTenant(
+	context.Context,
+	chroma.Tenant,
+) (chroma.Tenant, error) {
+	return chroma.NewDefaultTenant(), nil
+}
+
+func (f *fakeChromaRootClient) ListDatabases(
+	context.Context,
+	chroma.Tenant,
+) ([]chroma.Database, error) {
+	return nil, nil
+}
+
+func (f *fakeChromaRootClient) GetDatabase(
+	context.Context,
+	chroma.Database,
+) (chroma.Database, error) {
+	return chroma.NewDefaultDatabase(), nil
+}
+
+func (f *fakeChromaRootClient) CreateDatabase(
+	context.Context,
+	chroma.Database,
+) (chroma.Database, error) {
+	return chroma.NewDefaultDatabase(), nil
+}
+
+func (f *fakeChromaRootClient) DeleteDatabase(
+	context.Context,
+	chroma.Database,
+) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) CurrentTenant() chroma.Tenant {
+	return chroma.NewDefaultTenant()
+}
+
+func (f *fakeChromaRootClient) CurrentDatabase() chroma.Database {
+	return chroma.NewDefaultDatabase()
+}
+
+func (f *fakeChromaRootClient) Reset(context.Context) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) CreateCollection(
+	context.Context,
+	string,
+	...chroma.CreateCollectionOption,
+) (chroma.Collection, error) {
+	return f.getOrCreateCollection, f.getOrCreateErr
+}
+
+func (f *fakeChromaRootClient) GetOrCreateCollection(
+	_ context.Context,
+	_ string,
+	_ ...chroma.CreateCollectionOption,
+) (chroma.Collection, error) {
+	return f.getOrCreateCollection, f.getOrCreateErr
+}
+
+func (f *fakeChromaRootClient) DeleteCollection(
+	context.Context,
+	string,
+	...chroma.DeleteCollectionOption,
+) error {
+	return nil
+}
+
+func (f *fakeChromaRootClient) GetCollection(
+	_ context.Context,
+	_ string,
+	_ ...chroma.GetCollectionOption,
+) (chroma.Collection, error) {
+	return f.getCollection, f.getErr
+}
+
+func (f *fakeChromaRootClient) CountCollections(
+	context.Context,
+	...chroma.CountCollectionsOption,
+) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeChromaRootClient) ListCollections(
+	context.Context,
+	...chroma.ListCollectionsOption,
+) ([]chroma.Collection, error) {
+	return nil, nil
+}
+
+func (f *fakeChromaRootClient) Close() error {
+	f.closeCalled = true
+	return nil
+}
+
+type fakeChromaCollection struct {
+	id          string
+	name        string
+	upsertErr   error
+	getErr      error
+	deleteErr   error
+	queryErr    error
+	getResults  []chroma.GetResult
+	queryResult chroma.QueryResult
+	upsertOps   []*chroma.CollectionAddOp
+	getOps      []*chroma.CollectionGetOp
+	deleteOps   []*chroma.CollectionDeleteOp
+	queryOps    []*chroma.CollectionQueryOp
+	closeCalled bool
+}
+
+func (f *fakeChromaCollection) Name() string {
+	return f.name
+}
+
+func (f *fakeChromaCollection) ID() string {
+	return f.id
+}
+
+func (f *fakeChromaCollection) Tenant() chroma.Tenant {
+	return chroma.NewDefaultTenant()
+}
+
+func (f *fakeChromaCollection) Database() chroma.Database {
+	return chroma.NewDefaultDatabase()
+}
+
+func (f *fakeChromaCollection) Metadata() chroma.CollectionMetadata {
+	return nil
+}
+
+func (f *fakeChromaCollection) Dimension() int {
+	return 0
+}
+
+func (f *fakeChromaCollection) Configuration() chroma.CollectionConfiguration {
+	return nil
+}
+
+func (f *fakeChromaCollection) Schema() *chroma.Schema {
+	return nil
+}
+
+func (f *fakeChromaCollection) Add(
+	context.Context,
+	...chroma.CollectionAddOption,
+) error {
+	return nil
+}
+
+func (f *fakeChromaCollection) Upsert(
+	_ context.Context,
+	opts ...chroma.CollectionAddOption,
+) error {
+	op, err := chroma.NewCollectionAddOp(opts...)
+	if err != nil {
+		return err
+	}
+	f.upsertOps = append(f.upsertOps, op)
+	return f.upsertErr
+}
+
+func (f *fakeChromaCollection) Update(
+	context.Context,
+	...chroma.CollectionUpdateOption,
+) error {
+	return nil
+}
+
+func (f *fakeChromaCollection) Delete(
+	_ context.Context,
+	opts ...chroma.CollectionDeleteOption,
+) error {
+	op, err := chroma.NewCollectionDeleteOp(opts...)
+	if err != nil {
+		return err
+	}
+	f.deleteOps = append(f.deleteOps, op)
+	return f.deleteErr
+}
+
+func (f *fakeChromaCollection) Count(context.Context) (int, error) {
+	return 0, nil
+}
+
+func (f *fakeChromaCollection) ModifyName(
+	context.Context,
+	string,
+) error {
+	return nil
+}
+
+func (f *fakeChromaCollection) ModifyMetadata(
+	context.Context,
+	chroma.CollectionMetadata,
+) error {
+	return nil
+}
+
+func (f *fakeChromaCollection) ModifyConfiguration(
+	context.Context,
+	*chroma.UpdateCollectionConfiguration,
+) error {
+	return nil
+}
+
+func (f *fakeChromaCollection) Get(
+	_ context.Context,
+	opts ...chroma.CollectionGetOption,
+) (chroma.GetResult, error) {
+	op, err := chroma.NewCollectionGetOp(opts...)
+	if err != nil {
+		return nil, err
+	}
+	f.getOps = append(f.getOps, op)
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if len(f.getResults) == 0 {
+		return &chroma.GetResultImpl{}, nil
+	}
+	result := f.getResults[0]
+	if len(f.getResults) > 1 {
+		f.getResults = f.getResults[1:]
+	}
+	return result, nil
+}
+
+func (f *fakeChromaCollection) Query(
+	_ context.Context,
+	opts ...chroma.CollectionQueryOption,
+) (chroma.QueryResult, error) {
+	op, err := chroma.NewCollectionQueryOp(opts...)
+	if err != nil {
+		return nil, err
+	}
+	f.queryOps = append(f.queryOps, op)
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	if f.queryResult == nil {
+		return &chroma.QueryResultImpl{}, nil
+	}
+	return f.queryResult, nil
+}
+
+func (f *fakeChromaCollection) Search(
+	context.Context,
+	...chroma.SearchCollectionOption,
+) (chroma.SearchResult, error) {
+	return nil, nil
+}
+
+func (f *fakeChromaCollection) Fork(
+	context.Context,
+	string,
+) (chroma.Collection, error) {
+	return nil, nil
+}
+
+func (f *fakeChromaCollection) IndexingStatus(
+	context.Context,
+) (*chroma.IndexingStatus, error) {
+	return nil, nil
+}
+
+func (f *fakeChromaCollection) Close() error {
+	f.closeCalled = true
+	return nil
+}
+
+func TestChromaGoClientResolveCollection(t *testing.T) {
+	created := &fakeChromaCollection{id: "created-id", name: "mem"}
+	got := &fakeChromaCollection{id: "got-id", name: "mem"}
+	root := &fakeChromaRootClient{
+		getOrCreateCollection: created,
+		getCollection:         got,
+	}
+	client := &chromaGoClient{
+		client:      root,
+		collections: map[string]chroma.Collection{},
+	}
+
+	id, err := client.ResolveCollection(
+		context.Background(),
+		"mem",
+		true,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "created-id", id)
+
+	id, err = client.ResolveCollection(
+		context.Background(),
+		"mem",
+		false,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "got-id", id)
+
+	collection, err := client.collectionByID("got-id")
+	require.NoError(t, err)
+	require.Equal(t, "got-id", collection.ID())
+
+	_, err = client.collectionByID("missing")
+	require.Error(t, err)
+}
+
+func TestChromaGoClientCRUDHelpers(t *testing.T) {
+	meta1, err := chroma.NewDocumentMetadataFromMap(map[string]any{
+		metaKeyAppName:     "app",
+		metaKeyUserID:      "u1",
+		metaKeyTopics:      "[\"a\"]",
+		metaKeyCreatedAtNs: int64(1),
+		metaKeyUpdatedAtNs: int64(2),
+	})
+	require.NoError(t, err)
+	meta2, err := chroma.NewDocumentMetadataFromMap(map[string]any{
+		metaKeyAppName:     "app",
+		metaKeyUserID:      "u1",
+		metaKeyTopics:      "[\"b\"]",
+		metaKeyCreatedAtNs: int64(3),
+		metaKeyUpdatedAtNs: int64(4),
+		metaKeyKind:        string(memory.KindFact),
+	})
+	require.NoError(t, err)
+
+	collection := &fakeChromaCollection{
+		id:   "col-1",
+		name: "mem",
+		getResults: []chroma.GetResult{
+			&chroma.GetResultImpl{
+				Ids:       []chroma.DocumentID{"m1"},
+				Documents: chroma.Documents{chroma.NewTextDocument("doc1")},
+				Metadatas: chroma.DocumentMetadatas{meta1},
+			},
+			&chroma.GetResultImpl{
+				Ids:       []chroma.DocumentID{"m2"},
+				Documents: chroma.Documents{chroma.NewTextDocument("doc2")},
+				Metadatas: chroma.DocumentMetadatas{meta2},
+			},
+			&chroma.GetResultImpl{},
+		},
+		queryResult: &chroma.QueryResultImpl{
+			IDLists:        []chroma.DocumentIDs{{"m3"}},
+			DocumentsLists: []chroma.Documents{{chroma.NewTextDocument("doc3")}},
+			MetadatasLists: []chroma.DocumentMetadatas{{meta2}},
+			DistancesLists: []chromaemb.Distances{{0.25}},
+		},
+	}
+	client := &chromaGoClient{
+		collections: map[string]chroma.Collection{
+			collection.id: collection,
+		},
+	}
+
+	err = client.Upsert(
+		context.Background(),
+		collection.id,
+		[]chromaRecord{{
+			ID:       "id-1",
+			Document: "hello",
+			Metadata: map[string]any{
+				metaKeyAppName:     "app",
+				metaKeyUserID:      "u1",
+				metaKeyTopics:      "[]",
+				metaKeyCreatedAtNs: int64(1),
+				metaKeyUpdatedAtNs: int64(2),
+			},
+		}},
+		[][]float64{{1, 2}},
+	)
+	require.NoError(t, err)
+	require.Len(t, collection.upsertOps, 1)
+	require.Equal(
+		t,
+		[]chroma.DocumentID{"id-1"},
+		collection.upsertOps[0].Ids,
+	)
+	require.Len(t, collection.upsertOps[0].Embeddings, 1)
+
+	gotRecords, err := client.Get(
+		context.Background(),
+		collection.id,
+		[]string{"m1"},
+		chromaFilter{AppName: "app", UserID: "u1"},
+		1,
+	)
+	require.NoError(t, err)
+	require.Len(t, gotRecords, 1)
+	require.Equal(t, "m1", gotRecords[0].ID)
+	require.Len(t, collection.getOps, 1)
+	require.Equal(t, 1, collection.getOps[0].Limit)
+	require.NotNil(t, collection.getOps[0].Where)
+
+	allRecords, err := client.Get(
+		context.Background(),
+		collection.id,
+		nil,
+		chromaFilter{AppName: "app", UserID: "u1"},
+		0,
+	)
+	require.NoError(t, err)
+	require.Len(t, allRecords, 1)
+	require.Len(t, collection.getOps, 2)
+	require.Equal(t, defaultCountPageSize, collection.getOps[1].Limit)
+
+	queryRecords, err := client.Query(
+		context.Background(),
+		collection.id,
+		[]float64{3, 4},
+		5,
+		chromaFilter{
+			AppName: "app",
+			UserID:  "u1",
+			Kind:    memory.KindFact,
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, queryRecords, 1)
+	require.Equal(t, "m3", queryRecords[0].ID)
+	require.InDelta(t, 0.8, queryRecords[0].Score, 1e-9)
+	require.Len(t, collection.queryOps, 1)
+	require.Equal(t, 5, collection.queryOps[0].NResults)
+	require.NotNil(t, collection.queryOps[0].Where)
+
+	err = client.Delete(
+		context.Background(),
+		collection.id,
+		[]string{"m1"},
+		chromaFilter{AppName: "app", UserID: "u1"},
+	)
+	require.NoError(t, err)
+	require.Len(t, collection.deleteOps, 1)
+	require.Equal(
+		t,
+		[]chroma.DocumentID{"m1"},
+		collection.deleteOps[0].Ids,
+	)
+
+	count, err := client.Count(
+		context.Background(),
+		collection.id,
+		chromaFilter{AppName: "app", UserID: "u1"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 0, count)
+}
+
+func TestChromaGoClientErrorsAndClose(t *testing.T) {
+	_, err := newChromaGoClient(ServiceOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "baseURL is required")
+
+	httpClient := &http.Client{Timeout: time.Second}
+	realClient, err := newChromaGoClient(ServiceOpts{
+		baseURL:    "http://localhost:8000",
+		authToken:  "token",
+		tenant:     "tenant",
+		database:   "db",
+		httpClient: httpClient,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, realClient)
+	require.NoError(t, realClient.Close())
+
+	collection := &fakeChromaCollection{id: "col-1", name: "mem"}
+	fakeClient := &chromaGoClient{
+		client: &fakeChromaRootClient{},
+		collections: map[string]chroma.Collection{
+			collection.id: collection,
+		},
+	}
+	require.NoError(t, fakeClient.Close())
+
+	collection.upsertErr = errors.New("upsert")
+	err = fakeClient.Upsert(
+		context.Background(),
+		collection.id,
+		[]chromaRecord{{ID: "1"}},
+		[][]float64{{1}},
+	)
+	require.Error(t, err)
+
+	collection.getErr = errors.New("get")
+	_, err = fakeClient.Get(
+		context.Background(),
+		collection.id,
+		nil,
+		chromaFilter{},
+		1,
+	)
+	require.Error(t, err)
+	collection.getErr = nil
+
+	collection.queryErr = errors.New("query")
+	_, err = fakeClient.Query(
+		context.Background(),
+		collection.id,
+		[]float64{1},
+		1,
+		chromaFilter{},
+	)
+	require.Error(t, err)
+
+	collection.deleteErr = errors.New("delete")
+	err = fakeClient.Delete(
+		context.Background(),
+		collection.id,
+		nil,
+		chromaFilter{},
+	)
+	require.Error(t, err)
+}
+
+func TestResultConvertersAndHelpers(t *testing.T) {
+	meta, err := chroma.NewDocumentMetadataFromMap(map[string]any{
+		"string": "value",
+		"int":    int64(7),
+		"array":  []string{"a", "b"},
+	})
+	require.NoError(t, err)
+
+	getRecords := getResultToRecords(&chroma.GetResultImpl{
+		Ids:       []chroma.DocumentID{"id-1"},
+		Documents: chroma.Documents{chroma.NewTextDocument("doc")},
+		Metadatas: chroma.DocumentMetadatas{meta},
+	})
+	require.Len(t, getRecords, 1)
+	require.Equal(t, "doc", getRecords[0].Document)
+	require.Equal(t, "value", getRecords[0].Metadata["string"])
+
+	queryRecords := queryResultToRecords(&chroma.QueryResultImpl{
+		IDLists:        []chroma.DocumentIDs{{"id-2"}},
+		DocumentsLists: []chroma.Documents{{chroma.NewTextDocument("doc2")}},
+		MetadatasLists: []chroma.DocumentMetadatas{{meta}},
+		DistancesLists: []chromaemb.Distances{{0.5}},
+	})
+	require.Len(t, queryRecords, 1)
+	require.Equal(t, "doc2", queryRecords[0].Document)
+	require.InDelta(t, 2.0/3.0, queryRecords[0].Score, 1e-9)
+
+	emptyQuery := queryResultToRecords(&chroma.QueryResultImpl{})
+	require.Empty(t, emptyQuery)
+
+	values := float64SliceToFloat32([]float64{1.5, 2.5})
+	require.Equal(t, []float32{1.5, 2.5}, values)
+
+	metaMap := documentMetadataToMap(meta)
+	require.Equal(t, "value", metaMap["string"])
+
+	where := buildWhereFilter(chromaFilter{
+		AppName: "app",
+		UserID:  "u1",
+		Kind:    memory.KindEpisode,
+	})
+	require.NotNil(t, where)
+
+	client := &chromaGoClient{}
+	opts := client.buildGetOptions(
+		[]string{"id-1"},
+		chromaFilter{AppName: "app", UserID: "u1"},
+		10,
+		20,
+	)
+	op, err := chroma.NewCollectionGetOp(opts...)
+	require.NoError(t, err)
+	require.Equal(t, 10, op.Limit)
+	require.Equal(t, 20, op.Offset)
+
+	require.Equal(t, 1, minInt(1, 2))
+	require.Equal(t, 2, minInt(3, 2))
+}
+
+func TestExecuteKeywordSearchAndMatchesSearchOptions(t *testing.T) {
+	now := time.Now().UTC()
+	after := now.Add(-2 * time.Hour)
+	before := now.Add(2 * time.Hour)
+	client := newMockChromaClient()
+	service := &Service{
+		client:       client,
+		collectionID: client.collection,
+	}
+
+	for _, record := range []chromaRecord{
+		{
+			ID:       "1",
+			Document: "user likes coffee and tea",
+			Metadata: map[string]any{
+				metaKeyAppName:     "app",
+				metaKeyUserID:      "u1",
+				metaKeyTopics:      `["drink"]`,
+				metaKeyCreatedAtNs: now.Add(-time.Hour).UnixNano(),
+				metaKeyUpdatedAtNs: now.UnixNano(),
+				metaKeyEventTimeNs: now.UnixNano(),
+				metaKeyKind:        string(memory.KindFact),
+			},
+		},
+		{
+			ID:       "2",
+			Document: "user likes coffee beans",
+			Metadata: map[string]any{
+				metaKeyAppName:     "app",
+				metaKeyUserID:      "u1",
+				metaKeyTopics:      `["coffee"]`,
+				metaKeyCreatedAtNs: now.Add(-2 * time.Hour).UnixNano(),
+				metaKeyUpdatedAtNs: now.Add(-30 * time.Minute).UnixNano(),
+				metaKeyEventTimeNs: now.Add(-30 * time.Minute).UnixNano(),
+				metaKeyKind:        string(memory.KindFact),
+			},
+		},
+		{
+			ID:       "3",
+			Document: "completely unrelated",
+			Metadata: map[string]any{
+				metaKeyAppName:     "app",
+				metaKeyUserID:      "u1",
+				metaKeyTopics:      `["misc"]`,
+				metaKeyCreatedAtNs: now.UnixNano(),
+				metaKeyUpdatedAtNs: now.UnixNano(),
+			},
+		},
+	} {
+		client.records[record.ID] = record
+	}
+
+	results, err := service.executeKeywordSearch(
+		context.Background(),
+		memory.UserKey{AppName: "app", UserID: "u1"},
+		memory.SearchOptions{
+			Query:      "coffee",
+			Kind:       memory.KindFact,
+			TimeAfter:  &after,
+			TimeBefore: &before,
+		},
+		1,
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "1", results[0].ID)
+	require.Positive(t, results[0].Score)
+
+	entry := &memory.Entry{
+		Memory: &memory.Memory{
+			Kind:      memory.KindFact,
+			EventTime: &now,
+		},
+	}
+	require.False(t, matchesSearchOptions(nil, memory.SearchOptions{}))
+	require.False(t, matchesSearchOptions(&memory.Entry{}, memory.SearchOptions{}))
+	require.False(t, matchesSearchOptions(entry, memory.SearchOptions{
+		Kind: memory.KindEpisode,
+	}))
+
+	late := now.Add(time.Minute)
+	early := now.Add(-time.Minute)
+	require.False(t, matchesSearchOptions(entry, memory.SearchOptions{
+		TimeAfter: &late,
+	}))
+	require.False(t, matchesSearchOptions(entry, memory.SearchOptions{
+		TimeBefore: &early,
+	}))
+	require.True(t, matchesSearchOptions(entry, memory.SearchOptions{
+		Kind:       memory.KindFact,
+		TimeAfter:  &early,
+		TimeBefore: &late,
+	}))
+}
+
+func TestNumericAndLimitHelpers(t *testing.T) {
+	require.Equal(t, int64(1), int64FromAny(1))
+	require.Equal(t, int64(2), int64FromAny(int32(2)))
+	require.Equal(t, int64(3), int64FromAny(int64(3)))
+	require.Equal(t, int64(4), int64FromAny(4.9))
+	require.Equal(t, int64(5), int64FromAny(json.Number("5")))
+	require.Equal(t, int64(6), int64FromAny("6"))
+	require.Zero(t, int64FromAny("bad"))
+
+	require.Equal(t, 7, resolveSearchLimit(3, 7))
+	require.Equal(t, defaultMaxResults, resolveSearchLimit(0, 0))
+	require.Equal(t, 3, resolveSearchLimit(3, 0))
+
+	require.Empty(t, documentMetadataToMap(nil))
+}
+
+func TestChromaGoClientCountPaginationAndCloseNil(t *testing.T) {
+	firstPage := make([]chroma.DocumentID, 0, defaultCountPageSize)
+	for i := 0; i < defaultCountPageSize; i++ {
+		firstPage = append(firstPage, chroma.DocumentID(strconv.Itoa(i)))
+	}
+	collection := &fakeChromaCollection{
+		id:   "col-1",
+		name: "mem",
+		getResults: []chroma.GetResult{
+			&chroma.GetResultImpl{Ids: firstPage},
+			&chroma.GetResultImpl{
+				Ids: []chroma.DocumentID{"tail-1", "tail-2", "tail-3"},
+			},
+		},
+	}
+	client := &chromaGoClient{
+		collections: map[string]chroma.Collection{
+			collection.id: collection,
+		},
+	}
+
+	count, err := client.Count(
+		context.Background(),
+		collection.id,
+		chromaFilter{AppName: "app", UserID: "u1"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, defaultCountPageSize+3, count)
+	require.Len(t, collection.getOps, 2)
+	require.Equal(t, defaultCountPageSize, collection.getOps[1].Offset)
+
+	emptyClient := &chromaGoClient{}
+	require.NoError(t, emptyClient.Close())
+}
+
+func setScores(client *mockChromaClient, scores map[string]float64) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for id, score := range scores {
+		record := client.records[id]
+		record.Score = score
+		client.records[id] = record
+	}
+}
+
+func findIDByMemory(client *mockChromaClient, memoryText string) string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for id, record := range client.records {
+		if record.Document == memoryText {
+			return id
+		}
+	}
+	return ""
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
 }

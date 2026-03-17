@@ -196,6 +196,12 @@ memoryService := memoryinmemory.NewMemoryService(
 | `SQLITE_MEMORY_DSN`       | SQLite DSN                               | `file:memories.db?_busy_timeout=5000` |
 | `SQLITEVEC_MEMORY_DSN`    | SQLiteVec DSN                            | `file:memories_vec.db?_busy_timeout=5000` |
 | `SQLITEVEC_EMBEDDER_MODEL` | SQLiteVec embedder model                 | `text-embedding-3-small`    |
+| `CHROMADB_BASE_URL`       | ChromaDB HTTP endpoint                   | `http://localhost:8000`     |
+| `CHROMADB_AUTH_TOKEN`     | ChromaDB bearer token                    | ``                          |
+| `CHROMADB_TENANT`         | ChromaDB tenant                          | ``                          |
+| `CHROMADB_DATABASE`       | ChromaDB database                        | ``                          |
+| `CHROMADB_COLLECTION`     | ChromaDB collection name                 | `memories`                  |
+| `CHROMADB_EMBEDDER_MODEL` | ChromaDB embedder model                  | `text-embedding-3-small`    |
 | `OPENAI_EMBEDDING_API_KEY` | API key for embedding model (optional)   | (empty)                     |
 | `OPENAI_EMBEDDING_BASE_URL` | Base URL for embedding endpoint (optional) | (empty)                   |
 | `OPENAI_EMBEDDING_MODEL`  | Override embedding model name (optional) | (empty)                     |
@@ -223,7 +229,7 @@ memoryService := memoryinmemory.NewMemoryService(
 | ------------ | ------------------------------------------------------------------------- | ---------------- |
 | `-model`     | Name of the model for chat responses                                      | `deepseek-chat`  |
 | `-ext-model` | Name of the model for memory extraction                                   | Same as `-model` |
-| `-memory`    | Memory service type: `inmemory`, `sqlite`, `sqlitevec`, `redis`, `postgres`, `pgvector`, `mysql` | `inmemory` |
+| `-memory`    | Memory service type: `inmemory`, `sqlite`, `sqlitevec`, `chromadb`, `redis`, `postgres`, `pgvector`, `mysql` | `inmemory` |
 | `-streaming` | Enable streaming mode for responses                                       | `true`           |
 | `-debug`     | Enable debug mode to print messages sent to model                         | `false`          |
 
@@ -260,6 +266,12 @@ go run . -memory sqlite
 export SQLITEVEC_MEMORY_DSN="file:memories_vec.db?_busy_timeout=5000"
 export SQLITEVEC_EMBEDDER_MODEL="text-embedding-3-small"
 go run . -memory sqlitevec
+
+# ChromaDB memory service (local server or Chroma Cloud)
+export CHROMADB_BASE_URL="http://localhost:8000"
+export CHROMADB_COLLECTION="memories"
+export CHROMADB_EMBEDDER_MODEL="text-embedding-3-small"
+go run . -memory chromadb
 
 # Redis memory service (requires Redis server)
 export REDIS_ADDR=localhost:6379
@@ -310,7 +322,7 @@ Usage of ./auto:
   -ext-model string
         Model for memory extraction (defaults to chat model)
   -memory string
-        Memory service type: inmemory, sqlite, sqlitevec, redis, postgres, pgvector, mysql (default "inmemory")
+        Memory service type: inmemory, sqlite, sqlitevec, chromadb, redis, postgres, pgvector, mysql (default "inmemory")
   -model string
         Model for chat responses (default "deepseek-chat")
   -streaming
