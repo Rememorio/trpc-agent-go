@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -860,6 +861,54 @@ func TestHTTPClient_BasicRequests(t *testing.T) {
 
 	err = client.Delete(ctx, "col-1", []string{"m1"}, nil)
 	require.NoError(t, err)
+}
+
+func TestHTTPClient_CountUsesIDsOnlyPagination(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/collections/c/get", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Limit   int            `json:"limit"`
+			Offset  int            `json:"offset"`
+			Where   map[string]any `json:"where"`
+			Include []string       `json:"include"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		require.Equal(t, 1000, payload.Limit)
+		require.Equal(t, map[string]any{"user_id": "u1"}, payload.Where)
+		require.Empty(t, payload.Include)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch payload.Offset {
+		case 0:
+			ids := make([]string, 1000)
+			for i := range ids {
+				ids[i] = strconv.Itoa(i)
+			}
+			body, err := json.Marshal(map[string]any{"ids": ids})
+			require.NoError(t, err)
+			_, _ = w.Write(body)
+		case 1000:
+			_, _ = w.Write([]byte("{\"ids\":[\"1000\",\"1001\",\"1002\"]}"))
+		default:
+			t.Fatalf("unexpected offset %d", payload.Offset)
+		}
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := &httpChromaClient{
+		baseURL:    server.URL,
+		httpClient: &http.Client{Timeout: time.Second},
+	}
+
+	count, err := client.Count(
+		context.Background(),
+		"c",
+		map[string]any{"user_id": "u1"},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1003, count)
 }
 
 func TestHTTPClient_ErrorStatus(t *testing.T) {

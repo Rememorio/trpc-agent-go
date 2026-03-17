@@ -265,7 +265,7 @@ func (s *Service) UpdateMemory(
 			return fmt.Errorf("memory with id %s already exists", newID)
 		}
 	}
-	embedding, err := s.opts.embedder.GetEmbedding(ctx, memoryStr)
+	embedding, err := s.opts.embedder.GetEmbedding(ctx, existing.Memory.Memory)
 	if err != nil {
 		return fmt.Errorf("generate embedding: %w", err)
 	}
@@ -787,6 +787,17 @@ type getRequest struct {
 	Include []string       `json:"include,omitempty"`
 }
 
+type countRequest struct {
+	Where   map[string]any `json:"where,omitempty"`
+	Limit   int            `json:"limit"`
+	Offset  int            `json:"offset,omitempty"`
+	Include []string       `json:"include"`
+}
+
+type countResponse struct {
+	IDs []string `json:"ids"`
+}
+
 type upsertRequest struct {
 	IDs        []string         `json:"ids"`
 	Embeddings [][]float64      `json:"embeddings"`
@@ -951,11 +962,26 @@ func (c *httpChromaClient) Count(
 	collectionID string,
 	where map[string]any,
 ) (int, error) {
-	records, err := c.Get(ctx, collectionID, nil, where, 0)
-	if err != nil {
-		return 0, err
+	const pageSize = 1000
+
+	total := 0
+	path := "/api/v1/collections/" + collectionID + "/get"
+	for offset := 0; ; offset += pageSize {
+		payload := countRequest{
+			Where:   where,
+			Limit:   pageSize,
+			Offset:  offset,
+			Include: []string{},
+		}
+		var resp countResponse
+		if err := c.doJSON(ctx, http.MethodPost, path, payload, &resp); err != nil {
+			return 0, err
+		}
+		total += len(resp.IDs)
+		if len(resp.IDs) < pageSize {
+			return total, nil
+		}
 	}
-	return len(records), nil
 }
 
 func (c *httpChromaClient) Close() error {
