@@ -324,7 +324,16 @@ func TestService_CRUD_Flow(t *testing.T) {
 		UserID:   user.UserID,
 		MemoryID: entries[0].ID,
 	}
-	require.NoError(t, svc.UpdateMemory(ctx, memKey, "alpha-updated", []string{"x"}))
+	updateResult := &memory.UpdateResult{}
+	require.NoError(t, svc.UpdateMemory(
+		ctx,
+		memKey,
+		"alpha-updated",
+		[]string{"x"},
+		memory.WithUpdateResult(updateResult),
+	))
+	require.NotEmpty(t, updateResult.MemoryID)
+	memKey.MemoryID = updateResult.MemoryID
 
 	afterUpdate, err := svc.ReadMemories(ctx, user, 0)
 	require.NoError(t, err)
@@ -438,6 +447,20 @@ func TestService_ErrorBranches(t *testing.T) {
 	assert.Contains(t, err.Error(), "check memory count")
 	client.errCount = nil
 
+	client.errCount = errors.New("count")
+	_, err = svc.SearchMemories(
+		ctx,
+		user,
+		"new",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query: "new",
+			Kind:  memory.KindFact,
+		}),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "count search memories")
+	client.errCount = nil
+
 	client.records["broken"] = chromaRecord{
 		ID:       "broken",
 		Document: "x",
@@ -487,6 +510,207 @@ func TestService_SearchEmpty_AndTools_AutoMemory(t *testing.T) {
 	assert.Contains(t, names, memory.LoadToolName)
 
 	require.NoError(t, svc.EnqueueAutoMemoryJob(context.Background(), nil))
+}
+
+func TestService_EpisodicMetadataRoundTrip(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha",
+		[]string{"travel"},
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &eventTime,
+			Participants: []string{"Alice", "Bob"},
+			Location:     "Kyoto",
+		}),
+	))
+
+	got, err := svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].Memory)
+	require.Equal(t, memory.KindEpisode, got[0].Memory.Kind)
+	require.NotNil(t, got[0].Memory.EventTime)
+	require.Equal(t, eventTime, *got[0].Memory.EventTime)
+	require.Equal(t, []string{"Alice", "Bob"}, got[0].Memory.Participants)
+	require.Equal(t, "Kyoto", got[0].Memory.Location)
+}
+
+func TestService_UpdateMemory_PreservesMetadataWhenNotProvided(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+	eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &eventTime,
+			Participants: []string{"Alice"},
+			Location:     "Kyoto",
+		}),
+	))
+
+	got, err := svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	updateResult := &memory.UpdateResult{}
+	require.NoError(t, svc.UpdateMemory(
+		ctx,
+		memory.Key{
+			AppName:  user.AppName,
+			UserID:   user.UserID,
+			MemoryID: got[0].ID,
+		},
+		"alpha",
+		[]string{"updated"},
+		memory.WithUpdateResult(updateResult),
+	))
+	require.Equal(t, got[0].ID, updateResult.MemoryID)
+
+	got, err = svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, memory.KindEpisode, got[0].Memory.Kind)
+	require.NotNil(t, got[0].Memory.EventTime)
+	require.Equal(t, eventTime, *got[0].Memory.EventTime)
+	require.Equal(t, []string{"Alice"}, got[0].Memory.Participants)
+	require.Equal(t, "Kyoto", got[0].Memory.Location)
+	require.Equal(t, []string{"updated"}, got[0].Memory.Topics)
+}
+
+func TestService_UpdateMemory_SameIdentityKeepsID(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+
+	require.NoError(t, svc.AddMemory(ctx, user, "alpha", []string{"old"}))
+
+	got, err := svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	oldID := got[0].ID
+	updateResult := &memory.UpdateResult{}
+	require.NoError(t, svc.UpdateMemory(
+		ctx,
+		memory.Key{
+			AppName:  user.AppName,
+			UserID:   user.UserID,
+			MemoryID: oldID,
+		},
+		"alpha",
+		[]string{"new"},
+		memory.WithUpdateResult(updateResult),
+	))
+	require.Equal(t, oldID, updateResult.MemoryID)
+
+	got, err = svc.ReadMemories(ctx, user, 1)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, oldID, got[0].ID)
+	require.Equal(t, []string{"new"}, got[0].Memory.Topics)
+}
+
+func TestService_Search_WithEpisodicOptions(t *testing.T) {
+	client := newMockChromaClient()
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dim: 2}),
+		WithMaxResults(10),
+		withChromaClient(client),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	user := memory.UserKey{AppName: "app", UserID: "u1"}
+	day1 := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC)
+
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:      memory.KindEpisode,
+			EventTime: &day2,
+		}),
+	))
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha older",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind:      memory.KindEpisode,
+			EventTime: &day1,
+		}),
+	))
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		user,
+		"alpha fact",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind: memory.KindFact,
+		}),
+	))
+
+	results, err := svc.SearchMemories(
+		ctx,
+		user,
+		"alpha",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:            "alpha",
+			Kind:             memory.KindEpisode,
+			TimeAfter:        &day1,
+			OrderByEventTime: true,
+			KindFallback:     true,
+			MaxResults:       10,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	require.Equal(t, memory.KindEpisode, results[0].Memory.Kind)
+	require.NotNil(t, results[0].Memory.EventTime)
+	require.Equal(t, day1, *results[0].Memory.EventTime)
+	require.Equal(t, memory.KindEpisode, results[1].Memory.Kind)
+	require.NotNil(t, results[1].Memory.EventTime)
+	require.Equal(t, day2, *results[1].Memory.EventTime)
+	require.Equal(t, memory.KindFact, results[2].Memory.Kind)
 }
 
 func TestOptions_CustomToolAndDisable(t *testing.T) {
@@ -544,6 +768,8 @@ func TestHelpers_DecodeAndConvert(t *testing.T) {
 	assert.Equal(t, int64(0), int64FromAny("x"))
 	assert.Equal(t, "s", stringFromAny("s"))
 	assert.Equal(t, "", stringFromAny(1))
+	require.Nil(t, timePtrFromAny(nil))
+	require.NotNil(t, timePtrFromAny(int64(7)))
 }
 
 func TestHTTPClient_BasicRequests(t *testing.T) {

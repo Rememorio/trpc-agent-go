@@ -34,11 +34,15 @@ import (
 const (
 	defaultRequestTimeout = 10 * time.Second
 
-	metaKeyAppName     = "app_name"
-	metaKeyUserID      = "user_id"
-	metaKeyTopics      = "topics"
-	metaKeyCreatedAtNs = "created_at_ns"
-	metaKeyUpdatedAtNs = "updated_at_ns"
+	metaKeyAppName      = "app_name"
+	metaKeyUserID       = "user_id"
+	metaKeyTopics       = "topics"
+	metaKeyKind         = "kind"
+	metaKeyEventTimeNs  = "event_time_ns"
+	metaKeyParticipants = "participants"
+	metaKeyLocation     = "location"
+	metaKeyCreatedAtNs  = "created_at_ns"
+	metaKeyUpdatedAtNs  = "updated_at_ns"
 )
 
 var _ memory.Service = (*Service)(nil)
@@ -173,12 +177,14 @@ func (s *Service) AddMemory(
 	userKey memory.UserKey,
 	memoryStr string,
 	topics []string,
+	opts ...memory.AddOption,
 ) error {
 	if err := userKey.CheckUserKey(); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
 	mem := &memory.Memory{Memory: memoryStr, Topics: topics, LastUpdated: &now}
+	imemory.ApplyMetadata(mem, memory.ResolveAddOptions(opts))
 	memoryID := imemory.GenerateMemoryID(mem, userKey.AppName, userKey.UserID)
 	existing, exists, err := s.getMemoryByID(ctx, userKey, memoryID)
 	if err != nil {
@@ -212,7 +218,7 @@ func (s *Service) AddMemory(
 	record := chromaRecord{
 		ID:       memoryID,
 		Document: memoryStr,
-		Metadata: buildMetadata(userKey, topics, createdAt, now),
+		Metadata: buildMetadata(userKey, mem, createdAt, now),
 	}
 	if err := s.client.Upsert(ctx, s.collectionID,
 		[]chromaRecord{record}, [][]float64{embedding}); err != nil {
@@ -227,6 +233,7 @@ func (s *Service) UpdateMemory(
 	memoryKey memory.Key,
 	memoryStr string,
 	topics []string,
+	opts ...memory.UpdateOption,
 ) error {
 	if err := memoryKey.CheckMemoryKey(); err != nil {
 		return err
@@ -239,6 +246,25 @@ func (s *Service) UpdateMemory(
 	if !exists {
 		return fmt.Errorf("memory with id %s not found", memoryKey.MemoryID)
 	}
+	now := time.Now().UTC()
+	newID := imemory.ApplyMemoryUpdate(
+		existing,
+		memoryKey.AppName,
+		memoryKey.UserID,
+		memoryStr,
+		topics,
+		memory.ResolveUpdateOptions(opts),
+		now,
+	)
+	if newID != memoryKey.MemoryID {
+		_, targetExists, err := s.getMemoryByID(ctx, userKey, newID)
+		if err != nil {
+			return err
+		}
+		if targetExists {
+			return fmt.Errorf("memory with id %s already exists", newID)
+		}
+	}
 	embedding, err := s.opts.embedder.GetEmbedding(ctx, memoryStr)
 	if err != nil {
 		return fmt.Errorf("generate embedding: %w", err)
@@ -246,15 +272,27 @@ func (s *Service) UpdateMemory(
 	if err := s.checkEmbeddingDimensions(embedding); err != nil {
 		return err
 	}
-	now := time.Now().UTC()
 	record := chromaRecord{
-		ID:       memoryKey.MemoryID,
-		Document: memoryStr,
-		Metadata: buildMetadata(userKey, topics, existing.CreatedAt.UTC(), now),
+		ID:       newID,
+		Document: existing.Memory.Memory,
+		Metadata: buildMetadata(userKey, existing.Memory, existing.CreatedAt.UTC(), now),
 	}
 	if err := s.client.Upsert(ctx, s.collectionID,
 		[]chromaRecord{record}, [][]float64{embedding}); err != nil {
 		return fmt.Errorf("upsert memory: %w", err)
+	}
+	if newID != memoryKey.MemoryID {
+		if err := s.client.Delete(
+			ctx,
+			s.collectionID,
+			[]string{memoryKey.MemoryID},
+			userFilter(userKey),
+		); err != nil {
+			return fmt.Errorf("delete replaced memory: %w", err)
+		}
+	}
+	if result := memory.ResolveUpdateResult(opts); result != nil {
+		result.MemoryID = newID
 	}
 	return nil
 }
@@ -323,11 +361,13 @@ func (s *Service) SearchMemories(
 	ctx context.Context,
 	userKey memory.UserKey,
 	query string,
+	opts ...memory.SearchOption,
 ) ([]*memory.Entry, error) {
 	if err := userKey.CheckUserKey(); err != nil {
 		return nil, err
 	}
-	query = strings.TrimSpace(query)
+	searchOpts := memory.ResolveSearchOptions(query, opts)
+	query = strings.TrimSpace(searchOpts.Query)
 	if query == "" {
 		return []*memory.Entry{}, nil
 	}
@@ -338,9 +378,17 @@ func (s *Service) SearchMemories(
 	if err := s.checkEmbeddingDimensions(embedding); err != nil {
 		return nil, err
 	}
-	nResults := s.opts.maxResults
-	if nResults <= 0 {
-		nResults = defaultMaxResults
+	limit := resolveSearchLimit(s.opts.maxResults, searchOpts.MaxResults)
+	nResults := limit
+	if shouldFetchAllSearchCandidates(searchOpts) {
+		count, err := s.client.Count(ctx, s.collectionID, userFilter(userKey))
+		if err != nil {
+			return nil, fmt.Errorf("count search memories: %w", err)
+		}
+		if count == 0 {
+			return []*memory.Entry{}, nil
+		}
+		nResults = count
 	}
 	records, err := s.client.Query(ctx, s.collectionID,
 		embedding, nResults, userFilter(userKey))
@@ -351,7 +399,7 @@ func (s *Service) SearchMemories(
 	if err != nil {
 		return nil, err
 	}
-	return entries, nil
+	return applySearchOptions(entries, searchOpts, limit), nil
 }
 
 // Tools returns the list of available memory tools.
@@ -435,18 +483,33 @@ func sortEntriesByTime(entries []*memory.Entry) {
 
 func buildMetadata(
 	userKey memory.UserKey,
-	topics []string,
+	mem *memory.Memory,
 	createdAt time.Time,
 	updatedAt time.Time,
 ) map[string]any {
-	topicsJSON, _ := json.Marshal(topics)
-	return map[string]any{
+	if mem == nil {
+		mem = &memory.Memory{}
+	}
+	topicsJSON, _ := json.Marshal(mem.Topics)
+	participantsJSON, _ := json.Marshal(mem.Participants)
+	metadata := map[string]any{
 		metaKeyAppName:     userKey.AppName,
 		metaKeyUserID:      userKey.UserID,
 		metaKeyTopics:      string(topicsJSON),
 		metaKeyCreatedAtNs: createdAt.UTC().UnixNano(),
 		metaKeyUpdatedAtNs: updatedAt.UTC().UnixNano(),
 	}
+	if kind := imemory.EffectiveKind(mem); kind != "" {
+		metadata[metaKeyKind] = string(kind)
+	}
+	if mem.EventTime != nil {
+		metadata[metaKeyEventTimeNs] = mem.EventTime.UTC().UnixNano()
+	}
+	metadata[metaKeyParticipants] = string(participantsJSON)
+	if location := strings.TrimSpace(mem.Location); location != "" {
+		metadata[metaKeyLocation] = location
+	}
+	return metadata
 }
 
 func recordsToEntries(
@@ -456,6 +519,10 @@ func recordsToEntries(
 	entries := make([]*memory.Entry, 0, len(records))
 	for _, record := range records {
 		topics, err := parseTopics(record.Metadata[metaKeyTopics])
+		if err != nil {
+			return nil, err
+		}
+		participants, err := parseParticipants(record.Metadata[metaKeyParticipants])
 		if err != nil {
 			return nil, err
 		}
@@ -469,6 +536,7 @@ func recordsToEntries(
 		}
 		createdAt := time.Unix(0, createdAtNs).UTC()
 		updatedAt := time.Unix(0, updatedAtNs).UTC()
+		eventTime := timePtrFromAny(record.Metadata[metaKeyEventTimeNs])
 		appName := stringFromAny(record.Metadata[metaKeyAppName])
 		if appName == "" {
 			appName = fallbackUserKey.AppName
@@ -482,35 +550,48 @@ func recordsToEntries(
 			AppName: appName,
 			UserID:  userID,
 			Memory: &memory.Memory{
-				Memory:      record.Document,
-				Topics:      topics,
-				LastUpdated: &updatedAt,
+				Memory:       record.Document,
+				Topics:       topics,
+				LastUpdated:  &updatedAt,
+				Kind:         memory.Kind(strings.TrimSpace(stringFromAny(record.Metadata[metaKeyKind]))),
+				EventTime:    eventTime,
+				Participants: participants,
+				Location:     strings.TrimSpace(stringFromAny(record.Metadata[metaKeyLocation])),
 			},
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
 		}
+		imemory.NormalizeEntry(entry)
 		entries = append(entries, entry)
 	}
 	return entries, nil
 }
 
 func parseTopics(v any) ([]string, error) {
+	return parseStringListMetadata(metaKeyTopics, v)
+}
+
+func parseParticipants(v any) ([]string, error) {
+	return parseStringListMetadata(metaKeyParticipants, v)
+}
+
+func parseStringListMetadata(field string, v any) ([]string, error) {
 	if v == nil {
 		return nil, nil
 	}
 	s, ok := v.(string)
 	if !ok {
-		return nil, fmt.Errorf("invalid topics type: %T", v)
+		return nil, fmt.Errorf("invalid %s type: %T", field, v)
 	}
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, nil
 	}
-	var topics []string
-	if err := json.Unmarshal([]byte(s), &topics); err != nil {
-		return nil, fmt.Errorf("unmarshal topics: %w", err)
+	var values []string
+	if err := json.Unmarshal([]byte(s), &values); err != nil {
+		return nil, fmt.Errorf("unmarshal %s: %w", field, err)
 	}
-	return topics, nil
+	return values, nil
 }
 
 func int64FromAny(v any) int64 {
@@ -535,12 +616,140 @@ func int64FromAny(v any) int64 {
 	return 0
 }
 
+func timePtrFromAny(v any) *time.Time {
+	ns := int64FromAny(v)
+	if ns == 0 {
+		return nil
+	}
+	t := time.Unix(0, ns).UTC()
+	return &t
+}
+
 func stringFromAny(v any) string {
 	s, ok := v.(string)
 	if !ok {
 		return ""
 	}
 	return s
+}
+
+func resolveSearchLimit(defaultLimit int, override int) int {
+	if override > 0 {
+		return override
+	}
+	if defaultLimit <= 0 {
+		return defaultMaxResults
+	}
+	return defaultLimit
+}
+
+func shouldFetchAllSearchCandidates(opts memory.SearchOptions) bool {
+	return opts.Kind != "" ||
+		opts.TimeAfter != nil ||
+		opts.TimeBefore != nil ||
+		opts.OrderByEventTime ||
+		opts.KindFallback ||
+		opts.Deduplicate
+}
+
+func applySearchOptions(
+	entries []*memory.Entry,
+	opts memory.SearchOptions,
+	limit int,
+) []*memory.Entry {
+	results := cloneEntries(filterEntriesBySearchOptions(entries, opts))
+	if opts.Kind != "" && opts.KindFallback &&
+		len(results) < imemory.MinKindFallbackResults {
+		fallbackOpts := opts
+		fallbackOpts.Kind = ""
+		fallbackOpts.KindFallback = false
+		fallback := cloneEntries(filterEntriesBySearchOptions(entries, fallbackOpts))
+		results = imemory.MergeSearchResults(results, fallback, opts.Kind, limit)
+	}
+	if opts.Deduplicate && len(results) > 1 {
+		results = imemory.DeduplicateResults(results)
+	}
+	if opts.OrderByEventTime {
+		sort.SliceStable(results, func(i, j int) bool {
+			ti := results[i].Memory.EventTime
+			tj := results[j].Memory.EventTime
+			switch {
+			case ti == nil && tj != nil:
+				return false
+			case ti != nil && tj == nil:
+				return true
+			case ti != nil && tj != nil && !ti.Equal(*tj):
+				return ti.Before(*tj)
+			default:
+				return false
+			}
+		})
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[:limit]
+	}
+	return results
+}
+
+func filterEntriesBySearchOptions(
+	entries []*memory.Entry,
+	opts memory.SearchOptions,
+) []*memory.Entry {
+	filtered := make([]*memory.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if !matchesSearchOptions(entry, opts) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func matchesSearchOptions(
+	entry *memory.Entry,
+	opts memory.SearchOptions,
+) bool {
+	if entry == nil || entry.Memory == nil {
+		return false
+	}
+	if opts.Kind != "" && imemory.EffectiveKind(entry.Memory) != opts.Kind {
+		return false
+	}
+	if opts.TimeAfter != nil && entry.Memory.EventTime != nil &&
+		entry.Memory.EventTime.Before(*opts.TimeAfter) {
+		return false
+	}
+	if opts.TimeBefore != nil && entry.Memory.EventTime != nil &&
+		entry.Memory.EventTime.After(*opts.TimeBefore) {
+		return false
+	}
+	return true
+}
+
+func cloneEntries(entries []*memory.Entry) []*memory.Entry {
+	cloned := make([]*memory.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		entryCopy := *entry
+		if entry.Memory != nil {
+			memoryCopy := *entry.Memory
+			memoryCopy.Topics = slices.Clone(entry.Memory.Topics)
+			memoryCopy.Participants = slices.Clone(entry.Memory.Participants)
+			if entry.Memory.LastUpdated != nil {
+				lastUpdated := *entry.Memory.LastUpdated
+				memoryCopy.LastUpdated = &lastUpdated
+			}
+			if entry.Memory.EventTime != nil {
+				eventTime := *entry.Memory.EventTime
+				memoryCopy.EventTime = &eventTime
+			}
+			entryCopy.Memory = &memoryCopy
+		}
+		cloned = append(cloned, &entryCopy)
+	}
+	return cloned
 }
 
 func userFilter(userKey memory.UserKey) map[string]any {
