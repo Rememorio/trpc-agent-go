@@ -20,6 +20,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -104,6 +105,21 @@ func TestContentRequestProcessor_DefaultBehavior(t *testing.T) {
 	if actualContent != expectedContent {
 		t.Errorf("Expected default content '%s', got '%s'", expectedContent, actualContent)
 	}
+}
+
+func TestFilterSubtree(t *testing.T) {
+	const (
+		filterRoot = "filter"
+		filterA    = "filter/a"
+		filterB    = "filter/b"
+	)
+
+	assert.True(t, filterSubtree(filterA, ""))
+	assert.True(t, filterSubtree("", filterA))
+	assert.True(t, filterSubtree(filterA, filterA))
+	assert.True(t, filterSubtree(filterA+"/x", filterA))
+	assert.False(t, filterSubtree(filterRoot, filterA))
+	assert.False(t, filterSubtree(filterB, filterA))
 }
 
 func TestContentRequestProcessor_ToolCalls(t *testing.T) {
@@ -273,6 +289,73 @@ func TestContentRequestProcessor_ToolResponses(t *testing.T) {
 func TestContentRequestProcessor_WithAddSessionSummary_Option(t *testing.T) {
 	p := NewContentRequestProcessor(WithAddSessionSummary(true))
 	assert.True(t, p.AddSessionSummary)
+}
+
+func TestContentRequestProcessor_InjectSystemContextMessage(t *testing.T) {
+	tests := []struct {
+		name             string
+		existingMessages []model.Message
+		summaryContent   string
+		wantMessagesLen  int
+		wantFirstContent string
+	}{
+		{
+			name: "merges into existing non-empty system message",
+			existingMessages: []model.Message{
+				{Role: model.RoleSystem, Content: "You are a helpful assistant."},
+				{Role: model.RoleUser, Content: "Hello"},
+			},
+			summaryContent:   "Previous conversation summary",
+			wantMessagesLen:  2,
+			wantFirstContent: "You are a helpful assistant.\n\nPrevious conversation summary",
+		},
+		{
+			name: "merges into existing empty system message",
+			existingMessages: []model.Message{
+				{Role: model.RoleSystem, Content: ""},
+				{Role: model.RoleUser, Content: "Hello"},
+			},
+			summaryContent:   "Previous conversation summary",
+			wantMessagesLen:  2,
+			wantFirstContent: "Previous conversation summary",
+		},
+		{
+			name: "creates new system message when none exists",
+			existingMessages: []model.Message{
+				{Role: model.RoleUser, Content: "Hello"},
+			},
+			summaryContent:   "Previous conversation summary",
+			wantMessagesLen:  2,
+			wantFirstContent: "Previous conversation summary",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := NewContentRequestProcessor()
+			req := &model.Request{Messages: tt.existingMessages}
+			summaryMsg := model.Message{Role: model.RoleSystem, Content: tt.summaryContent}
+
+			p.injectSystemContextMessage(req, summaryMsg)
+
+			assert.Len(t, req.Messages, tt.wantMessagesLen)
+			assert.Equal(t, tt.wantFirstContent, req.Messages[0].Content)
+		})
+	}
+}
+
+func TestContentRequestProcessor_InjectSystemContextMessage_NonSystemMessage(t *testing.T) {
+	p := NewContentRequestProcessor()
+	req := &model.Request{Messages: []model.Message{
+		{Role: model.RoleUser, Content: "Hello"},
+	}}
+	userMsg := model.Message{Role: model.RoleUser, Content: "Not a system message"}
+
+	p.injectSystemContextMessage(req, userMsg)
+
+	// Non-system messages should be ignored.
+	assert.Len(t, req.Messages, 1)
+	assert.Equal(t, "Hello", req.Messages[0].Content)
 }
 
 func TestContentRequestProcessor_getSessionSummaryMessageWithTime(t *testing.T) {
@@ -2415,7 +2498,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "timestamp before since when not zero time",
+			name: "timestamp before since when not zero time, same invocation excluded",
 			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
 				p := &ContentRequestProcessor{}
 				evt := event.Event{
@@ -2439,7 +2522,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "timestamp equal since when not zero time",
+			name: "timestamp equal since when not zero time, same invocation excluded",
 			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
 				p := &ContentRequestProcessor{}
 				evt := event.Event{
@@ -2456,6 +2539,30 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 						},
 					},
 					Timestamp: sinceTime,
+				}
+				inv := &agent.Invocation{InvocationID: "123", RunOptions: agent.RunOptions{RequestID: "123"}}
+				return p, evt, inv, "", false, sinceTime
+			},
+			expected: false,
+		},
+		{
+			name: "timestamp before since when not zero time, different invocation excluded",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{}
+				evt := event.Event{
+					RequestID:    "123",
+					InvocationID: "other-inv",
+					Version:      event.CurrentVersion,
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{
+								Message: model.Message{
+									Content: "content",
+								},
+							},
+						},
+					},
+					Timestamp: sinceTime.Add(-time.Hour),
 				}
 				inv := &agent.Invocation{InvocationID: "123", RunOptions: agent.RunOptions{RequestID: "123"}}
 				return p, evt, inv, "", false, sinceTime
@@ -2769,6 +2876,69 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			expected: true,
 		},
 		{
+			name: "BranchFilterModeSubtree excludes ancestor filter key",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{
+					BranchFilterMode: BranchFilterModeSubtree,
+				}
+				evt := event.Event{
+					Version:   event.CurrentVersion,
+					FilterKey: "filter",
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{Content: "test content"}},
+						},
+					},
+					Timestamp: baseTime,
+				}
+				inv := &agent.Invocation{}
+				return p, evt, inv, "filter/a", true, baseTime
+			},
+			expected: false,
+		},
+		{
+			name: "BranchFilterModeSubtree includes descendants",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{
+					BranchFilterMode: BranchFilterModeSubtree,
+				}
+				evt := event.Event{
+					Version:   event.CurrentVersion,
+					FilterKey: "filter/a",
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{Content: "test content"}},
+						},
+					},
+					Timestamp: baseTime,
+				}
+				inv := &agent.Invocation{}
+				return p, evt, inv, "filter", true, baseTime
+			},
+			expected: true,
+		},
+		{
+			name: "BranchFilterModeSubtree excludes siblings",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{
+					BranchFilterMode: BranchFilterModeSubtree,
+				}
+				evt := event.Event{
+					Version:   event.CurrentVersion,
+					FilterKey: "filter/b",
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{Content: "test content"}},
+						},
+					},
+					Timestamp: baseTime,
+				}
+				inv := &agent.Invocation{}
+				return p, evt, inv, "filter/a", true, baseTime
+			},
+			expected: false,
+		},
+		{
 			name: "all conditions satisfied",
 			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
 				p := &ContentRequestProcessor{
@@ -2919,7 +3089,7 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "mid-turn summary: assistant event before since with same request ID excluded",
+			name: "mid-turn summary: assistant event before since with same request ID but no invocation ID excluded",
 			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
 				p := &ContentRequestProcessor{}
 				evt := event.Event{
@@ -2943,6 +3113,103 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 						Content: "user request",
 						Role:    model.RoleUser,
 					},
+				}
+				return p, evt, inv, "", false, sinceTime
+			},
+			expected: false,
+		},
+		{
+			name: "intra-run summary: assistant event before since with same invocation excluded",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{}
+				evt := event.Event{
+					RequestID:    "req1",
+					InvocationID: "inv1",
+					Version:      event.CurrentVersion,
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{
+								Content: "assistant tool call",
+								Role:    model.RoleAssistant,
+							}},
+						},
+					},
+					Timestamp: sinceTime.Add(-time.Hour),
+				}
+				inv := agent.NewInvocation(
+					agent.WithInvocationID("inv1"),
+					agent.WithInvocationRunOptions(agent.RunOptions{
+						RequestID: "req1",
+					}),
+				)
+				inv.Message = model.Message{
+					Content: "user request",
+					Role:    model.RoleUser,
+				}
+				return p, evt, inv, "", false, sinceTime
+			},
+			expected: false,
+		},
+		{
+			name: "intra-run summary: tool result before since with same invocation excluded",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{}
+				evt := event.Event{
+					RequestID:    "req1",
+					InvocationID: "inv1",
+					Version:      event.CurrentVersion,
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{
+								Content: `{"result":"ok"}`,
+								Role:    model.RoleTool,
+								ToolID:  "call-1",
+							}},
+						},
+					},
+					Timestamp: sinceTime.Add(-time.Hour),
+				}
+				inv := agent.NewInvocation(
+					agent.WithInvocationID("inv1"),
+					agent.WithInvocationRunOptions(agent.RunOptions{
+						RequestID: "req1",
+					}),
+				)
+				inv.Message = model.Message{
+					Content: "user request",
+					Role:    model.RoleUser,
+				}
+				return p, evt, inv, "", false, sinceTime
+			},
+			expected: false,
+		},
+		{
+			name: "intra-run summary: assistant event from different invocation excluded",
+			setup: func() (*ContentRequestProcessor, event.Event, *agent.Invocation, string, bool, time.Time) {
+				p := &ContentRequestProcessor{}
+				evt := event.Event{
+					RequestID:    "req1",
+					InvocationID: "inv-other",
+					Version:      event.CurrentVersion,
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{Message: model.Message{
+								Content: "other invocation reply",
+								Role:    model.RoleAssistant,
+							}},
+						},
+					},
+					Timestamp: sinceTime.Add(-time.Hour),
+				}
+				inv := agent.NewInvocation(
+					agent.WithInvocationID("inv1"),
+					agent.WithInvocationRunOptions(agent.RunOptions{
+						RequestID: "req1",
+					}),
+				)
+				inv.Message = model.Message{
+					Content: "user request",
+					Role:    model.RoleUser,
 				}
 				return p, evt, inv, "", false, sinceTime
 			},
@@ -3022,6 +3289,134 @@ func TestContentRequestProcessor_shouldIncludeEvent(t *testing.T) {
 				t.Errorf("shouldIncludeEvent() = %v, want %v", isInvocationMessage, tt.isInvocationMessage)
 			}
 		})
+	}
+}
+
+func TestContentRequestProcessor_getIncrementMessages_SummaryPreservesToolState(t *testing.T) {
+	baseTime := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	userMsg := model.NewUserMessage("run the task")
+	toolCall1 := model.Message{
+		Role:    model.RoleAssistant,
+		Content: "Starting with step 1.",
+		ToolCalls: []model.ToolCall{{
+			Type: "function",
+			ID:   "call_1",
+			Function: model.FunctionDefinitionParam{
+				Name:      "step_worker",
+				Arguments: []byte(`{"step":1}`),
+			},
+		}},
+	}
+	toolResult1 := model.Message{
+		Role:     model.RoleTool,
+		ToolID:   "call_1",
+		ToolName: "step_worker",
+		Content:  "step-1-large-result",
+	}
+	toolCall2 := model.Message{
+		Role:    model.RoleAssistant,
+		Content: "Proceeding to step 2.",
+		ToolCalls: []model.ToolCall{{
+			Type: "function",
+			ID:   "call_2",
+			Function: model.FunctionDefinitionParam{
+				Name:      "step_worker",
+				Arguments: []byte(`{"step":2}`),
+			},
+		}},
+	}
+	toolResult2 := model.Message{
+		Role:     model.RoleTool,
+		ToolID:   "call_2",
+		ToolName: "step_worker",
+		Content:  "step-2-result",
+	}
+
+	sess := &session.Session{
+		EventMu: sync.RWMutex{},
+		Events: []event.Event{
+			{
+				Author:       "user",
+				RequestID:    "req1",
+				InvocationID: "inv1",
+				Timestamp:    baseTime,
+				Version:      event.CurrentVersion,
+				Response: &model.Response{
+					Done:    true,
+					Choices: []model.Choice{{Index: 0, Message: userMsg}},
+				},
+			},
+			{
+				Author:       "test-agent",
+				RequestID:    "req1",
+				InvocationID: "inv1",
+				Timestamp:    baseTime.Add(time.Second),
+				Version:      event.CurrentVersion,
+				Response: &model.Response{
+					Done:    true,
+					Choices: []model.Choice{{Index: 0, Message: toolCall1}},
+				},
+			},
+			{
+				Author:       "test-agent",
+				RequestID:    "req1",
+				InvocationID: "inv1",
+				Timestamp:    baseTime.Add(2 * time.Second),
+				Version:      event.CurrentVersion,
+				Response: &model.Response{
+					Done:    true,
+					Object:  model.ObjectTypeToolResponse,
+					Choices: []model.Choice{{Index: 0, Message: toolResult1}},
+				},
+			},
+			{
+				Author:       "test-agent",
+				RequestID:    "req1",
+				InvocationID: "inv1",
+				Timestamp:    baseTime.Add(3 * time.Second),
+				Version:      event.CurrentVersion,
+				Response: &model.Response{
+					Done:    true,
+					Choices: []model.Choice{{Index: 0, Message: toolCall2}},
+				},
+			},
+			{
+				Author:       "test-agent",
+				RequestID:    "req1",
+				InvocationID: "inv1",
+				Timestamp:    baseTime.Add(4 * time.Second),
+				Version:      event.CurrentVersion,
+				Response: &model.Response{
+					Done:    true,
+					Object:  model.ObjectTypeToolResponse,
+					Choices: []model.Choice{{Index: 0, Message: toolResult2}},
+				},
+			},
+		},
+	}
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationID("inv1"),
+		agent.WithInvocationMessage(userMsg),
+		agent.WithInvocationRunOptions(agent.RunOptions{RequestID: "req1"}),
+	)
+	inv.AgentName = "test-agent"
+
+	p := NewContentRequestProcessor(WithAddSessionSummary(true))
+	messages := p.getIncrementMessages(inv, baseTime.Add(2*time.Second))
+
+	if assert.Len(t, messages, 5) {
+		assert.True(t, model.MessagesEqual(userMsg, messages[0]))
+		assert.Equal(t, toolCall1.Content, messages[1].Content)
+		assert.Equal(t, toolCall1.ToolCalls, messages[1].ToolCalls)
+		assert.Equal(t, model.RoleTool, messages[2].Role)
+		assert.Equal(t, toolResult1.ToolID, messages[2].ToolID)
+		assert.Equal(t, toolResult1.ToolName, messages[2].ToolName)
+		assert.Equal(t, compactedToolResultPlaceholder, messages[2].Content)
+		assert.Equal(t, toolCall2.Content, messages[3].Content)
+		assert.Equal(t, toolCall2.ToolCalls, messages[3].ToolCalls)
+		assert.True(t, model.MessagesEqual(toolResult2, messages[4]))
 	}
 }
 
@@ -4004,4 +4399,151 @@ func TestContentRequestProcessor_AnnotatesUserFileInputs(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 2, fileParts)
+}
+
+func TestContentRequestProcessor_AnnotatesUserFileInputs_ArtifactRef(t *testing.T) {
+	p := NewContentRequestProcessor()
+
+	const (
+		invocationID = "inv"
+		fileARef     = "artifact://uploads/a.pdf@0"
+		fileBRef     = "artifact://uploads/b.pdf@0"
+	)
+
+	userMsg := model.Message{
+		Role: model.RoleUser,
+		ContentParts: []model.ContentPart{
+			{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					FileID: fileARef,
+				},
+			},
+			{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					FileID: fileBRef,
+				},
+			},
+		},
+	}
+	ev := event.NewResponseEvent(invocationID, "user", &model.Response{
+		Choices: []model.Choice{{Message: userMsg}},
+	})
+	inv := &agent.Invocation{
+		InvocationID: invocationID,
+		AgentName:    "agent",
+		Session: &session.Session{
+			Events: []event.Event{*ev},
+		},
+	}
+	req := &model.Request{}
+	ch := make(chan *event.Event, 1)
+	p.ProcessRequest(context.Background(), inv, req, ch)
+
+	if !assert.Len(t, req.Messages, 1) {
+		return
+	}
+	msg := req.Messages[0]
+	assert.Equal(t, model.RoleUser, msg.Role)
+
+	if !assert.GreaterOrEqual(t, len(msg.ContentParts), 3) {
+		return
+	}
+	first := msg.ContentParts[0]
+	assert.Equal(t, model.ContentTypeText, first.Type)
+	if assert.NotNil(t, first.Text) {
+		assert.Contains(t, *first.Text, attachedFilesAnnotationPrefix)
+		assert.Contains(t, *first.Text, "a.pdf")
+		assert.Contains(t, *first.Text, "b.pdf")
+		assert.NotContains(t, *first.Text, "upload_1")
+	}
+
+	fileParts := 0
+	for _, part := range msg.ContentParts {
+		if part.Type == model.ContentTypeFile && part.File != nil {
+			fileParts++
+		}
+	}
+	assert.Equal(t, 2, fileParts)
+}
+
+func TestContentRequestProcessor_AnnotatesUserFileInputs_HostRef(t *testing.T) {
+	p := NewContentRequestProcessor()
+
+	const invocationID = "inv"
+
+	userMsg := model.Message{
+		Role: model.RoleUser,
+		ContentParts: []model.ContentPart{
+			{
+				Type: model.ContentTypeFile,
+				File: &model.File{
+					Name:     "report.pdf",
+					FileID:   "host:///tmp/openclaw/report.pdf",
+					MimeType: "application/pdf",
+				},
+			},
+		},
+	}
+	ev := event.NewResponseEvent(invocationID, "user", &model.Response{
+		Choices: []model.Choice{{Message: userMsg}},
+	})
+	inv := &agent.Invocation{
+		InvocationID: invocationID,
+		AgentName:    "agent",
+		Session: &session.Session{
+			Events: []event.Event{*ev},
+		},
+	}
+	req := &model.Request{}
+	ch := make(chan *event.Event, 1)
+	p.ProcessRequest(context.Background(), inv, req, ch)
+
+	if !assert.Len(t, req.Messages, 1) {
+		return
+	}
+	first := req.Messages[0].ContentParts[0]
+	if assert.NotNil(t, first.Text) {
+		assert.Contains(t, *first.Text, "report.pdf")
+		assert.Contains(t, *first.Text, "application/pdf")
+		assert.NotContains(t, *first.Text, "/tmp/openclaw/report.pdf")
+	}
+}
+
+func TestFileNameFromArtifactRef_EdgeCases(t *testing.T) {
+	t.Run("non-artifact ref returns empty", func(t *testing.T) {
+		assert.Equal(t, "", fileNameFromArtifactRef("file-123"))
+	})
+
+	t.Run("name with @ is supported", func(t *testing.T) {
+		ref := fileref.ArtifactPrefix + "uploads/a@x"
+		assert.Equal(t, "a@x", fileNameFromArtifactRef(ref))
+	})
+
+	t.Run("name with @ + version is supported", func(t *testing.T) {
+		ref := fileref.ArtifactPrefix +
+			"uploads/skey=@crypt_abc.jpeg@0"
+		assert.Equal(t, "skey=@crypt_abc.jpeg",
+			fileNameFromArtifactRef(ref))
+	})
+
+	t.Run("invalid base returns empty", func(t *testing.T) {
+		ref := fileref.ArtifactPrefix + "..@0"
+		assert.Equal(t, "", fileNameFromArtifactRef(ref))
+	})
+}
+
+func TestAnnotationRefDisplay_EdgeCases(t *testing.T) {
+	t.Run("absolute path is hidden", func(t *testing.T) {
+		assert.Equal(t, "", annotationRefDisplay("/tmp/a.pdf"))
+	})
+
+	t.Run("host ref stays hidden", func(t *testing.T) {
+		assert.Equal(t, "", annotationRefDisplay("host:///tmp/a.pdf"))
+	})
+
+	t.Run("provider file id stays hidden", func(t *testing.T) {
+		assert.Equal(t, "", annotationRefDisplay("file-123"))
+	})
 }

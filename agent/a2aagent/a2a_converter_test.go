@@ -10,6 +10,7 @@
 package a2aagent
 
 import (
+	"encoding/json"
 	"testing"
 
 	"trpc.group/trpc-go/trpc-a2a-go/protocol"
@@ -314,18 +315,8 @@ func TestDefaultA2AEventConverter_ConvertStreamingToEvents(t *testing.T) {
 				if err != nil {
 					t.Errorf("expected no error, got %v", err)
 				}
-				if len(events) == 0 {
-					t.Fatal("expected at least one event, got none")
-				}
-				evt := events[0]
-				if evt.Response == nil {
-					t.Fatal("expected response, got nil")
-				}
-				if evt.Response.ID != "status-1" {
-					t.Errorf("expected response ID 'status-1', got %s", evt.Response.ID)
-				}
-				if evt.Response.Object != model.ObjectTypeChatCompletionChunk {
-					t.Errorf("expected response object %s, got %s", model.ObjectTypeChatCompletionChunk, evt.Response.Object)
+				if len(events) != 0 {
+					t.Fatalf("expected no events (status updates are filtered), got %d", len(events))
 				}
 			},
 		},
@@ -476,8 +467,20 @@ func TestDefaultEventA2AConverter_ConvertToA2AMessage(t *testing.T) {
 				if len(msg.Parts) != 1 {
 					t.Errorf("expected 1 part, got %d", len(msg.Parts))
 				}
-				if _, ok := msg.Parts[0].(protocol.FilePart); !ok {
-					t.Error("expected FilePart")
+				filePart, ok := msg.Parts[0].(*protocol.FilePart)
+				if !ok {
+					t.Error("expected *FilePart")
+					return
+				}
+				if got := filePart.Metadata[ia2a.FilePartMetadataContentTypeKey]; got != ia2a.FilePartMetadataContentTypeImage {
+					t.Errorf("expected content_type %q, got %#v", ia2a.FilePartMetadataContentTypeImage, got)
+				}
+				fileBytes, ok := filePart.File.(*protocol.FileWithBytes)
+				if !ok {
+					t.Fatalf("expected *protocol.FileWithBytes, got %T", filePart.File)
+				}
+				if fileBytes.MimeType == nil || *fileBytes.MimeType != "png" {
+					t.Errorf("expected mime type png, got %#v", fileBytes.MimeType)
 				}
 			},
 		},
@@ -506,8 +509,20 @@ func TestDefaultEventA2AConverter_ConvertToA2AMessage(t *testing.T) {
 				if len(msg.Parts) != 1 {
 					t.Errorf("expected 1 part, got %d", len(msg.Parts))
 				}
-				if _, ok := msg.Parts[0].(protocol.FilePart); !ok {
-					t.Error("expected FilePart")
+				filePart, ok := msg.Parts[0].(*protocol.FilePart)
+				if !ok {
+					t.Error("expected *FilePart")
+					return
+				}
+				if got := filePart.Metadata[ia2a.FilePartMetadataContentTypeKey]; got != ia2a.FilePartMetadataContentTypeImage {
+					t.Errorf("expected content_type %q, got %#v", ia2a.FilePartMetadataContentTypeImage, got)
+				}
+				fileURI, ok := filePart.File.(*protocol.FileWithURI)
+				if !ok {
+					t.Fatalf("expected *protocol.FileWithURI, got %T", filePart.File)
+				}
+				if fileURI.URI != "https://example.com/image.jpg" {
+					t.Errorf("expected URI https://example.com/image.jpg, got %s", fileURI.URI)
 				}
 			},
 		},
@@ -536,8 +551,13 @@ func TestDefaultEventA2AConverter_ConvertToA2AMessage(t *testing.T) {
 				if len(msg.Parts) != 1 {
 					t.Errorf("expected 1 part, got %d", len(msg.Parts))
 				}
-				if _, ok := msg.Parts[0].(protocol.FilePart); !ok {
-					t.Error("expected FilePart")
+				filePart, ok := msg.Parts[0].(*protocol.FilePart)
+				if !ok {
+					t.Error("expected *FilePart")
+					return
+				}
+				if got := filePart.Metadata[ia2a.FilePartMetadataContentTypeKey]; got != ia2a.FilePartMetadataContentTypeAudio {
+					t.Errorf("expected content_type %q, got %#v", ia2a.FilePartMetadataContentTypeAudio, got)
 				}
 			},
 		},
@@ -567,8 +587,13 @@ func TestDefaultEventA2AConverter_ConvertToA2AMessage(t *testing.T) {
 				if len(msg.Parts) != 1 {
 					t.Errorf("expected 1 part, got %d", len(msg.Parts))
 				}
-				if _, ok := msg.Parts[0].(protocol.FilePart); !ok {
-					t.Error("expected FilePart")
+				filePart, ok := msg.Parts[0].(*protocol.FilePart)
+				if !ok {
+					t.Error("expected *FilePart")
+					return
+				}
+				if got := filePart.Metadata[ia2a.FilePartMetadataContentTypeKey]; got != ia2a.FilePartMetadataContentTypeFile {
+					t.Errorf("expected content_type %q, got %#v", ia2a.FilePartMetadataContentTypeFile, got)
 				}
 			},
 		},
@@ -1036,6 +1061,12 @@ func TestProcessFunctionResponse(t *testing.T) {
 		validateFunc func(t *testing.T, content, id, name string)
 	}
 
+	unmarshalableResponse := struct {
+		Ch chan int
+	}{
+		Ch: make(chan int),
+	}
+
 	tests := []testCase{
 		{
 			name: "valid tool response",
@@ -1090,15 +1121,51 @@ func TestProcessFunctionResponse(t *testing.T) {
 			},
 		},
 		{
-			name: "non-string response",
+			name: "numeric response marshals to json",
 			dataPart: &protocol.DataPart{
 				Data: map[string]any{
 					"response": 12345,
 				},
 			},
 			validateFunc: func(t *testing.T, content, id, name string) {
+				if content != "12345" {
+					t.Errorf("expected JSON number content, got %s", content)
+				}
+			},
+		},
+		{
+			name: "object response marshals to json",
+			dataPart: &protocol.DataPart{
+				Data: map[string]any{
+					"response": map[string]any{
+						"city": "Beijing",
+						"temp": 26,
+					},
+				},
+			},
+			validateFunc: func(t *testing.T, content, id, name string) {
+				var got map[string]any
+				if err := json.Unmarshal([]byte(content), &got); err != nil {
+					t.Fatalf("expected valid JSON object content, got %q: %v", content, err)
+				}
+				if got["city"] != "Beijing" {
+					t.Errorf("expected city Beijing, got %#v", got["city"])
+				}
+				if got["temp"] != float64(26) {
+					t.Errorf("expected temp 26, got %#v", got["temp"])
+				}
+			},
+		},
+		{
+			name: "unmarshalable response is skipped",
+			dataPart: &protocol.DataPart{
+				Data: map[string]any{
+					"response": unmarshalableResponse,
+				},
+			},
+			validateFunc: func(t *testing.T, content, id, name string) {
 				if content != "" {
-					t.Errorf("expected empty content for non-string response, got %s", content)
+					t.Errorf("expected empty content for unmarshalable response, got %q", content)
 				}
 			},
 		},
@@ -2266,7 +2333,7 @@ func TestBuildStreamingResponse_ToolResponses(t *testing.T) {
 	if resp == nil {
 		t.Fatalf("expected response, got nil")
 	}
-	if resp.Object != model.ObjectTypeChatCompletion {
+	if resp.Object != model.ObjectTypeToolResponse {
 		t.Fatalf("unexpected object type: %s", resp.Object)
 	}
 	if len(resp.Choices) != 1 {
@@ -2483,5 +2550,158 @@ func TestConvertA2ARoleToModelRole(t *testing.T) {
 				t.Errorf("convertA2ARoleToModelRole(%v) = %v, want %v", tt.role, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestAppendContentPart_UnknownType(t *testing.T) {
+	parts := appendContentPart(nil, model.ContentPart{Type: "unknown"})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for unknown content type, got %d", len(parts))
+	}
+}
+
+func TestAppendTextPart_NilText(t *testing.T) {
+	parts := appendTextPart(nil, model.ContentPart{Type: model.ContentTypeText, Text: nil})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for nil Text, got %d", len(parts))
+	}
+}
+
+func TestAppendImagePart_NilImage(t *testing.T) {
+	parts := appendImagePart(nil, model.ContentPart{Type: model.ContentTypeImage, Image: nil})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for nil Image, got %d", len(parts))
+	}
+}
+
+func TestAppendImagePart_NoDataNoURL(t *testing.T) {
+	parts := appendImagePart(nil, model.ContentPart{
+		Type:  model.ContentTypeImage,
+		Image: &model.Image{},
+	})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for Image with no data and no URL, got %d", len(parts))
+	}
+}
+
+func TestAppendImagePart_WithURL(t *testing.T) {
+	parts := appendImagePart(nil, model.ContentPart{
+		Type: model.ContentTypeImage,
+		Image: &model.Image{
+			URL:    "https://example.com/img.png",
+			Format: "image/png",
+		},
+	})
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	if parts[0].GetKind() != protocol.KindFile {
+		t.Fatalf("expected file kind, got %s", parts[0].GetKind())
+	}
+}
+
+func TestAppendAudioPart_NilAudio(t *testing.T) {
+	parts := appendAudioPart(nil, model.ContentPart{Type: model.ContentTypeAudio, Audio: nil})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for nil Audio, got %d", len(parts))
+	}
+}
+
+func TestAppendAudioPart_NilData(t *testing.T) {
+	parts := appendAudioPart(nil, model.ContentPart{
+		Type:  model.ContentTypeAudio,
+		Audio: &model.Audio{Data: nil, Format: "wav"},
+	})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for Audio with nil Data, got %d", len(parts))
+	}
+}
+
+func TestAppendAudioPart_WithData(t *testing.T) {
+	audioData := []byte("fake-audio-data")
+	parts := appendAudioPart(nil, model.ContentPart{
+		Type:  model.ContentTypeAudio,
+		Audio: &model.Audio{Data: audioData, Format: "wav"},
+	})
+	if len(parts) != 1 {
+		t.Fatalf("expected 1 part, got %d", len(parts))
+	}
+	if parts[0].GetKind() != protocol.KindFile {
+		t.Fatalf("expected file kind, got %s", parts[0].GetKind())
+	}
+}
+
+func TestAppendFilePart_NilFile(t *testing.T) {
+	parts := appendFilePart(nil, model.ContentPart{Type: model.ContentTypeFile, File: nil})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for nil File, got %d", len(parts))
+	}
+}
+
+func TestAppendFilePart_EmptyData(t *testing.T) {
+	parts := appendFilePart(nil, model.ContentPart{
+		Type: model.ContentTypeFile,
+		File: &model.File{Name: "test.txt", Data: nil},
+	})
+	if len(parts) != 0 {
+		t.Fatalf("expected empty parts for File with empty Data, got %d", len(parts))
+	}
+}
+
+func TestProcessFunctionCall_NonMapData(t *testing.T) {
+	dataPart := protocol.NewDataPart("not-a-map")
+	result := processFunctionCall(&dataPart)
+	if result != nil {
+		t.Fatalf("expected nil for non-map data, got %+v", result)
+	}
+}
+
+func TestProcessFunctionCall_ArgsAsMap(t *testing.T) {
+	dataPart := protocol.NewDataPart(map[string]any{
+		ia2a.ToolCallFieldID:   "call-1",
+		ia2a.ToolCallFieldType: "function",
+		ia2a.ToolCallFieldName: "my_tool",
+		ia2a.ToolCallFieldArgs: map[string]any{"key": "value"},
+	})
+	result := processFunctionCall(&dataPart)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Function.Name != "my_tool" {
+		t.Errorf("unexpected function name: %s", result.Function.Name)
+	}
+	if string(result.Function.Arguments) != `{"key":"value"}` {
+		t.Errorf("unexpected arguments: %s", string(result.Function.Arguments))
+	}
+}
+
+func TestProcessFunctionCall_ArgsUnexpectedType(t *testing.T) {
+	dataPart := protocol.NewDataPart(map[string]any{
+		ia2a.ToolCallFieldName: "my_tool",
+		ia2a.ToolCallFieldArgs: 12345,
+	})
+	result := processFunctionCall(&dataPart)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(result.Function.Arguments) != 0 {
+		t.Errorf("expected empty arguments for unexpected type, got %s", string(result.Function.Arguments))
+	}
+}
+
+func TestBuildNonStreamingResponse_EmptyParseResult(t *testing.T) {
+	result := &parseResult{}
+	resp := buildNonStreamingResponse("msg-1", result, protocol.MessageRoleAgent)
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("expected 1 choice, got %d", len(resp.Choices))
+	}
+	if resp.Choices[0].Message.Role != model.RoleAssistant {
+		t.Errorf("expected RoleAssistant, got %s", resp.Choices[0].Message.Role)
+	}
+	if resp.Choices[0].Message.Content != "" {
+		t.Errorf("expected empty content, got %q", resp.Choices[0].Message.Content)
 	}
 }

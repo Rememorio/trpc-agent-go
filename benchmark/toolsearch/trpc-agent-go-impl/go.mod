@@ -5,6 +5,8 @@ go 1.24.1
 replace (
 	trpc.group/trpc-go/trpc-agent-go => ../../../
 	trpc.group/trpc-go/trpc-agent-go/evaluation => ../../../evaluation
+	trpc.group/trpc-go/trpc-agent-go/model/anthropic => ../../../model/anthropic
+	trpc.group/trpc-go/trpc-agent-go/model/gemini => ../../../model/gemini
 	trpc.group/trpc-go/trpc-agent-go/model/ollama => ../../../model/ollama
 	trpc.group/trpc-go/trpc-agent-go/model/provider => ../../../model/provider
 )
@@ -23,6 +25,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.9.1 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

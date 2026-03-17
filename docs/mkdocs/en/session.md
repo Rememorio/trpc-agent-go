@@ -554,21 +554,61 @@ defer sessionService.Close()
 
 ## Redis Storage
 
-Suitable for production environments and distributed applications, provides high performance and auto-expiration capabilities.
+Suitable for production environments and distributed applications, provides high performance and auto-expiration capabilities. The Redis Session Service internally maintains two storage engines: **HashIdx** (new, default) and **ZSet** (legacy), with smooth migration between them via CompatMode.
 
 ### Configuration Options
 
+**Connection Configuration:**
+
 - **`WithRedisClientURL(url string)`**: Create Redis client via URL. Format: `redis://[username:password@]host:port[/database]`.
 - **`WithRedisInstance(instanceName string)`**: Use pre-configured Redis instance. Note: `WithRedisClientURL` has higher priority than `WithRedisInstance`.
+- **`WithExtraOptions(extraOptions ...interface{})`**: Set extra options for Redis client, passed to the underlying client builder.
+
+**Session Configuration:**
+
 - **`WithSessionEventLimit(limit int)`**: Set maximum number of events stored per session. Default is 1000.
-- **`WithSessionTTL(ttl time.Duration)`**: Set TTL for session state and events. Default is 0 (no expiration).
+- **`WithSessionTTL(ttl time.Duration)`**: Set TTL for session state and events. Default is 0 (no expiration). Negative values are treated as 0.
 - **`WithAppStateTTL(ttl time.Duration)`**: Set TTL for application-level state. Default is 0 (no expiration).
 - **`WithUserStateTTL(ttl time.Duration)`**: Set TTL for user-level state. Default is 0 (no expiration).
-- **`WithSummarizer(s summary.SessionSummarizer)`**: Inject session summarizer.
+- **`WithKeyPrefix(prefix string)`**: Set Redis key prefix. All keys will be prefixed with `prefix:`. Default is empty (no prefix). Useful when multiple applications share the same Redis instance.
+- **`WithCompatMode(mode CompatMode)`**: Set storage compatibility mode. Options: `CompatModeNone`, `CompatModeLegacy` (default), `CompatModeTransition`. See [Storage Format & Version Migration](#storage-format-version-migration) below.
+
+**Async Persistence Configuration:**
+
+- **`WithEnableAsyncPersist(enable bool)`**: Enable async persistence. Default is `false`. When enabled, `AppendEvent` and `AppendTrackEvent` write events to internal channels, which are consumed by background workers for Redis persistence, reducing request latency.
+- **`WithAsyncPersisterNum(num int)`**: Number of async persistence workers. Default is 10. Each worker handles one Event channel and one TrackEvent channel, with a channel buffer size of 100.
+
+**Summary Configuration:**
+
+- **`WithSummarizer(s summary.SessionSummarizer)`**: Inject session summarizer. Summary-related operations are no-ops when not set.
 - **`WithAsyncSummaryNum(num int)`**: Set number of summary processing workers. Default is 3.
 - **`WithSummaryQueueSize(size int)`**: Set summary task queue size. Default is 100.
-- **`WithKeyPrefix(prefix string)`**: Set Redis key prefix. All keys will be prefixed with `prefix:`. Default is empty (no prefix).
-- **`WithExtraOptions(extraOptions ...interface{})`**: Set extra options for Redis client.
+- **`WithSummaryJobTimeout(timeout time.Duration)`**: Set timeout for a single summary job. Default is 60 seconds.
+
+**Tracing Configuration:**
+
+- **`WithEnableTracing(enable bool)`**: Enable OpenTelemetry tracing for Redis session operations. Default is `false`. When enabled, operations like `CreateSession`, `GetSession`, `AppendEvent`, `DeleteSession`, `AppendTrackEvent`, `CreateSessionSummary`, and `GetSessionSummaryText` automatically create spans.
+
+!!! note "About Root Span"
+    Session operations are executed by the Runner, occurring before and after the Agent's `Run()` call. The Agent's root span is created inside `agent.Run()`, so Session spans are not automatically attached as children of the Agent span. To see a complete Session span hierarchy in observability platforms like Langfuse, you need to manually create a root span before calling `runner.Run()`:
+
+    ```go
+    import atrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
+
+    // Create a root span before runner.Run(), so that session spans
+    // (create_session, get_session, append_event, etc.) become children
+    // of this root span via context propagation.
+    ctx, span := atrace.Tracer.Start(ctx, "my_request")
+    defer span.End()
+
+    eventChan, err := r.Run(ctx, userID, sessionID, message)
+    ```
+
+**Hook Configuration:**
+
+- **`WithAppendEventHook(hooks ...session.AppendEventHook)`**: Add `AppendEvent` hooks.
+- **`WithGetSessionHook(hooks ...session.GetSessionHook)`**: Add `GetSession` hooks.
+- Hooks are a cross-backend capability shared by all Session backends. See [Advanced Usage - Hook Capabilities](#hook-capabilities-appendget) for details.
 
 ### Basic Configuration Example
 
@@ -632,26 +672,125 @@ sessionService, err := redis.NewService(
     redis.WithSummarizer(summarizer),
     redis.WithAsyncSummaryNum(4),
     redis.WithSummaryQueueSize(200),
+    redis.WithSummaryJobTimeout(120*time.Second),
 )
 ```
 
-### Storage Structure
+### Async Persistence
+
+When async persistence is enabled, `AppendEvent` and `AppendTrackEvent` no longer write to Redis synchronously. Instead, events are dispatched to internal channels and consumed by background worker goroutines. This significantly reduces request latency and is suitable for latency-sensitive scenarios.
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithEnableAsyncPersist(true),
+    redis.WithAsyncPersisterNum(10), // 10 worker goroutines
+)
+```
+
+How it works:
+
+- Each worker goroutine holds one Event channel and one TrackEvent channel (buffer size 100).
+- `AppendEvent` selects a channel via `session.Hash % workerNum`, ensuring ordered writes for the same session.
+- If the channel is full and the context is cancelled, `context.Canceled` error is returned.
+- Async write timeout is 2 seconds (`defaultAsyncPersistTimeout`).
+- Calling `Close()` closes all channels and waits for workers to finish remaining tasks.
+
+!!! warning "Caution"
+    In async persistence mode, events still in the channel may be lost if the service process crashes unexpectedly. Evaluate whether to enable this based on your data consistency requirements.
+
+### Storage Format & Version Migration
+
+Redis Session storage has two data storage engines. Each session's storage version is tracked via the `storage_type` field in `ServiceMeta`, enabling operation routing:
+
+| Storage Format | Version | Hash Tag | Characteristics |
+| --- | --- | --- | --- |
+| **ZSet** | Legacy | `{appName}` | All user data concentrated in one Cluster slot; hot spot risk at scale. Simple data structure with full Event JSON stored directly in SortedSet members. |
+| **HashIdx** | **New (default)** | `{userID}` | Per-user distribution eliminates hot spots; separated data and index (Hash for data + ZSet for index); ZSet stores only eventIDs to avoid memory bloat; independent session metadata supports flexible queries. |
+
+!!! info "How to distinguish new vs. legacy mode"
+    - **HashIdx is the new mode**: Session-related keys are prefixed with `hashidx:`, using `{userID}` as the hash tag to distribute data across different Redis Cluster slots by user.
+    - **ZSet is the legacy mode**: Session-related keys use `{appName}` as the hash tag, concentrating all user data for the same app in a single slot.
+    - **AppState is the exception**: `appstate:{appName}` has an identical format in both modes (no `hashidx:` prefix), so AppState is unaffected by storage version migration — zero migration cost.
+    - Newly created sessions use HashIdx storage in `CompatModeLegacy` (default) and `CompatModeNone` modes.
+
+The new version uses **CompatMode** (compatibility mode) to enable smooth migration from the legacy storage format to the new one without downtime.
+
+#### Three Compatibility Modes
+
+| Mode | Session Read Behavior | Session Write Behavior | UserState Behavior | Use Case |
+| --- | --- | --- | --- | --- |
+| `CompatModeTransition` | Pipeline checks both HashIdx and ZSet existence; reads ZSet if it exists, otherwise reads HashIdx | ZSet only | Write: dual-write (HashIdx + ZSet); Read: HashIdx first, fallback to ZSet if empty | Rolling upgrade with mixed old/new version instances |
+| `CompatModeLegacy` **(default)** | Pipeline checks both HashIdx and ZSet existence; reads ZSet if it exists, otherwise reads HashIdx | HashIdx only | Write: HashIdx only; Read: HashIdx first, fallback to ZSet if empty | All instances upgraded, but legacy ZSet data not yet expired |
+| `CompatModeNone` | HashIdx only (no ZSet check) | HashIdx only | Write: HashIdx only; Read: HashIdx only | ZSet data fully expired, pure new storage mode |
+
+#### Migration Steps
 
 ```
-# Application data
-appdata:{appName} -> Hash {key: value}
+Phase 1                      Phase 2                      Phase 3
+CompatModeTransition         CompatModeLegacy (default)   CompatModeNone
+┌─────────────────────┐      ┌─────────────────────┐      ┌────────────────────┐
+│ Mixed old/new nodes │  →   │ All nodes upgraded  │  →   │ ZSet data expired  │
+│ New nodes write ZSet│      │ New sessions: HIdx  │      │ Pure HashIdx mode  │
+│ Same as old nodes   │      │ Old sessions: fbk   │      │ No ZSet overhead   │
+└─────────────────────┘      └─────────────────────┘      └────────────────────┘
+```
 
-# User data
-userdata:{appName}:{userID} -> Hash {key: value}
+**Phase 1: Rolling Upgrade (mixed old/new instances)**
 
-# Session data
-session:{appName}:{userID} -> Hash {sessionID: SessionData(JSON)}
+Use `CompatModeTransition`. New instances behave identically to old instances (session creation goes through ZSet, UserState is dual-written), ensuring full data compatibility during mixed deployment.
 
-# Event records
-events:{appName}:{userID}:{sessionID} -> SortedSet {score: timestamp, value: Event(JSON)}
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithCompatMode(redis.CompatModeTransition),
+)
+```
 
-# Summary data (optional)
-summary:{appName}:{userID}:{sessionID}:{filterKey} -> String (JSON)
+!!! tip "When is Phase 1 needed?"
+    `CompatModeTransition` is only required for **canary/gray releases or mixed-version deployments**. If you can upgrade all instances at once (e.g., full release), you can skip Phase 1 and directly use the default `CompatModeLegacy`.
+
+**UserState Considerations:** The old and new storage formats use **different Redis keys** for UserState (old: `userstate:{appName}:{userID}`, new: `hashidx:userstate:appName:{userID}`). After upgrading, new sessions created via HashIdx will **only read the new key** when merging UserState, and cannot access data in the old key.
+
+- In `CompatModeTransition` mode, `UpdateUserState` **writes to both old and new keys simultaneously**, ensuring both old and new instances can read the data. It is **recommended to re-write UserState via `UpdateUserState` during the Transition phase** to sync data to the new key.
+- Calling the `ListUserStates` API directly in Transition and Legacy modes tries the new key first, automatically falling back to the old key if empty. However, the internal UserState merge during `CreateSession`/`GetSession` does not use this fallback — it only reads the new key.
+- **AppState is unaffected** — the `appstate:{appName}` key format is identical across both storage formats, requiring no extra handling.
+
+**Phase 2: All Instances Upgraded**
+
+After all instances are upgraded, switch to `CompatModeLegacy` (the default — no explicit configuration needed). New sessions use the HashIdx storage format; existing ZSet data remains accessible via fallback reads.
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    // CompatModeLegacy is the default, can be omitted
+    // redis.WithCompatMode(redis.CompatModeLegacy),
+)
+```
+
+!!! warning "Important"
+    This compatibility concern only applies to **multi-node deployments where requests from the same user may be routed to both old and new version Session Service instances**. If you are running a single node, or your routing strategy ensures the same user always hits the same version instance, this limitation does not apply.
+
+**Phase 3: Cleanup Complete**
+
+After ZSet data expires naturally via TTL (or is manually cleaned up if TTL is not set), switch to `CompatModeNone` to fully remove the ZSet compatibility layer for optimal performance.
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithCompatMode(redis.CompatModeNone),
+)
+```
+
+#### Fresh Deployment (No Legacy Data)
+
+For brand new deployments without legacy data, it is recommended to use `CompatModeNone` to skip unnecessary ZSet compatibility logic:
+
+```go
+sessionService, err := redis.NewService(
+    redis.WithRedisClientURL("redis://localhost:6379"),
+    redis.WithCompatMode(redis.CompatModeNone),
+)
 ```
 
 ## PostgreSQL Storage

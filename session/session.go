@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,6 +63,11 @@ type Session struct {
 	// "appName:userID:sessionID" and remains immutable throughout the session's lifecycle.
 	// This field is computed once during session creation and never modified.
 	Hash int `json:"-"`
+
+	// ServiceMeta stores service-layer metadata (memory only, not persisted).
+	// Used internally by session service implementations for version routing, etc.
+	// Users should not access or modify this field directly.
+	ServiceMeta map[string]string `json:"-"`
 
 	stateMu sync.RWMutex `json:"-"` // stateMu is the read-write mutex for State.
 }
@@ -129,6 +135,14 @@ func (sess *Session) Clone() *Session {
 		}
 	}
 	sess.SummariesMu.RUnlock()
+
+	// Copy service metadata.
+	if sess.ServiceMeta != nil {
+		copiedSess.ServiceMeta = make(map[string]string, len(sess.ServiceMeta))
+		for k, v := range sess.ServiceMeta {
+			copiedSess.ServiceMeta[k] = v
+		}
+	}
 
 	return copiedSess
 }
@@ -288,6 +302,53 @@ func (sess *Session) SnapshotState() StateMap {
 		copy(val, v)
 		out[k] = val
 	}
+	return out
+}
+
+// HasStateKeyWithPrefix reports whether the session state contains at least one
+// key with the provided prefix and a non-empty value.
+//
+// Nil or empty values are treated as absent.
+func (sess *Session) HasStateKeyWithPrefix(prefix string) bool {
+	if sess == nil {
+		return false
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return false
+	}
+
+	sess.stateMu.RLock()
+	defer sess.stateMu.RUnlock()
+	if len(sess.State) == 0 {
+		return false
+	}
+	for k, v := range sess.State {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if len(v) == 0 {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// SnapshotTracksState returns a copy of the tracks state value (State["tracks"]).
+// Returns nil if no tracks are registered.
+func (sess *Session) SnapshotTracksState() []byte {
+	sess.stateMu.RLock()
+	defer sess.stateMu.RUnlock()
+	if sess.State == nil {
+		return nil
+	}
+	v, ok := sess.State[tracksStateKey]
+	if !ok || len(v) == 0 {
+		return nil
+	}
+	out := make([]byte, len(v))
+	copy(out, v)
 	return out
 }
 

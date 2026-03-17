@@ -193,6 +193,8 @@ Typical responses:
 - `404 Not Found`: no running run found for that `SessionKey` (already finished
   or wrong identifiers)
 
+After a cancel succeeds, the framework does not simply discard the protocol state that is still being finalized. Instead, it continues to emit any required closing events and tries to persist buffered AG-UI events from the aggregator into `SessionService`. As a result, subsequent `/history` requests see the last valid and consistent snapshot at the moment of cancellation rather than an incomplete intermediate state. For example, partial `reasoning` text that has already been produced is kept as a string, while a `reasoning` segment that never produced any text does not appear in the snapshot. You can adjust how long this post-run finalization window is allowed to take with `agui.WithPostRunFinalizationTimeout(d)`, which defaults to `5s`.
+
 ### Message Snapshot route
 
 Message snapshots restore conversation history when a page is initialised or after a reconnect. The feature is controlled by `agui.WithMessagesSnapshotEnabled(true)` and is disabled by default. The default route is `/history`, can be customised with `WithMessagesSnapshotPath`, and returns the event stream `RUN_STARTED → MESSAGES_SNAPSHOT → RUN_FINISHED`.
@@ -255,6 +257,23 @@ You can find a complete example at [examples/agui/messagessnapshot](https://gith
 
 The format of AG-UI's MessagesSnapshotEvent can be found at [messages](https://docs.ag-ui.com/concepts/messages).
 
+### Translator interfaces
+
+Before events are sent to the client, AG-UI translates internal framework events into protocol events. The core public extension interfaces are shown below:
+
+```go
+type Translator interface {
+    Translate(ctx context.Context, event *event.Event) ([]aguievents.Event, error)
+}
+
+type PostRunFinalizingTranslator interface {
+    Translator
+    PostRunFinalizationEvents(ctx context.Context) ([]aguievents.Event, error)
+}
+```
+
+`Translator` is responsible for turning internal events into AG-UI events. `PostRunFinalizingTranslator` extends it with the ability to emit any remaining protocol closing events during the finalization phase after a run ends, and to surface finalization errors when needed.
+
 ## Advanced Usage
 
 ### Custom transport
@@ -295,10 +314,15 @@ server, _ := agui.New(runner, agui.WithServiceFactory(NewWSService))
 
 ### Custom translator
 
-`translator.New` converts internal events into the standard AG-UI events. To enrich the stream while keeping the default behaviour, implement `translator.Translator` and use the AG-UI `Custom` event type to carry extra data:
+`translator.New` converts internal events into the standard AG-UI events. To enrich the stream while keeping the default behaviour, implement the `translator.Translator` interface introduced above and use the AG-UI `Custom` event type to carry extra data.
+
+If your custom Translator maintains its own open streams, or simply wraps the default Translator and wants to preserve the built-in finalization behaviour on cancel and normal run completion, you should also implement `translator.PostRunFinalizingTranslator` so the framework can keep handling the closing events that need to be emitted after the run ends:
 
 ```go
 import (
+    "context"
+    "fmt"
+
     aguievents "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
     "trpc.group/trpc-go/trpc-agent-go/event"
     "trpc.group/trpc-go/trpc-agent-go/runner"
@@ -312,6 +336,8 @@ type customTranslator struct {
     inner translator.Translator
 }
 
+var _ translator.PostRunFinalizingTranslator = (*customTranslator)(nil)
+
 func (t *customTranslator) Translate(ctx context.Context, evt *event.Event) ([]aguievents.Event, error) {
     out, err := t.inner.Translate(ctx, evt)
     if err != nil {
@@ -321,6 +347,14 @@ func (t *customTranslator) Translate(ctx context.Context, evt *event.Event) ([]a
         out = append(out, aguievents.NewCustomEvent("trace.metadata", aguievents.WithValue(payload)))
     }
     return out, nil
+}
+
+func (t *customTranslator) PostRunFinalizationEvents(ctx context.Context) ([]aguievents.Event, error) {
+    finalizer, ok := t.inner.(translator.PostRunFinalizingTranslator)
+    if !ok {
+        return nil, nil
+    }
+    return finalizer.PostRunFinalizationEvents(ctx)
 }
 
 func buildCustomPayload(evt *event.Event) map[string]any {
@@ -345,11 +379,33 @@ runner := runner.NewRunner(agent.Info().Name, agent)
 server, _ := agui.New(runner, agui.WithAGUIRunnerOptions(aguirunner.WithTranslatorFactory(factory)))
 ```
 
+`PostRunFinalizationEvents` is invoked during the finalization phase after a run ends. If it returns an error, the framework will try to emit any finalization events that were already returned, and then emit a `RunError` so that problems in the finalization phase are surfaced to the client instead of being silently dropped.
+
 For example, when using React Planner, if you want to apply different custom events to different tags, you can achieve this by implementing a custom Translator, as shown in the image below.
 
 ![copilotkit-react](../assets/img/agui/copilotkit-react.png)
 
 You can find the complete code example in [examples/agui/server/react](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/react).
+
+### Thinking content
+
+AG-UI uses `REASONING_*` events to carry model thinking content, making it easier for the frontend to display the thinking process before the final answer. For more details, see the official AG-UI docs: [Reasoning](https://docs.ag-ui.com/concepts/reasoning). A typical event sequence is as follows:
+
+```text
+REASONING_START
+  → REASONING_MESSAGE_START
+  → REASONING_MESSAGE_CONTENT
+  → REASONING_MESSAGE_END
+REASONING_END
+```
+
+By default, thought-provoking content is disabled. You can enable it when creating the server using `agui.WithReasoningContentEnabled`.
+
+```go
+import "trpc.group/trpc-go/trpc-agent-go/server/agui"
+
+server, err := agui.New(runner, agui.WithReasoningContentEnabled(true))
+```
 
 ### Custom `UserIDResolver`
 
@@ -607,13 +663,16 @@ server, err := agui.New(
 
 In streaming response scenarios, a single reply usually consists of multiple incremental text events. Writing all of them directly into the session can put significant pressure on `SessionService`.
 
-To address this, the framework first aggregates events and then writes them into the session. In addition, it performs a periodic flush once per second by default, and each flush writes the current aggregation result into the session.
+To address this, the framework first aggregates events and then writes them into the session. In addition, it performs a periodic flush once per second by default, and each flush writes the current aggregation result into the session. Regardless of whether a run finishes normally or is cancelled, the framework also runs one final end-of-run flush step before exit. That final step emits closing events for any protocol streams that are still open and tries to persist any remaining aggregated data. This is separate from the regular periodic flush.
 
-* `aggregator.WithEnabled(true)` is used to control whether event aggregation is enabled. It is enabled by default. When enabled, it aggregates consecutive text events that share the same `messageId`. When disabled, no aggregation is performed on AG-UI events.
+* `aggregator.WithEnabled(true)` is used to control whether event aggregation is enabled. It is enabled by default. When enabled, it aggregates consecutive `TEXT_MESSAGE_CONTENT` and `REASONING_MESSAGE_CONTENT` events that share the same `messageId`. When disabled, no aggregation is performed on AG-UI events.
 * `aguirunner.WithFlushInterval(time.Second)` is used to control the periodic flush interval of aggregated results. The default is 1 second. Setting it to 0 disables the periodic flush mechanism.
+* `agui.WithPostRunFinalizationTimeout(5*time.Second)` limits how long the end-of-run finalization step is allowed to take. This covers both protocol closing events and persisting any buffered aggregated data. The default is `5s`. Setting it to `0` means no additional timeout is applied.
 
 ```go
 import (
+	"time"
+
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui"
 	"trpc.group/trpc-go/trpc-agent-go/server/agui/aggregator"
@@ -632,6 +691,7 @@ server, err := agui.New(
     agui.WithAppName(appName),
     agui.WithSessionService(sessionService),
     agui.WithFlushInterval(time.Second), // Set the periodic flush interval for aggregation results, default is 1 second.
+    agui.WithPostRunFinalizationTimeout(5*time.Second), // Set the timeout for end-of-run finalization, default is 5 seconds.
     agui.WithAGUIRunnerOptions(
         aguirunner.WithUserIDResolver(userIDResolver),
         aguirunner.WithAggregationOption(aggregator.WithEnabled(true)), // Enable event aggregation, enabled by default.
@@ -640,116 +700,6 @@ server, err := agui.New(
 ```
 
 If more complex aggregation strategies are required, you can implement `aggregator.Aggregator` and inject it through a custom factory. Note that although an aggregator is created separately for each session, avoiding cross-session state management and concurrency handling, the aggregation methods themselves may still be called concurrently, so concurrency must still be handled properly.
-
-For example, while remaining compatible with the default text aggregation, you can accumulate the content of custom events of type `"think"` and then persist them.
-
-A complete example can be found at [examples/agui/server/thinkaggregator](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/thinkaggregator)
-
-```go
-import (
-	aguievents "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
-	"trpc.group/trpc-go/trpc-agent-go/runner"
-	"trpc.group/trpc-go/trpc-agent-go/server/agui"
-	"trpc.group/trpc-go/trpc-agent-go/server/agui/aggregator"
-	aguirunner "trpc.group/trpc-go/trpc-agent-go/server/agui/runner"
-	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
-)
-
-type thinkAggregator struct {
-	mu    sync.Mutex
-	inner aggregator.Aggregator
-	think strings.Builder
-}
-
-func newAggregator(ctx context.Context, opt ...aggregator.Option) aggregator.Aggregator {
-	return &thinkAggregator{inner: aggregator.New(ctx, opt...)}
-}
-
-
-func (c *thinkAggregator) Append(ctx context.Context, event aguievents.Event) ([]aguievents.Event, error) {
-	// Use a mutex to ensure concurrent safety of the inner aggregator and the think buffer, avoiding race conditions when multiple events are appended concurrently.
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// For custom "think" events, use a strategy of "accumulate only, do not emit immediately".
-	// 1. Force flush inner first to fully emit previously accumulated normal events.
-	// 2. Append the current think content to the buffer only, without returning it immediately.
-	// This ensures that think fragments are not interrupted by normal events, and that previous normal events are emitted before new thinking content.
-	if custom, ok := event.(*aguievents.CustomEvent); ok && custom.Name == string(thinkEventTypeContent) {
-		flushed, err := c.inner.Flush(ctx)
-		if err != nil {
-			return nil, err
-		}
-		// Only participate in accumulation when the value is a string, to avoid polluting the buffer with values of unexpected types.
-		if v, ok := custom.Value.(string); ok {
-			c.think.WriteString(v)
-		}
-		// The current think event only participates in internal accumulation and is not immediately visible externally. The return value is the previously aggregated results from inner.
-		return flushed, nil
-	}
-
-	// Non-think events follow the default inner aggregation logic to ensure that the original text aggregation behavior is preserved.
-	events, err := c.inner.Append(ctx, event)
-	if err != nil {
-		return nil, err
-	}
-
-	// If there is no accumulated think content, directly return the aggregation results from inner without additional wrapping.
-	if c.think.Len() == 0 {
-		return events, nil
-	}
-
-	// If there is accumulated think content, insert a single aggregated think event before the current batch of events.
-	// 1. Package the buffer content into a single CustomEvent.
-	// 2. Clear the buffer to avoid sending duplicate content.
-	// 3. Place this think event before the current events to preserve the time order: output the complete thinking content first, then subsequent events.
-	think := aguievents.NewCustomEvent(string(thinkEventTypeContent), aguievents.WithValue(c.think.String()))
-	c.think.Reset()
-
-	out := make([]aguievents.Event, 0, len(events)+1)
-	out = append(out, think)
-	out = append(out, events...)
-	return out, nil
-}
-
-func (c *thinkAggregator) Flush(ctx context.Context) ([]aguievents.Event, error) {
-	// Flush likewise needs to ensure concurrent safety of the inner aggregator and the think buffer.
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Flush inner first to ensure that all normal events are emitted according to its own aggregation strategy.
-	events, err := c.inner.Flush(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// If there is still unflushed content in the think buffer.
-	// Wrap it into a single aggregated think event and insert it at the front of the current batch.
-	// This ensures that the aggregated thinking content is not reordered by events produced by subsequent flushes.
-	if c.think.Len() > 0 {
-		think := aguievents.NewCustomEvent(string(thinkEventTypeContent), aguievents.WithValue(c.think.String()))
-		c.think.Reset()
-		events = append([]aguievents.Event{think}, events...)
-	}
-	return events, nil
-}
-
-runner := runner.NewRunner(agent.Info().Name, agent)
-sessionService := inmemory.NewSessionService()
-
-server, err := agui.New(
-    runner,
-    agui.WithPath("/agui"),
-    agui.WithMessagesSnapshotPath("/history"),
-    agui.WithMessagesSnapshotEnabled(true),
-    agui.WithAppName(appName),
-    agui.WithSessionService(sessionService),
-    agui.WithAGUIRunnerOptions(
-        aguirunner.WithUserIDResolver(userIDResolver),
-        aguirunner.WithAggregatorFactory(newAggregator),
-    ),
-)
-```
 
 ### Message Snapshot Continuation
 

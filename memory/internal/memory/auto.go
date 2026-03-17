@@ -79,13 +79,24 @@ func ConfigureExtractorEnabledTools(
 }
 
 // MemoryOperator defines the interface for memory operations.
-// This allows the auto memory worker to work with different storage backends.
+// This allows the auto memory worker to work with different
+// storage backends.
 type MemoryOperator interface {
-	ReadMemories(ctx context.Context, userKey memory.UserKey, limit int) ([]*memory.Entry, error)
-	AddMemory(ctx context.Context, userKey memory.UserKey, memory string, topics []string) error
-	UpdateMemory(ctx context.Context, memoryKey memory.Key, memory string, topics []string) error
-	DeleteMemory(ctx context.Context, memoryKey memory.Key) error
-	ClearMemories(ctx context.Context, userKey memory.UserKey) error
+	ReadMemories(ctx context.Context, userKey memory.UserKey,
+		limit int) ([]*memory.Entry, error)
+	SearchMemories(ctx context.Context, userKey memory.UserKey,
+		query string,
+		opts ...memory.SearchOption) ([]*memory.Entry, error)
+	AddMemory(ctx context.Context, userKey memory.UserKey,
+		mem string, topics []string,
+		opts ...memory.AddOption) error
+	UpdateMemory(ctx context.Context, memoryKey memory.Key,
+		mem string, topics []string,
+		opts ...memory.UpdateOption) error
+	DeleteMemory(ctx context.Context,
+		memoryKey memory.Key) error
+	ClearMemories(ctx context.Context,
+		userKey memory.UserKey) error
 }
 
 // AutoMemoryWorker manages async memory extraction workers.
@@ -298,12 +309,13 @@ func (w *AutoMemoryWorker) createAutoMemory(
 		return nil
 	}
 
-	// Read all existing memories for the user.
-	// The extractor needs complete memory context to properly deduplicate,
-	// update, or delete existing memories.
-	existing, err := w.operator.ReadMemories(ctx, userKey, 0)
+	// Search for existing memories relevant to the current conversation
+	// instead of loading all memories. This keeps the extractor prompt
+	// within a reasonable token budget while surfacing the entries most
+	// likely to need updating or deduplication.
+	existing, err := w.searchRelevantMemories(ctx, userKey, messages)
 	if err != nil {
-		log.WarnfContext(ctx, "auto_memory: failed to read existing memories for user %s/%s: %v",
+		log.WarnfContext(ctx, "auto_memory: failed to search existing memories for user %s/%s: %v",
 			userKey.AppName, userKey.UserID, err)
 		existing = nil
 	}
@@ -322,6 +334,39 @@ func (w *AutoMemoryWorker) createAutoMemory(
 	}
 
 	return nil
+}
+
+// searchRelevantMemories builds a query from the conversation messages
+// and searches for existing memories that are semantically related.
+// This avoids injecting the full memory set into the extractor prompt,
+// keeping token usage proportional to the conversation size rather than
+// the total memory count.
+func (w *AutoMemoryWorker) searchRelevantMemories(
+	ctx context.Context,
+	userKey memory.UserKey,
+	messages []model.Message,
+) ([]*memory.Entry, error) {
+	query := buildSearchQuery(messages)
+	if query == "" {
+		return nil, nil
+	}
+	return w.operator.SearchMemories(ctx, userKey, query)
+}
+
+// buildSearchQuery extracts user-side text from conversation messages
+// and concatenates it into a single search query.
+func buildSearchQuery(messages []model.Message) string {
+	var sb strings.Builder
+	for _, m := range messages {
+		if m.Role != model.RoleUser || m.Content == "" {
+			continue
+		}
+		if sb.Len() > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(m.Content)
+	}
+	return sb.String()
 }
 
 func isMemoryNotFoundError(err error) bool {
@@ -376,8 +421,13 @@ func (w *AutoMemoryWorker) executeOperation(
 
 	switch op.Type {
 	case extractor.OperationAdd:
-		if err := w.operator.AddMemory(ctx, userKey, op.Memory, op.Topics); err != nil {
-			log.WarnfContext(ctx, "auto_memory: add memory failed for user %s/%s: %v",
+		ep := opToMetadata(op)
+		if err := w.operator.AddMemory(ctx, userKey,
+			op.Memory, op.Topics,
+			memory.WithMetadata(ep)); err != nil {
+			log.WarnfContext(ctx,
+				"auto_memory: add memory failed "+
+					"for user %s/%s: %v",
 				userKey.AppName, userKey.UserID, err)
 		}
 	case extractor.OperationUpdate:
@@ -386,28 +436,39 @@ func (w *AutoMemoryWorker) executeOperation(
 			UserID:   userKey.UserID,
 			MemoryID: op.MemoryID,
 		}
-		if err := w.operator.UpdateMemory(ctx, memKey, op.Memory, op.Topics); err != nil {
+		ep := opToMetadata(op)
+		if err := w.operator.UpdateMemory(ctx, memKey,
+			op.Memory, op.Topics,
+			memory.WithUpdateMetadata(ep)); err != nil {
 			if isMemoryNotFoundError(err) {
 				if !w.isToolEnabled(memory.AddToolName) {
 					log.DebugfContext(ctx,
-						"auto_memory: update-not-found fallback "+
-							"skipped (add disabled) for user %s/%s, "+
-							"memory_id=%s",
-						userKey.AppName, userKey.UserID, op.MemoryID)
+						"auto_memory: update-not-found "+
+							"fallback skipped (add disabled)"+
+							" for user %s/%s, memory_id=%s",
+						userKey.AppName, userKey.UserID,
+						op.MemoryID)
 					return
 				}
 				if addErr := w.operator.AddMemory(
 					ctx, userKey, op.Memory, op.Topics,
+					memory.WithMetadata(ep),
 				); addErr != nil {
 					log.WarnfContext(ctx,
-						"auto_memory: update missing, add memory failed for user %s/%s, memory_id=%s: %v",
-						userKey.AppName, userKey.UserID, op.MemoryID, addErr,
+						"auto_memory: update missing, "+
+							"add memory failed for user "+
+							"%s/%s, memory_id=%s: %v",
+						userKey.AppName, userKey.UserID,
+						op.MemoryID, addErr,
 					)
 				}
 				return
 			}
-			log.WarnfContext(ctx, "auto_memory: update memory failed for user %s/%s, memory_id=%s: %v",
-				userKey.AppName, userKey.UserID, op.MemoryID, err)
+			log.WarnfContext(ctx,
+				"auto_memory: update memory failed "+
+					"for user %s/%s, memory_id=%s: %v",
+				userKey.AppName, userKey.UserID,
+				op.MemoryID, err)
 		}
 	case extractor.OperationDelete:
 		memKey := memory.Key{
@@ -427,6 +488,23 @@ func (w *AutoMemoryWorker) executeOperation(
 	default:
 		log.WarnfContext(ctx, "auto_memory: unknown operation type '%s' for user %s/%s",
 			op.Type, userKey.AppName, userKey.UserID)
+	}
+}
+
+// opToMetadata converts extractor.Operation episodic
+// fields to memory.Metadata. Always returns a non-nil
+// value; defaults to Kind=KindFact when no episodic data
+// is present so that backends do not need nil-guard logic.
+func opToMetadata(op *extractor.Operation) *memory.Metadata {
+	kind := op.MemoryKind
+	if kind == "" {
+		kind = memory.KindFact
+	}
+	return &memory.Metadata{
+		Kind:         kind,
+		EventTime:    op.EventTime,
+		Participants: op.Participants,
+		Location:     op.Location,
 	}
 }
 

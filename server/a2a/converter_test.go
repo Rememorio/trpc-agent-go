@@ -11,11 +11,13 @@ package a2a
 
 import (
 	"context"
+	"encoding/base64"
 	"reflect"
 	"testing"
 
 	"trpc.group/trpc-go/trpc-a2a-go/protocol"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	ia2a "trpc.group/trpc-go/trpc-agent-go/internal/a2a"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
@@ -107,6 +109,183 @@ func TestDefaultA2AMessageToAgentMessage_ConvertToAgentMessage(t *testing.T) {
 							Name:     "test.txt",
 							FileID:   "file://test.txt",
 							MimeType: "text/plain",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "image file part via metadata (bytes)",
+			message: protocol.Message{
+				Parts: []protocol.Part{
+					&protocol.FilePart{
+						File: &protocol.FileWithBytes{
+							Name:     stringPtr("image"),
+							MimeType: stringPtr("image/png"),
+							Bytes:    base64.StdEncoding.EncodeToString([]byte("raw image bytes")),
+						},
+						Metadata: map[string]any{
+							ia2a.FilePartMetadataContentTypeKey: ia2a.FilePartMetadataContentTypeImage,
+						},
+					},
+				},
+			},
+			expected: &model.Message{
+				Role:    model.RoleUser,
+				Content: "",
+				ContentParts: []model.ContentPart{
+					{
+						Type: model.ContentTypeImage,
+						Image: &model.Image{
+							Format: "image/png",
+							Data:   []byte("raw image bytes"),
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "image file part via mimeType prefix (no metadata)",
+			message: protocol.Message{
+				Parts: []protocol.Part{
+					&protocol.FilePart{
+						File: &protocol.FileWithBytes{
+							Name:     stringPtr("photo"),
+							MimeType: stringPtr("image/jpeg"),
+							Bytes:    base64.StdEncoding.EncodeToString([]byte("jpeg bytes")),
+						},
+					},
+				},
+			},
+			expected: &model.Message{
+				Role:    model.RoleUser,
+				Content: "",
+				ContentParts: []model.ContentPart{
+					{
+						Type: model.ContentTypeImage,
+						Image: &model.Image{
+							Format: "image/jpeg",
+							Data:   []byte("jpeg bytes"),
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "image file part via legacy name fallback",
+			message: protocol.Message{
+				Parts: []protocol.Part{
+					&protocol.FilePart{
+						File: &protocol.FileWithBytes{
+							Name:     stringPtr("image"),
+							MimeType: stringPtr("png"),
+							Bytes:    base64.StdEncoding.EncodeToString([]byte("img")),
+						},
+					},
+				},
+			},
+			expected: &model.Message{
+				Role:    model.RoleUser,
+				Content: "",
+				ContentParts: []model.ContentPart{
+					{
+						Type: model.ContentTypeImage,
+						Image: &model.Image{
+							Format: "png",
+							Data:   []byte("img"),
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "audio file part via metadata",
+			message: protocol.Message{
+				Parts: []protocol.Part{
+					&protocol.FilePart{
+						File: &protocol.FileWithBytes{
+							Name:     stringPtr("audio"),
+							MimeType: stringPtr("mp3"),
+							Bytes:    base64.StdEncoding.EncodeToString([]byte("audio bytes")),
+						},
+						Metadata: map[string]any{
+							ia2a.FilePartMetadataContentTypeKey: ia2a.FilePartMetadataContentTypeAudio,
+						},
+					},
+				},
+			},
+			expected: &model.Message{
+				Role:    model.RoleUser,
+				Content: "",
+				ContentParts: []model.ContentPart{
+					{
+						Type: model.ContentTypeAudio,
+						Audio: &model.Audio{
+							Format: "mp3",
+							Data:   []byte("audio bytes"),
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "audio file part via common format value (no metadata)",
+			message: protocol.Message{
+				Parts: []protocol.Part{
+					&protocol.FilePart{
+						File: &protocol.FileWithBytes{
+							Name:     stringPtr("voice-note"),
+							MimeType: stringPtr("mp3"),
+							Bytes:    base64.StdEncoding.EncodeToString([]byte("audio shorthand bytes")),
+						},
+					},
+				},
+			},
+			expected: &model.Message{
+				Role:    model.RoleUser,
+				Content: "",
+				ContentParts: []model.ContentPart{
+					{
+						Type: model.ContentTypeAudio,
+						Audio: &model.Audio{
+							Format: "mp3",
+							Data:   []byte("audio shorthand bytes"),
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "image file part with URI",
+			message: protocol.Message{
+				Parts: []protocol.Part{
+					&protocol.FilePart{
+						File: &protocol.FileWithURI{
+							Name:     stringPtr("image"),
+							MimeType: stringPtr("image/png"),
+							URI:      "https://example.com/photo.png",
+						},
+						Metadata: map[string]any{
+							ia2a.FilePartMetadataContentTypeKey: ia2a.FilePartMetadataContentTypeImage,
+						},
+					},
+				},
+			},
+			expected: &model.Message{
+				Role:    model.RoleUser,
+				Content: "",
+				ContentParts: []model.ContentPart{
+					{
+						Type: model.ContentTypeImage,
+						Image: &model.Image{
+							Format: "image/png",
+							URL:    "https://example.com/photo.png",
 						},
 					},
 				},
@@ -530,6 +709,205 @@ func TestDefaultEventToA2AMessage_ConvertStreamingToA2AMessage(t *testing.T) {
 				t.Errorf("ConvertStreamingToA2AMessage() = %+v, want %+v", result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestDefaultEventToA2AMessage_ConvertStreamingToA2AMessage_MessageType(
+	t *testing.T,
+) {
+	ctxID := "test-ctx-id"
+	taskID := "test-task-id"
+
+	tests := []struct {
+		name     string
+		event    *event.Event
+		expected protocol.StreamingMessageResult
+	}{
+		{
+			name: "streaming delta content as message",
+			event: &event.Event{
+				Response: &model.Response{
+					ID: "resp-123",
+					Choices: []model.Choice{
+						{
+							Delta: model.Message{
+								Content: "Hello",
+							},
+						},
+					},
+				},
+			},
+			expected: func() protocol.StreamingMessageResult {
+				msg := protocol.NewMessageWithContext(
+					protocol.MessageRoleAgent,
+					[]protocol.Part{protocol.NewTextPart("Hello")},
+					&taskID,
+					&ctxID,
+				)
+				msg.MessageID = "resp-123"
+				msg.Metadata = map[string]any{
+					ia2a.MessageMetadataObjectTypeKey: "",
+					ia2a.MessageMetadataTagKey:        "",
+					ia2a.MessageMetadataResponseIDKey: "resp-123",
+				}
+				return &msg
+			}(),
+		},
+		{
+			name: "streaming tool calls as message",
+			event: &event.Event{
+				Response: &model.Response{
+					ID: "resp-stc1",
+					Choices: []model.Choice{
+						{
+							Message: model.Message{
+								ToolCalls: []model.ToolCall{
+									{
+										ID:   "call-1",
+										Type: "function",
+										Function: model.FunctionDefinitionParam{
+											Name: "test_tool",
+											Arguments: []byte(
+												`{"key":"value"}`,
+											),
+										},
+									},
+								},
+							},
+							Delta: model.Message{
+								Content: "delta content",
+							},
+						},
+					},
+				},
+			},
+			expected: func() protocol.StreamingMessageResult {
+				dataPart := protocol.NewDataPart(map[string]any{
+					"id":   "call-1",
+					"type": "function",
+					"name": "test_tool",
+					"args": `{"key":"value"}`,
+				})
+				dataPart.Metadata = map[string]any{
+					"type": "function_call",
+				}
+
+				msg := protocol.NewMessageWithContext(
+					protocol.MessageRoleAgent,
+					[]protocol.Part{dataPart},
+					&taskID,
+					&ctxID,
+				)
+				msg.MessageID = "resp-stc1"
+				msg.Metadata = map[string]any{
+					ia2a.MessageMetadataObjectTypeKey: "",
+					ia2a.MessageMetadataTagKey:        "",
+					ia2a.MessageMetadataResponseIDKey: "resp-stc1",
+				}
+				return &msg
+			}(),
+		},
+	}
+
+	converter := &defaultEventToA2AMessage{
+		streamingEventType: StreamingEventTypeMessage,
+	}
+	ctx := context.Background()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := converter.ConvertStreamingToA2AMessage(
+				ctx,
+				tt.event,
+				EventToA2AStreamingOptions{
+					CtxID:  ctxID,
+					TaskID: taskID,
+				},
+			)
+			if err != nil {
+				t.Fatalf(
+					"ConvertStreamingToA2AMessage() error = %v",
+					err,
+				)
+			}
+			if !compareStreamingMessageResults(result, tt.expected) {
+				t.Fatalf(
+					"ConvertStreamingToA2AMessage() = %+v, want %+v",
+					result,
+					tt.expected,
+				)
+			}
+		})
+	}
+}
+
+func TestDefaultEventToA2AMessage_convertPartsToA2AStreamingResult_Nil(
+	t *testing.T,
+) {
+	converter := &defaultEventToA2AMessage{
+		streamingEventType: StreamingEventTypeMessage,
+	}
+	opts := EventToA2AStreamingOptions{CtxID: "ctx", TaskID: "task"}
+	parts := []protocol.Part{protocol.NewTextPart("hi")}
+
+	if got := converter.convertPartsToA2AStreamingResult(
+		nil,
+		opts,
+		parts,
+	); got != nil {
+		t.Fatalf("expected nil, got %T", got)
+	}
+
+	if got := converter.convertPartsToA2AStreamingResult(
+		&event.Event{},
+		opts,
+		parts,
+	); got != nil {
+		t.Fatalf("expected nil, got %T", got)
+	}
+
+	if got := converter.convertPartsToA2AStreamingResult(
+		&event.Event{Response: &model.Response{}},
+		opts,
+		nil,
+	); got != nil {
+		t.Fatalf("expected nil, got %T", got)
+	}
+}
+
+func TestDefaultEventToA2AMessage_convertPartsToA2AStreamingResult_MessageID(
+	t *testing.T,
+) {
+	ctxID := "test-ctx"
+	taskID := "test-task"
+	converter := &defaultEventToA2AMessage{
+		streamingEventType: StreamingEventTypeMessage,
+	}
+
+	evt := &event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+		},
+	}
+	parts := []protocol.Part{protocol.NewTextPart("hi")}
+
+	got := converter.convertPartsToA2AStreamingResult(
+		evt,
+		EventToA2AStreamingOptions{CtxID: ctxID, TaskID: taskID},
+		parts,
+	)
+	msg, ok := got.(*protocol.Message)
+	if !ok {
+		t.Fatalf("expected Message, got %T", got)
+	}
+	if msg.MessageID == "" {
+		t.Fatalf("expected generated MessageID")
+	}
+	if msg.TaskID == nil || *msg.TaskID != taskID {
+		t.Fatalf("expected TaskID %q", taskID)
+	}
+	if msg.ContextID == nil || *msg.ContextID != ctxID {
+		t.Fatalf("expected ContextID %q", ctxID)
 	}
 }
 
@@ -1235,8 +1613,11 @@ func TestDefaultEventToA2AMessage_CodeExecution(t *testing.T) {
 					t.Errorf("Expected map data, got %T", dataPart.Data)
 					return
 				}
-				if data["content"] != "print('hello')" {
-					t.Errorf("Expected content field in non-ADK mode, got %v", data)
+				if data["code"] != "print('hello')" {
+					t.Errorf("Expected code field, got %v", data)
+				}
+				if data["language"] != "unknown" {
+					t.Errorf("Expected language field 'unknown', got %v", data["language"])
 				}
 			},
 		},
@@ -1335,8 +1716,8 @@ func TestDefaultEventToA2AMessage_CodeExecution(t *testing.T) {
 					t.Errorf("Expected map data, got %T", dataPart.Data)
 					return
 				}
-				if data["content"] != "execution output" {
-					t.Errorf("Expected content field, got %v", data)
+				if data["output"] != "execution output" {
+					t.Errorf("Expected output field, got %v", data)
 				}
 			},
 		},
@@ -1442,10 +1823,11 @@ func TestIsCodeExecutionEvent(t *testing.T) {
 // TestConvertCodeExecutionToA2AStreamingMessage tests streaming conversion of code execution events
 func TestConvertCodeExecutionToA2AStreamingMessage(t *testing.T) {
 	tests := []struct {
-		name             string
-		adkCompatibility bool
-		event            *event.Event
-		checkResult      func(*testing.T, protocol.StreamingMessageResult)
+		name               string
+		adkCompatibility   bool
+		streamingEventType StreamingEventType
+		event              *event.Event
+		checkResult        func(*testing.T, protocol.StreamingMessageResult)
 	}{
 		{
 			name:             "streaming code execution event",
@@ -1483,6 +1865,65 @@ func TestConvertCodeExecutionToA2AStreamingMessage(t *testing.T) {
 				}
 				if taskEvent.Metadata["object_type"] != model.ObjectTypePostprocessingCodeExecution {
 					t.Errorf("expected object_type '%s', got %v", model.ObjectTypePostprocessingCodeExecution, taskEvent.Metadata["object_type"])
+				}
+			},
+		},
+		{
+			name:               "streaming code execution event as message",
+			adkCompatibility:   true,
+			streamingEventType: StreamingEventTypeMessage,
+			event: &event.Event{
+				Tag: event.CodeExecutionTag,
+				Response: &model.Response{
+					ID:     "resp-stream-ce-msg",
+					Object: model.ObjectTypePostprocessingCodeExecution,
+					Choices: []model.Choice{
+						{
+							Message: model.Message{
+								Content: "print('streaming')",
+							},
+						},
+					},
+				},
+			},
+			checkResult: func(
+				t *testing.T,
+				result protocol.StreamingMessageResult,
+			) {
+				msg, ok := result.(*protocol.Message)
+				if !ok {
+					t.Fatalf("expected Message, got %T", result)
+				}
+				if msg.MessageID != "resp-stream-ce-msg" {
+					t.Errorf(
+						"expected MessageID %q, got %q",
+						"resp-stream-ce-msg",
+						msg.MessageID,
+					)
+				}
+				if msg.TaskID == nil || *msg.TaskID != "test-task" {
+					t.Errorf("expected TaskID %q", "test-task")
+				}
+				if msg.ContextID == nil || *msg.ContextID != "test-ctx" {
+					t.Errorf("expected ContextID %q", "test-ctx")
+				}
+				if msg.Metadata == nil {
+					t.Fatal("expected metadata")
+				}
+				if msg.Metadata["tag"] != event.CodeExecutionTag {
+					t.Errorf(
+						"expected tag %q, got %v",
+						event.CodeExecutionTag,
+						msg.Metadata["tag"],
+					)
+				}
+				if msg.Metadata["object_type"] !=
+					model.ObjectTypePostprocessingCodeExecution {
+					t.Errorf(
+						"expected object_type %q, got %v",
+						model.ObjectTypePostprocessingCodeExecution,
+						msg.Metadata["object_type"],
+					)
 				}
 			},
 		},
@@ -1546,7 +1987,10 @@ func TestConvertCodeExecutionToA2AStreamingMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			converter := &defaultEventToA2AMessage{adkCompatibility: tt.adkCompatibility}
+			converter := &defaultEventToA2AMessage{
+				adkCompatibility:   tt.adkCompatibility,
+				streamingEventType: tt.streamingEventType,
+			}
 			result, err := converter.ConvertStreamingToA2AMessage(
 				ctx, tt.event, EventToA2AStreamingOptions{CtxID: "test-ctx", TaskID: "test-task"},
 			)

@@ -21,6 +21,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/benchmark/memory/trpc-agent-go-impl/evaluation/metrics"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
+	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -29,8 +30,8 @@ import (
 const (
 	autoAppName = "memory-eval-auto"
 
-	autoQAMaxTokens         = 100
-	autoQAMaxToolIterations = 8
+	autoQAMaxTokens         = 80
+	autoQAMaxToolIterations = 10
 )
 
 // AutoEvaluator evaluates using automatic memory extraction.
@@ -91,8 +92,19 @@ func (e *AutoEvaluator) Evaluate(
 	for _, sess := range sample.Conversation {
 		sessionID := fmt.Sprintf("seed-%s", sess.SessionID)
 		msgs := sessionMessages(sample, sess)
+		// Set reference date so the extractor resolves
+		// relative time expressions correctly.
+		seedCtx := ctx
+		if t, ok := parseSessionDate(
+			sess.SessionDate,
+		); ok {
+			seedCtx = extractor.WithReferenceDate(
+				seedCtx, t,
+			)
+		}
 		ch, err := runner.RunWithMessages(
-			ctx, seedRunner, userKey.UserID, sessionID, msgs,
+			seedCtx, seedRunner,
+			userKey.UserID, sessionID, msgs,
 		)
 		if err != nil {
 			return nil, fmt.Errorf(
@@ -139,7 +151,7 @@ func (e *AutoEvaluator) Evaluate(
 		sample, e.config.QAHistoryTurns,
 	)
 
-	for _, qa := range sample.QA {
+	for i, qa := range sample.QA {
 		qaResult, err := e.evaluateQA(
 			ctx, qaRunner, userKey, qa, historyMsgs,
 		)
@@ -151,6 +163,22 @@ func (e *AutoEvaluator) Evaluate(
 				)
 			}
 			qaResult = qaResultFromError(qa, err)
+		}
+		if e.config.Verbose {
+			log.Printf("  [QA %d/%d] %s (%s)",
+				i+1, len(sample.QA),
+				qa.QuestionID, qa.Category,
+			)
+			if qaResult.Steps != nil {
+				logQATrace(
+					qa.QuestionID, qa.Question,
+					qa.Answer, qaResult.Predicted,
+					qaResult.Metrics, collectResult{
+						steps: qaResult.Steps,
+					},
+					qaResult.LatencyMs,
+				)
+			}
 		}
 		result.QAResults = append(result.QAResults, qaResult)
 		catAgg.Add(qa.Category, qaResult.Metrics)
@@ -246,6 +274,7 @@ func (e *AutoEvaluator) evaluateQA(
 		Metrics:    m,
 		LatencyMs:  time.Since(start).Milliseconds(),
 		TokenUsage: &tu,
+		Steps:      res.steps,
 	}, nil
 }
 

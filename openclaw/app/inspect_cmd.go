@@ -24,6 +24,7 @@ const subcmdInspect = "inspect"
 const (
 	inspectCmdPlugins    = "plugins"
 	inspectCmdConfigKeys = "config-keys"
+	inspectCmdDeps       = "deps"
 )
 
 const (
@@ -46,6 +47,8 @@ func runInspect(args []string) int {
 		return runInspectPlugins(args[1:])
 	case inspectCmdConfigKeys:
 		return runInspectConfigKeys(args[1:])
+	case inspectCmdDeps:
+		return runInspectDeps(args[1:])
 	case "", "help", "-h", "--help":
 		printInspectUsage()
 		return 2
@@ -63,10 +66,7 @@ func runInspectPlugins(args []string) int {
 		return 2
 	}
 
-	printInspectList("Built-in channels", []string{
-		registry.ChannelTypeTelegram,
-	})
-	printInspectList("Channel plugins", registry.Types(registryKindChannel))
+	printInspectList("Channels", registry.Types(registryKindChannel))
 	printInspectList("Model types", registry.Types(registryKindModel))
 	printInspectList(
 		"Session backends",
@@ -120,5 +120,8 @@ func printInspectUsage() {
 	fmt.Fprintln(os.Stderr, "  openclaw inspect plugins")
 	fmt.Fprintln(os.Stderr,
 		"  openclaw inspect config-keys [openclaw flags]",
+	)
+	fmt.Fprintln(os.Stderr,
+		"  openclaw inspect deps [flags]",
 	)
 }

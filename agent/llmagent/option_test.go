@@ -54,6 +54,15 @@ func TestWithChannelBufferSize(t *testing.T) {
 	}
 }
 
+func TestWithSyncSummaryIntraRun(t *testing.T) {
+	opts := &Options{}
+	WithSyncSummaryIntraRun(true)(opts)
+	require.True(t, opts.SyncSummaryIntraRun)
+
+	WithSyncSummaryIntraRun(false)(opts)
+	require.False(t, opts.SyncSummaryIntraRun)
+}
+
 func TestWithMessageFilterMode(t *testing.T) {
 	tests := []struct {
 		name                   string
@@ -272,6 +281,24 @@ func TestWithSkillRunForceSaveArtifacts(t *testing.T) {
 
 	WithSkillRunForceSaveArtifacts(false)(opts)
 	require.False(t, opts.skillRunForceSaveArtifacts)
+}
+
+func TestWithSkillRunRequireSkillLoaded(t *testing.T) {
+	opts := &Options{}
+	WithSkillRunRequireSkillLoaded(true)(opts)
+	require.True(t, opts.skillRunRequireSkillLoaded)
+
+	WithSkillRunRequireSkillLoaded(false)(opts)
+	require.False(t, opts.skillRunRequireSkillLoaded)
+}
+
+func TestWithSkillToolProfile(t *testing.T) {
+	opts := &Options{}
+	WithSkillToolProfile(SkillToolProfileKnowledgeOnly)(opts)
+	require.Equal(t, "knowledge_only", opts.skillToolProfile)
+
+	WithSkillToolProfile(SkillToolProfileFull)(opts)
+	require.Equal(t, "full", opts.skillToolProfile)
 }
 
 func TestWithSummaryFormatter(t *testing.T) {

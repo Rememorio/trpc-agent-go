@@ -76,6 +76,7 @@ type mockOperator struct {
 	deleteCalls int
 	clearCalls  int
 	readErr     error
+	searchErr   error
 	addErr      error
 	updateErr   error
 	deleteErr   error
@@ -110,11 +111,24 @@ func (m *mockOperator) ReadMemories(
 	return results, nil
 }
 
+func (m *mockOperator) SearchMemories(
+	ctx context.Context,
+	userKey memory.UserKey,
+	query string,
+	opts ...memory.SearchOption,
+) ([]*memory.Entry, error) {
+	if m.searchErr != nil {
+		return nil, m.searchErr
+	}
+	return m.ReadMemories(ctx, userKey, 0)
+}
+
 func (m *mockOperator) AddMemory(
 	ctx context.Context,
 	userKey memory.UserKey,
 	memoryStr string,
 	topics []string,
+	opts ...memory.AddOption,
 ) error {
 	if m.addErr != nil {
 		return m.addErr
@@ -130,6 +144,7 @@ func (m *mockOperator) UpdateMemory(
 	memoryKey memory.Key,
 	memoryStr string,
 	topics []string,
+	opts ...memory.UpdateOption,
 ) error {
 	if m.updateErr != nil {
 		return m.updateErr
@@ -140,7 +155,10 @@ func (m *mockOperator) UpdateMemory(
 	return nil
 }
 
-func (m *mockOperator) DeleteMemory(ctx context.Context, memoryKey memory.Key) error {
+func (m *mockOperator) DeleteMemory(
+	ctx context.Context,
+	memoryKey memory.Key,
+) error {
 	if m.deleteErr != nil {
 		return m.deleteErr
 	}
@@ -150,7 +168,10 @@ func (m *mockOperator) DeleteMemory(ctx context.Context, memoryKey memory.Key) e
 	return nil
 }
 
-func (m *mockOperator) ClearMemories(ctx context.Context, userKey memory.UserKey) error {
+func (m *mockOperator) ClearMemories(
+	ctx context.Context,
+	userKey memory.UserKey,
+) error {
 	if m.clearErr != nil {
 		return m.clearErr
 	}
@@ -1628,5 +1649,164 @@ func TestAutoMemoryWorker_ExecuteOperation_UpdateNotFound_AddEnabled(t *testing.
 	})
 
 	// Fallback add should proceed because add is enabled.
+	assert.Equal(t, 1, op.addCalls)
+}
+
+func TestOpToMetadata(t *testing.T) {
+	t.Run("all empty returns fact default", func(t *testing.T) {
+		op := &extractor.Operation{}
+		got := opToMetadata(op)
+		require.NotNil(t, got)
+		assert.Equal(t, memory.KindFact, got.Kind)
+	})
+
+	t.Run("fact kind", func(t *testing.T) {
+		op := &extractor.Operation{
+			MemoryKind: memory.KindFact,
+		}
+		got := opToMetadata(op)
+		require.NotNil(t, got)
+		assert.Equal(t, memory.KindFact, got.Kind)
+	})
+
+	t.Run("episode with time", func(t *testing.T) {
+		eventTime := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+		op := &extractor.Operation{
+			MemoryKind: memory.KindEpisode,
+			EventTime:  &eventTime,
+		}
+		got := opToMetadata(op)
+		require.NotNil(t, got)
+		assert.Equal(t, memory.KindEpisode, got.Kind)
+		assert.Equal(t, &eventTime, got.EventTime)
+	})
+
+	t.Run("episode without time remains episode", func(t *testing.T) {
+		op := &extractor.Operation{
+			MemoryKind:   memory.KindEpisode,
+			Participants: []string{"Alice"},
+		}
+		got := opToMetadata(op)
+		require.NotNil(t, got)
+		assert.Equal(t, memory.KindEpisode, got.Kind, "episode without event_time should remain episode")
+		assert.Nil(t, got.EventTime)
+		assert.Equal(t, []string{"Alice"}, got.Participants)
+	})
+}
+
+func TestBuildSearchQuery(t *testing.T) {
+	t.Run("only user messages", func(t *testing.T) {
+		msgs := []model.Message{
+			model.NewUserMessage("hello"),
+			model.NewAssistantMessage("hi there"),
+			model.NewUserMessage("world"),
+		}
+		q := buildSearchQuery(msgs)
+		assert.Equal(t, "hello world", q)
+	})
+
+	t.Run("no user messages", func(t *testing.T) {
+		msgs := []model.Message{
+			model.NewAssistantMessage("hi there"),
+			model.NewSystemMessage("system prompt"),
+		}
+		q := buildSearchQuery(msgs)
+		assert.Equal(t, "", q)
+	})
+
+	t.Run("empty messages", func(t *testing.T) {
+		q := buildSearchQuery(nil)
+		assert.Equal(t, "", q)
+	})
+
+	t.Run("user message with empty content", func(t *testing.T) {
+		msgs := []model.Message{
+			{Role: model.RoleUser, Content: ""},
+			model.NewUserMessage("hello"),
+		}
+		q := buildSearchQuery(msgs)
+		assert.Equal(t, "hello", q)
+	})
+}
+
+func TestSearchRelevantMemories(t *testing.T) {
+	t.Run("empty query returns nil", func(t *testing.T) {
+		ext := &mockExtractor{}
+		op := newMockOperator()
+		worker := NewAutoMemoryWorker(AutoMemoryConfig{Extractor: ext}, op)
+
+		// Messages with no user content.
+		msgs := []model.Message{
+			model.NewAssistantMessage("hi"),
+		}
+		entries, err := worker.searchRelevantMemories(
+			context.Background(),
+			memory.UserKey{AppName: "app", UserID: "user"},
+			msgs,
+		)
+		assert.NoError(t, err)
+		assert.Nil(t, entries)
+	})
+
+	t.Run("search error propagated", func(t *testing.T) {
+		ext := &mockExtractor{}
+		op := newMockOperator()
+		op.searchErr = errors.New("search failed")
+		worker := NewAutoMemoryWorker(AutoMemoryConfig{Extractor: ext}, op)
+
+		msgs := []model.Message{
+			model.NewUserMessage("hello"),
+		}
+		entries, err := worker.searchRelevantMemories(
+			context.Background(),
+			memory.UserKey{AppName: "app", UserID: "user"},
+			msgs,
+		)
+		assert.Error(t, err)
+		assert.Nil(t, entries)
+	})
+
+	t.Run("successful search", func(t *testing.T) {
+		ext := &mockExtractor{}
+		op := newMockOperator()
+		op.memories["m1"] = &memory.Entry{
+			ID:      "m1",
+			AppName: "app",
+			UserID:  "user",
+			Memory:  &memory.Memory{Memory: "test"},
+		}
+		worker := NewAutoMemoryWorker(AutoMemoryConfig{Extractor: ext}, op)
+
+		msgs := []model.Message{
+			model.NewUserMessage("test query"),
+		}
+		entries, err := worker.searchRelevantMemories(
+			context.Background(),
+			memory.UserKey{AppName: "app", UserID: "user"},
+			msgs,
+		)
+		assert.NoError(t, err)
+		assert.Len(t, entries, 1)
+	})
+}
+
+func TestCreateAutoMemory_SearchError_StillExtracts(t *testing.T) {
+	ext := &mockExtractor{
+		ops: []*extractor.Operation{
+			{Type: extractor.OperationAdd, Memory: "New memory."},
+		},
+	}
+	op := newMockOperator()
+	op.searchErr = errors.New("search failed")
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{Extractor: ext}, op)
+
+	err := worker.createAutoMemory(
+		context.Background(),
+		memory.UserKey{AppName: "app", UserID: "user"},
+		[]model.Message{model.NewUserMessage("hello")},
+	)
+
+	// Should still succeed; search error is logged but extraction proceeds.
+	assert.NoError(t, err)
 	assert.Equal(t, 1, op.addCalls)
 }

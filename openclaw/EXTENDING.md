@@ -1,6 +1,6 @@
-# Extending OpenClaw Demo (Plugins and Internal Distributions)
+# Extending OpenClaw (Plugins and Internal Distributions)
 
-This document explains how to extend the OpenClaw demo in a Go-idiomatic
+This document explains how to extend OpenClaw in a Go-idiomatic
 way, from first principles.
 
 You will learn how to:
@@ -12,7 +12,11 @@ You will learn how to:
 - Extend the agent with file-based **skills** (`SKILL.md` folders) without
   writing Go code.
 
-If you just want a working example, start with `openclaw/examples/stdin_chat/`.
+If you just want local terminal chat, the standard binary now ships
+`stdin` and `telegram` channel plugins, so you can start with
+`./openclaw.stdin.yaml`. If you want a runnable example of a custom
+distribution binary that also bundles extra plugins, start with
+`openclaw/examples/stdin_chat/`.
 
 ## What "plugin" means here (no magic, no dynamic loading)
 
@@ -209,8 +213,12 @@ func (c *channel) ID() string { return typeName }
 func (c *channel) Run(ctx context.Context) error {
 	// 1) Receive inbound messages from WeCom.
 	// 2) Convert each message into a gwclient.MessageRequest.
-	// 3) Call deps.Gateway.SendMessage(...) to get a reply.
-	// 4) Deliver the reply back to WeCom.
+	// 3) Prefer deps.Gateway.(registry.StreamingGatewayClient)
+	//    and StreamMessage(...) when your channel supports incremental
+	//    replies.
+	// 4) Fall back to deps.Gateway.SendMessage(...) when you only need
+	//    one final reply.
+	// 5) Deliver the reply back to WeCom.
 	return nil
 }
 
@@ -222,6 +230,11 @@ func toGatewayRequest(text string) gwclient.MessageRequest {
 	}
 }
 ```
+
+If your channel can send partial replies (for example SSE, WebSocket, or a
+platform-specific stream API), first check whether `deps.Gateway`
+implements `registry.StreamingGatewayClient`. That keeps the gateway generic
+while letting channel adapters handle their own transport details.
 
 Enable it in YAML:
 
@@ -653,7 +666,7 @@ bash {baseDir}/scripts/setup.sh
 `{baseDir}` is a placeholder for "the local directory that contains this
 skill".
 
-This demo replaces `{baseDir}` in loaded skill bodies and docs with the
+OpenClaw replaces `{baseDir}` in loaded skill bodies and docs with the
 actual skill directory path, so those skill packs remain usable.
 
 ### Distributing internal skill packs (without code changes)

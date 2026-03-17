@@ -15,6 +15,9 @@ tool calls and tool responses, and executes skill scripts via the
 - `skill_run` to execute commands safely in a workspace, returning
   stdout/stderr and output files
   (and optionally saving files as artifacts)
+- This demo sets `llmagent.WithEnableCodeExecutionResponseProcessor(false)`
+  so fenced code blocks in assistant text do not auto-execute; command
+  execution should go through `skill_run`
 - Clear visualization of tool calls and tool responses
 - Example `user-file-ops` skill to summarize user-provided text files
 
@@ -150,6 +153,17 @@ In chat:
   hand-crafting JSON arguments in chat:
   `-artifacts -omit-inline -artifact-prefix user:`
 
+### Use with OpenClaw skills
+
+This repo vendors the upstream OpenClaw skill pack under `openclaw/skills/`.
+You can point this example at it:
+
+```bash
+cd examples/skillrun
+export SKILLS_ROOT="../../openclaw/skills"
+go run .
+```
+
 List and download saved artifacts:
 
 - `/artifacts` lists all artifact keys saved in this session.
@@ -157,6 +171,8 @@ List and download saved artifacts:
   `downloads/` directory.
 - `/upload <path>` attaches a local file as inline bytes.
 - `/upload_id <path>` uploads a file and attaches it by `file_id`.
+- `/upload_artifact <path>` uploads a file to the artifact service and
+  attaches it by `artifact://...` `file_id`.
 - By default, this example omits file content parts from requests sent to
   the model provider (for compatibility). Use `-send-file-inputs` to pass
   them through if your provider supports file inputs.
@@ -199,10 +215,17 @@ you upload into the conversation, using the `user-file-ops` skill.
 3. Upload the file into the conversation:
 
    ```text
+   👤 You: /upload_artifact /tmp/skillrun-notes.txt
+   ```
+
+   If you want to attach inline bytes, use:
+
+   ```text
    👤 You: /upload /tmp/skillrun-notes.txt
    ```
 
-   If your model provider requires `file_id`, use:
+   If your model provider supports file uploads and you want to attach by
+   provider `file_id`, use:
 
    ```text
    👤 You: /upload_id /tmp/skillrun-notes.txt

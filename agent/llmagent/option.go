@@ -17,6 +17,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -34,6 +35,9 @@ const (
 
 	// BranchFilterModePrefix Prefix matching pattern
 	BranchFilterModePrefix = processor.BranchFilterModePrefix
+	// BranchFilterModeSubtree includes only events whose FilterKey is the
+	// same as the current filter key or is a descendant of it.
+	BranchFilterModeSubtree = processor.BranchFilterModeSubtree
 	// BranchFilterModeAll include all
 	BranchFilterModeAll = processor.BranchFilterModeAll
 	// BranchFilterModeExact exact match
@@ -113,6 +117,8 @@ var (
 		SkillLoadMode: SkillLoadModeTurn,
 
 		SkipSkillsFallbackOnSessionSummary: true,
+
+		skillRunRequireSkillLoaded: true,
 	}
 )
 
@@ -204,6 +210,12 @@ type Options struct {
 	// AddSessionSummary controls whether to prepend the current branch summary
 	// as a system message when available (default: false).
 	AddSessionSummary bool
+	// SyncSummaryIntraRun controls whether to refresh session summary
+	// synchronously between LLM loop iterations inside the same run.
+	// When false (default), summary refresh happens asynchronously and
+	// may lag behind the current iteration. This option does not affect
+	// cross-run async summary behavior.
+	SyncSummaryIntraRun bool
 	// MaxHistoryRuns sets the maximum number of history messages when AddSessionSummary is false.
 	// When 0 (default), no limit is applied.
 	MaxHistoryRuns int
@@ -283,13 +295,16 @@ type Options struct {
 
 	// SkipSkillsFallbackOnSessionSummary controls whether the framework
 	// skips the "Loaded skill context" system-message fallback when a
-	// session summary is present in the request.
+	// session summary is present in the request and the matching loaded
+	// content is still available via tool-result materialization.
 	//
 	// Default: true.
 	SkipSkillsFallbackOnSessionSummary bool
 
 	// skillsRepository enables agent skills when non-nil.
 	skillsRepository skill.Repository
+	// skillToolProfile controls which built-in skill tools are registered.
+	skillToolProfile string
 	// skillsToolingGuidance overrides the built-in skills guidance block.
 	skillsToolingGuidance *string
 	// skillRunAllowedCommands restricts skill_run to allowlisted commands.
@@ -300,6 +315,9 @@ type Options struct {
 	// skillRunForceSaveArtifacts forces skill_run to persist collected
 	// outputs via the artifact service when possible.
 	skillRunForceSaveArtifacts bool
+	// skillRunRequireSkillLoaded rejects skill_run unless the skill was
+	// loaded via skill_load in the current session state.
+	skillRunRequireSkillLoaded bool
 	messageTimelineFilterMode  string
 	messageBranchFilterMode    string
 
@@ -332,6 +350,18 @@ type Options struct {
 	// model after tool calls.
 	PostToolPrompt string
 }
+
+// SkillToolProfile controls which framework-provided skill tools are enabled.
+type SkillToolProfile string
+
+const (
+	// SkillToolProfileFull keeps the existing behavior and registers the full
+	// built-in skill tool suite, including execution tools.
+	SkillToolProfileFull SkillToolProfile = skillprofile.Full
+	// SkillToolProfileKnowledgeOnly registers only progressive-disclosure skill
+	// tools used for knowledge injection. No execution tools are exposed.
+	SkillToolProfileKnowledgeOnly SkillToolProfile = skillprofile.KnowledgeOnly
+)
 
 // WithModel sets the model to use.
 func WithModel(model model.Model) Option {
@@ -475,6 +505,18 @@ func WithSkills(repo skill.Repository) Option {
 	}
 }
 
+// WithSkillToolProfile selects which built-in skill tools are registered when
+// skills are enabled via WithSkills.
+//
+// Supported profiles:
+//   - SkillToolProfileFull (default)
+//   - SkillToolProfileKnowledgeOnly
+func WithSkillToolProfile(profile SkillToolProfile) Option {
+	return func(opts *Options) {
+		opts.skillToolProfile = string(profile)
+	}
+}
+
 // WithSkillLoadMode sets how long skill bodies/docs loaded via skill_load
 // remain available in the system prompt.
 //
@@ -562,6 +604,17 @@ func WithSkillRunDeniedCommands(cmds ...string) Option {
 func WithSkillRunForceSaveArtifacts(enable bool) Option {
 	return func(opts *Options) {
 		opts.skillRunForceSaveArtifacts = enable
+	}
+}
+
+// WithSkillRunRequireSkillLoaded rejects skill_run unless the skill was
+// loaded via skill_load in the current session state.
+//
+// When enabled, models must call skill_load first to bring SKILL.md (and any
+// selected docs) into context, reducing hallucinated commands/scripts.
+func WithSkillRunRequireSkillLoaded(enable bool) Option {
+	return func(opts *Options) {
+		opts.skillRunRequireSkillLoaded = enable
 	}
 }
 
@@ -755,6 +808,16 @@ func WithAddContextPrefix(addPrefix bool) Option {
 func WithAddSessionSummary(addSummary bool) Option {
 	return func(opts *Options) {
 		opts.AddSessionSummary = addSummary
+	}
+}
+
+// WithSyncSummaryIntraRun enables synchronous summary refresh between LLM loop
+// iterations in the same run. When enabled, the summary is updated before each
+// LLM call within a run, ensuring the model sees the most recent summary.
+// When disabled (default), summary refresh happens asynchronously.
+func WithSyncSummaryIntraRun(enable bool) Option {
+	return func(opts *Options) {
+		opts.SyncSummaryIntraRun = enable
 	}
 }
 

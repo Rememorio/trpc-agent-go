@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -473,6 +474,7 @@ func TestExtractor_BuildSystemPrompt_WithExistingMemories(t *testing.T) {
 	e := NewExtractor(m)
 	extractor := e.(*memoryExtractor)
 
+	refDate := time.Date(2023, 5, 8, 0, 0, 0, 0, time.UTC)
 	existing := []*memory.Entry{
 		{
 			ID:     "mem-1",
@@ -484,12 +486,16 @@ func TestExtractor_BuildSystemPrompt_WithExistingMemories(t *testing.T) {
 		},
 	}
 
-	prompt := extractor.buildSystemPrompt(existing)
+	prompt := extractor.buildSystemPrompt(refDate, existing)
 
-	assert.Contains(t, prompt, defaultPrompt)
+	assert.Contains(t, prompt, "You are a Memory Manager")
+	assert.NotContains(t, prompt, currentDatePlaceholder)
+	assert.Contains(t, prompt, "Today's date is 2023-05-08.")
 	assert.Contains(t, prompt, "<existing_memories>")
-	assert.Contains(t, prompt, "[mem-1] User likes coffee.")
-	assert.Contains(t, prompt, "[mem-2] User is 30 years old.")
+	assert.Contains(t, prompt,
+		"[mem-1] User likes coffee.")
+	assert.Contains(t, prompt,
+		"[mem-2] User is 30 years old.")
 	assert.Contains(t, prompt, "</existing_memories>")
 }
 
@@ -498,10 +504,13 @@ func TestExtractor_BuildSystemPrompt_EmptyExisting(t *testing.T) {
 	e := NewExtractor(m)
 	extractor := e.(*memoryExtractor)
 
-	prompt := extractor.buildSystemPrompt(nil)
+	refDate := time.Date(2023, 5, 8, 0, 0, 0, 0, time.UTC)
+	prompt := extractor.buildSystemPrompt(refDate, nil)
 
 	// Prompt always includes available_actions now.
-	assert.Contains(t, prompt, defaultPrompt)
+	assert.Contains(t, prompt, "You are a Memory Manager")
+	assert.Contains(t, prompt, "Today's date is 2023-05-08.")
+	assert.NotContains(t, prompt, currentDatePlaceholder)
 	assert.Contains(t, prompt, "<available_actions>")
 	assert.Contains(t, prompt, "</available_actions>")
 	assert.NotContains(t, prompt, "<existing_memories>")
@@ -512,6 +521,7 @@ func TestExtractor_BuildSystemPrompt_NilMemory(t *testing.T) {
 	e := NewExtractor(m)
 	extractor := e.(*memoryExtractor)
 
+	refDate := time.Date(2023, 5, 8, 0, 0, 0, 0, time.UTC)
 	existing := []*memory.Entry{
 		{
 			ID:     "mem-1",
@@ -523,9 +533,10 @@ func TestExtractor_BuildSystemPrompt_NilMemory(t *testing.T) {
 		},
 	}
 
-	prompt := extractor.buildSystemPrompt(existing)
+	prompt := extractor.buildSystemPrompt(refDate, existing)
 
-	assert.Contains(t, prompt, "[mem-2] Valid memory.")
+	assert.Contains(t, prompt,
+		"[mem-2] Valid memory.")
 	assert.NotContains(t, prompt, "[mem-1]")
 }
 
@@ -675,6 +686,28 @@ func TestExtractor_AvailableActionsBlock(t *testing.T) {
 		// Reset.
 		ext.SetEnabledTools(nil)
 	})
+
+	t.Run("tool in order but not in descriptions", func(t *testing.T) {
+		// Temporarily add a name to toolActionOrder that has no description.
+		origOrder := toolActionOrder
+		toolActionOrder = append([]string{"nonexistent_tool"}, origOrder...)
+		defer func() { toolActionOrder = origOrder }()
+
+		// Enable the nonexistent tool so it passes the enabledTools check.
+		ext.SetEnabledTools(map[string]struct{}{
+			"nonexistent_tool":    {},
+			memory.AddToolName:    {},
+			memory.UpdateToolName: {},
+		})
+		block := ext.availableActionsBlock()
+		// The nonexistent tool should be skipped (no description).
+		assert.NotContains(t, block, "nonexistent_tool")
+		// But real tools should still appear.
+		assert.Contains(t, block, memory.AddToolName)
+		assert.Contains(t, block, memory.UpdateToolName)
+		// Reset.
+		ext.SetEnabledTools(nil)
+	})
 }
 
 func TestExtractor_Extract_FilteredTools(t *testing.T) {
@@ -729,4 +762,197 @@ func TestExtractor_EnabledToolsConfigurer(t *testing.T) {
 	ext := e.(*memoryExtractor)
 	_, hasAdd := ext.enabledTools[memory.AddToolName]
 	assert.True(t, hasAdd)
+}
+
+func TestInferReferenceDate(t *testing.T) {
+	t.Run("uses context reference date", func(t *testing.T) {
+		refDate := time.Date(
+			2023, 5, 8, 0, 0, 0, 0, time.UTC,
+		)
+		ctx := WithReferenceDate(
+			context.Background(), refDate,
+		)
+		d := referenceDate(ctx)
+		assert.Equal(t, 2023, d.Year())
+		assert.Equal(t, time.May, d.Month())
+		assert.Equal(t, 8, d.Day())
+	})
+
+	t.Run("falls back to now without context", func(t *testing.T) {
+		d := referenceDate(context.Background())
+		assert.InDelta(t,
+			float64(time.Now().UTC().Unix()),
+			float64(d.Unix()), 5,
+		)
+	})
+}
+
+func TestExtractor_BuildSystemPrompt_WithTopics(t *testing.T) {
+	m := &mockModel{name: "test-model"}
+	e := NewExtractor(m)
+	ext := e.(*memoryExtractor)
+
+	existing := []*memory.Entry{
+		{
+			ID: "mem-1",
+			Memory: &memory.Memory{
+				Memory: "Likes coffee.",
+				Topics: []string{"preferences", "food"},
+			},
+		},
+		{
+			ID: "mem-2",
+			Memory: &memory.Memory{
+				Memory: "Works at Tencent.",
+				Topics: nil, // No topics.
+			},
+		},
+	}
+
+	prompt := ext.buildSystemPrompt(time.Now(), existing)
+
+	// mem-1 should have topics displayed.
+	assert.Contains(t, prompt, "[mem-1] Likes coffee. (topics: preferences, food)")
+	// mem-2 should not have topics section.
+	assert.Contains(t, prompt, "[mem-2] Works at Tencent.")
+	assert.NotContains(t, prompt, "[mem-2] Works at Tencent. (topics:")
+}
+
+func TestExtractor_BeforeModelCallback_UpdatesContext(t *testing.T) {
+	type ctxKey struct{}
+	m := &mockModel{
+		name: "test-model",
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{}}},
+		}},
+	}
+
+	callbacks := model.NewCallbacks().RegisterBeforeModel(
+		func(ctx context.Context, args *model.BeforeModelArgs) (*model.BeforeModelResult, error) {
+			newCtx := context.WithValue(ctx, ctxKey{}, "injected")
+			return &model.BeforeModelResult{Context: newCtx}, nil
+		},
+	)
+	e := NewExtractor(m, WithModelCallbacks(callbacks))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("hello"),
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Nil(t, ops)
+}
+
+func TestExtractor_AfterModelCallback_UpdatesContext(t *testing.T) {
+	type ctxKey struct{}
+	m := &mockModel{
+		name: "test-model",
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{}}},
+		}},
+	}
+
+	callbacks := model.NewCallbacks().RegisterAfterModel(
+		func(ctx context.Context, args *model.AfterModelArgs) (*model.AfterModelResult, error) {
+			newCtx := context.WithValue(ctx, ctxKey{}, "injected")
+			return &model.AfterModelResult{Context: newCtx}, nil
+		},
+	)
+	e := NewExtractor(m, WithModelCallbacks(callbacks))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("hello"),
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Nil(t, ops)
+}
+
+func TestExtractor_Extract_NilResponseInStream(t *testing.T) {
+	m := &mockModel{
+		name: "test-model",
+		responses: []*model.Response{
+			nil,
+			{Choices: []model.Choice{{Message: model.Message{}}}},
+		},
+	}
+	e := NewExtractor(m)
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("hello"),
+	}, nil)
+
+	assert.NoError(t, err)
+	assert.Nil(t, ops)
+}
+
+func TestExtractor_Extract_ClearOperation(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{})
+	m := newMockModelWithToolCalls([]model.ToolCall{
+		makeToolCall(memory.ClearToolName, args),
+	})
+	e := NewExtractor(m)
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Forget everything about me."),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 1)
+	assert.Equal(t, OperationClear, ops[0].Type)
+}
+
+func TestExtractor_WithChecker(t *testing.T) {
+	m := &mockModel{name: "test-model"}
+
+	t.Run("nil checker is ignored", func(t *testing.T) {
+		e := NewExtractor(m, WithChecker(nil))
+		ext := e.(*memoryExtractor)
+		assert.Len(t, ext.checkers, 0)
+	})
+
+	t.Run("checker added", func(t *testing.T) {
+		checker := func(ctx *ExtractionContext) bool { return true }
+		e := NewExtractor(m, WithChecker(checker))
+		ext := e.(*memoryExtractor)
+		assert.Len(t, ext.checkers, 1)
+	})
+}
+
+func TestExtractor_WithCheckersAny(t *testing.T) {
+	m := &mockModel{name: "test-model"}
+
+	t.Run("empty checkers is no-op", func(t *testing.T) {
+		e := NewExtractor(m, WithCheckersAny())
+		ext := e.(*memoryExtractor)
+		assert.Len(t, ext.checkers, 0)
+	})
+
+	t.Run("combined with OR logic", func(t *testing.T) {
+		alwaysFail := func(ctx *ExtractionContext) bool { return false }
+		alwaysPass := func(ctx *ExtractionContext) bool { return true }
+		e := NewExtractor(m, WithCheckersAny(alwaysFail, alwaysPass))
+		assert.True(t, e.ShouldExtract(&ExtractionContext{}))
+	})
+}
+
+func TestModelErrFromResponse(t *testing.T) {
+	t.Run("nil response", func(t *testing.T) {
+		assert.Nil(t, modelErrFromResponse(nil))
+	})
+	t.Run("nil error", func(t *testing.T) {
+		assert.Nil(t, modelErrFromResponse(&model.Response{}))
+	})
+	t.Run("with error", func(t *testing.T) {
+		resp := &model.Response{
+			Error: &model.ResponseError{
+				Type:    "invalid_request",
+				Message: "bad input",
+			},
+		}
+		err := modelErrFromResponse(resp)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid_request")
+		assert.Contains(t, err.Error(), "bad input")
+	})
 }

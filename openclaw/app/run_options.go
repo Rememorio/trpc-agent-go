@@ -16,32 +16,44 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	ocskills "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/skills"
 )
 
 const (
 	openClawConfigEnvName = "OPENCLAW_CONFIG"
 
+	defaultConfigRootDir = ".trpc-agent-go-github"
+	defaultConfigAppDir  = "openclaw"
+	defaultConfigFile    = "openclaw.yaml"
+	defaultAdminAddr     = "127.0.0.1:19789"
+	defaultAdminAutoPort = true
+
 	sessionBackendInMemory   = "inmemory"
 	sessionBackendRedis      = "redis"
+	sessionBackendSQLite     = "sqlite"
 	sessionBackendMySQL      = "mysql"
 	sessionBackendPostgres   = "postgres"
 	sessionBackendClickHouse = "clickhouse"
 
-	memoryBackendInMemory = "inmemory"
-	memoryBackendRedis    = "redis"
-	memoryBackendMySQL    = "mysql"
-	memoryBackendPostgres = "postgres"
-	memoryBackendPGVector = "pgvector"
+	memoryBackendInMemory  = "inmemory"
+	memoryBackendRedis     = "redis"
+	memoryBackendSQLite    = "sqlite"
+	memoryBackendSQLiteVec = "sqlitevec"
+	memoryBackendMySQL     = "mysql"
+	memoryBackendPostgres  = "postgres"
+	memoryBackendPGVector  = "pgvector"
 
 	summaryPolicyAny = "any"
 	summaryPolicyAll = "all"
 
 	defaultSessionSummaryEventThreshold = 20
-	defaultMemoryAutoMessageThreshold   = 20
+	defaultSkillsLoadMode               = "turn"
 
 	flagAddSessionSummary = "add-session-summary"
 	flagMaxHistoryRuns    = "max-history-runs"
@@ -63,6 +75,22 @@ const (
 	flagAgentRalphLoopVerifyWorkDir     = "agent-ralph-verify-workdir"
 	flagAgentRalphLoopVerifyTimeout     = "agent-ralph-verify-timeout"
 	flagAgentRalphLoopVerifyEnv         = "agent-ralph-verify-env"
+
+	flagEnableParallelTools = "enable-parallel-tools"
+
+	flagSkillsAllowBundled = "skills-allow-bundled"
+	flagSkillsLoadMode     = "skills-load-mode"
+	flagSkillsMaxLoaded    = "skills-max-loaded"
+	flagSkillsToolResults  = "skills-loaded-content-in-tool-results"
+	flagSkillsSkipFallback = "skills-skip-fallback-on-session-summary"
+
+	flagDebugRecorder     = "debug-recorder"
+	flagDebugRecorderDir  = "debug-recorder-dir"
+	flagDebugRecorderMode = "debug-recorder-mode"
+
+	flagAdminEnabled  = "admin-enabled"
+	flagAdminAddr     = "admin-addr"
+	flagAdminAutoPort = "admin-auto-port"
 )
 
 type runOptions struct {
@@ -70,6 +98,10 @@ type runOptions struct {
 
 	AppName  string
 	HTTPAddr string
+
+	AdminEnabled  bool
+	AdminAddr     string
+	AdminAutoPort bool
 
 	AddSessionSummary bool
 	MaxHistoryRuns    int
@@ -100,30 +132,30 @@ type runOptions struct {
 	ClaudeEnv          string
 	ClaudeWorkDir      string
 
-	ModelMode      string
-	OpenAIModel    string
-	OpenAIVariant  string
-	OpenAIBaseURL  string
-	ModelConfig    *yaml.Node
-	TelegramToken  string
-	SkillsRoot     string
-	SkillsExtraDir string
-	SkillsDebug    bool
-	StateDir       string
+	ModelMode          string
+	OpenAIModel        string
+	OpenAIVariant      string
+	OpenAIBaseURL      string
+	ModelConfig        *yaml.Node
+	SkillsRoot         string
+	SkillsExtraDir     string
+	SkillsDebug        bool
+	SkillsAllowBundled string
+	SkillConfigs       map[string]ocskills.SkillConfig
+	SkillsLoadMode     string
+	SkillsMaxLoaded    int
+	SkillsToolResults  bool
+	SkillsSkipFallback bool
+	SkillsToolingGuide *string
+	StateDir           string
+
+	DebugRecorderEnabled bool
+	DebugRecorderDir     string
+	DebugRecorderMode    string
 
 	AllowUsers     string
 	RequireMention bool
 	Mention        string
-
-	TelegramStartFromLatest bool
-	TelegramProxy           string
-	TelegramHTTPTimeout     time.Duration
-	TelegramMaxRetries      int
-	TelegramStreaming       string
-	TelegramDMPolicy        string
-	TelegramGroupPolicy     string
-	TelegramAllowThreads    string
-	TelegramPairingTTL      time.Duration
 
 	Channels []pluginSpec
 
@@ -154,6 +186,9 @@ type runOptions struct {
 
 	EnableLocalExec     bool
 	EnableOpenClawTools bool
+	EnableParallelTools bool
+
+	enableOpenClawToolsExplicit bool
 
 	ToolProviders []pluginSpec
 	ToolSets      []pluginSpec
@@ -166,8 +201,11 @@ func parseRunOptions(args []string) (runOptions, error) {
 	fs.SetOutput(os.Stderr)
 
 	opts := runOptions{
-		AppName:  appName,
-		HTTPAddr: defaultHTTPAddr,
+		AppName:       appName,
+		HTTPAddr:      defaultHTTPAddr,
+		AdminEnabled:  true,
+		AdminAddr:     defaultAdminAddr,
+		AdminAutoPort: defaultAdminAutoPort,
 
 		AgentType: agentTypeLLM,
 
@@ -175,10 +213,9 @@ func parseRunOptions(args []string) (runOptions, error) {
 		OpenAIModel:   defaultOpenAIModelName(),
 		OpenAIVariant: defaultOpenAIVariant,
 
-		TelegramStartFromLatest: true,
-		TelegramMaxRetries:      defaultTelegramMaxRetries,
-		TelegramStreaming:       defaultTelegramStreaming,
-		TelegramPairingTTL:      time.Hour,
+		SkillsLoadMode:     defaultSkillsLoadMode,
+		SkillsToolResults:  true,
+		SkillsSkipFallback: true,
 
 		SessionBackend: sessionBackendInMemory,
 		MemoryBackend:  memoryBackendInMemory,
@@ -205,6 +242,24 @@ func parseRunOptions(args []string) (runOptions, error) {
 		"http-addr",
 		defaultHTTPAddr,
 		"HTTP listen address for gateway endpoints",
+	)
+	fs.BoolVar(
+		&opts.AdminEnabled,
+		flagAdminEnabled,
+		true,
+		"Enable the local OpenClaw admin UI",
+	)
+	fs.StringVar(
+		&opts.AdminAddr,
+		flagAdminAddr,
+		defaultAdminAddr,
+		"HTTP listen address for the local OpenClaw admin UI",
+	)
+	fs.BoolVar(
+		&opts.AdminAutoPort,
+		flagAdminAutoPort,
+		defaultAdminAutoPort,
+		"Auto-pick a nearby free admin port when the preferred one is busy",
 	)
 	fs.StringVar(
 		&opts.AgentType,
@@ -375,66 +430,6 @@ func parseRunOptions(args []string) (runOptions, error) {
 		"OpenAI base URL override (mode=openai, optional)",
 	)
 	fs.StringVar(
-		&opts.TelegramToken,
-		"telegram-token",
-		"",
-		"Telegram bot token; empty disables Telegram",
-	)
-	fs.BoolVar(
-		&opts.TelegramStartFromLatest,
-		"telegram-start-from-latest",
-		true,
-		"Drain pending updates on first start (no offset)",
-	)
-	fs.StringVar(
-		&opts.TelegramProxy,
-		"telegram-proxy",
-		"",
-		"HTTP proxy URL for Telegram API calls (optional)",
-	)
-	fs.DurationVar(
-		&opts.TelegramHTTPTimeout,
-		"telegram-http-timeout",
-		0,
-		"HTTP client timeout for Telegram API calls (optional)",
-	)
-	fs.IntVar(
-		&opts.TelegramMaxRetries,
-		"telegram-max-retries",
-		defaultTelegramMaxRetries,
-		"Max retries for Telegram API calls (429/5xx/transport errors)",
-	)
-	fs.StringVar(
-		&opts.TelegramStreaming,
-		"telegram-streaming",
-		defaultTelegramStreaming,
-		"Telegram reply streaming: off|block|progress",
-	)
-	fs.StringVar(
-		&opts.TelegramDMPolicy,
-		"telegram-dm-policy",
-		"",
-		"Telegram DM policy: disabled|open|allowlist|pairing",
-	)
-	fs.StringVar(
-		&opts.TelegramGroupPolicy,
-		"telegram-group-policy",
-		"",
-		"Telegram group policy: disabled|open|allowlist",
-	)
-	fs.StringVar(
-		&opts.TelegramAllowThreads,
-		"telegram-allow-threads",
-		"",
-		"Comma-separated allowlist of chat/topic threads",
-	)
-	fs.DurationVar(
-		&opts.TelegramPairingTTL,
-		"telegram-pairing-ttl",
-		time.Hour,
-		"How long pairing codes stay valid",
-	)
-	fs.StringVar(
 		&opts.AllowUsers,
 		"allow-users",
 		"",
@@ -471,16 +466,65 @@ func parseRunOptions(args []string) (runOptions, error) {
 		"Log skill gating decisions",
 	)
 	fs.StringVar(
+		&opts.SkillsAllowBundled,
+		flagSkillsAllowBundled,
+		"",
+		"Comma-separated allowlist of bundled skills",
+	)
+	fs.StringVar(
+		&opts.SkillsLoadMode,
+		flagSkillsLoadMode,
+		defaultSkillsLoadMode,
+		"Skill context lifetime: once|turn|session",
+	)
+	fs.IntVar(
+		&opts.SkillsMaxLoaded,
+		flagSkillsMaxLoaded,
+		0,
+		"Keep at most N loaded skills (0 disables the cap)",
+	)
+	fs.BoolVar(
+		&opts.SkillsToolResults,
+		flagSkillsToolResults,
+		true,
+		"Materialize loaded skill content into tool results",
+	)
+	fs.BoolVar(
+		&opts.SkillsSkipFallback,
+		flagSkillsSkipFallback,
+		true,
+		"Skip skill fallback system message when session "+
+			"summary exists",
+	)
+	fs.StringVar(
 		&opts.StateDir,
 		"state-dir",
 		"",
 		"State dir for offsets and managed skills",
 	)
+	fs.BoolVar(
+		&opts.DebugRecorderEnabled,
+		flagDebugRecorder,
+		false,
+		"Enable file-based debug recorder",
+	)
+	fs.StringVar(
+		&opts.DebugRecorderDir,
+		flagDebugRecorderDir,
+		"",
+		"Debug recorder output dir (default: <state_dir>/debug)",
+	)
+	fs.StringVar(
+		&opts.DebugRecorderMode,
+		flagDebugRecorderMode,
+		"",
+		"Debug recorder mode: full|safe (default: full)",
+	)
 	fs.StringVar(
 		&opts.SessionBackend,
 		"session-backend",
 		sessionBackendInMemory,
-		"Session backend: inmemory|redis|mysql|postgres|clickhouse",
+		"Session backend: inmemory|redis|sqlite|mysql|postgres|clickhouse",
 	)
 	fs.StringVar(
 		&opts.SessionRedisURL,
@@ -504,7 +548,9 @@ func parseRunOptions(args []string) (runOptions, error) {
 		&opts.MemoryBackend,
 		"memory-backend",
 		memoryBackendInMemory,
-		"Memory backend: inmemory|redis|mysql|postgres|pgvector",
+		"Memory backend: inmemory|redis|sqlite|"+
+			"sqlitevec(requires openclaw_sqlitevec build tag)|"+
+			"mysql|postgres|pgvector",
 	)
 	fs.StringVar(
 		&opts.MemoryRedisURL,
@@ -546,7 +592,7 @@ func parseRunOptions(args []string) (runOptions, error) {
 		&opts.MemoryAutoMessageThreshold,
 		"memory-auto-messages",
 		0,
-		"Extract when messages exceed N (0 uses default)",
+		"Extract when messages exceed N (0 disables threshold check)",
 	)
 	fs.DurationVar(
 		&opts.MemoryAutoTimeInterval,
@@ -600,7 +646,14 @@ func parseRunOptions(args []string) (runOptions, error) {
 		&opts.EnableOpenClawTools,
 		"enable-openclaw-tools",
 		false,
-		"Enable OpenClaw-compatible exec/process tools (unsafe)",
+		"Enable OpenClaw host tools (exec_command, message, "+
+			"cron) (unsafe, enabled by default for llm agents)",
+	)
+	fs.BoolVar(
+		&opts.EnableParallelTools,
+		flagEnableParallelTools,
+		false,
+		"Enable parallel tool calls (not supported by claude-code)",
 	)
 	fs.BoolVar(
 		&opts.RefreshToolSetsOnRun,
@@ -623,11 +676,19 @@ func parseRunOptions(args []string) (runOptions, error) {
 	fs.Visit(func(f *flag.Flag) {
 		setFlags[f.Name] = struct{}{}
 	})
+	opts.enableOpenClawToolsExplicit = flagWasSet(
+		setFlags,
+		"enable-openclaw-tools",
+	)
 
 	cfgPath := resolveConfigPath(opts.ConfigPath)
 	if cfgPath == "" {
+		if err := finalizeRunOptions(&opts); err != nil {
+			return runOptions{}, &exitError{Code: 2, Err: err}
+		}
 		return opts, nil
 	}
+	opts.ConfigPath = cfgPath
 
 	cfg, err := loadConfigFile(cfgPath)
 	if err != nil {
@@ -637,12 +698,22 @@ func parseRunOptions(args []string) (runOptions, error) {
 		}
 	}
 	if cfg == nil {
+		if err := finalizeRunOptions(&opts); err != nil {
+			return runOptions{}, &exitError{Code: 2, Err: err}
+		}
 		return opts, nil
 	}
 	if err := cfg.apply(&opts, setFlags); err != nil {
 		return runOptions{}, &exitError{
 			Code: 1,
 			Err:  fmt.Errorf("apply config failed: %w", err),
+		}
+	}
+
+	if err := finalizeRunOptions(&opts); err != nil {
+		return runOptions{}, &exitError{
+			Code: loadModeExitCode(setFlags),
+			Err:  err,
 		}
 	}
 
@@ -672,18 +743,44 @@ func resolveConfigPath(raw string) string {
 	if path != "" {
 		return path
 	}
-	return strings.TrimSpace(os.Getenv(openClawConfigEnvName))
+	if v := strings.TrimSpace(os.Getenv(openClawConfigEnvName)); v != "" {
+		return v
+	}
+	return defaultConfigPathIfExists()
+}
+
+func defaultConfigPathIfExists() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	cfgPath := filepath.Join(
+		home,
+		defaultConfigRootDir,
+		defaultConfigAppDir,
+		defaultConfigFile,
+	)
+	st, err := os.Stat(cfgPath)
+	if err != nil || st == nil || st.IsDir() {
+		return ""
+	}
+	return cfgPath
 }
 
 type fileConfig struct {
 	AppName  *string `yaml:"app_name,omitempty"`
 	StateDir *string `yaml:"state_dir,omitempty"`
 
+	DebugRecorder *debugRecorderConfig `yaml:"debug_recorder,omitempty"`
+
 	HTTP     *httpConfig      `yaml:"http,omitempty"`
+	Admin    *adminConfig     `yaml:"admin,omitempty"`
 	Agent    *agentRunConfig  `yaml:"agent,omitempty"`
 	Model    *modelConfig     `yaml:"model,omitempty"`
 	Gateway  *gatewayConfig   `yaml:"gateway,omitempty"`
-	Telegram *telegramConfig  `yaml:"telegram,omitempty"`
 	Channels []filePluginSpec `yaml:"channels,omitempty"`
 	Skills   *skillsConfig    `yaml:"skills,omitempty"`
 	Tools    *toolsConfig     `yaml:"tools,omitempty"`
@@ -694,6 +791,18 @@ type fileConfig struct {
 
 type httpConfig struct {
 	Addr *string `yaml:"addr,omitempty"`
+}
+
+type adminConfig struct {
+	Enabled  *bool   `yaml:"enabled,omitempty"`
+	Addr     *string `yaml:"addr,omitempty"`
+	AutoPort *bool   `yaml:"auto_port,omitempty"`
+}
+
+type debugRecorderConfig struct {
+	Enabled *bool   `yaml:"enabled,omitempty"`
+	Dir     *string `yaml:"dir,omitempty"`
+	Mode    *string `yaml:"mode,omitempty"`
 }
 
 type agentRunConfig struct {
@@ -751,28 +860,39 @@ type gatewayConfig struct {
 	MentionPatterns []string `yaml:"mention_patterns,omitempty"`
 }
 
-type telegramConfig struct {
-	Token           *string  `yaml:"token,omitempty"`
-	StartFromLatest *bool    `yaml:"start_from_latest,omitempty"`
-	Proxy           *string  `yaml:"proxy,omitempty"`
-	HTTPTimeout     *string  `yaml:"http_timeout,omitempty"`
-	MaxRetries      *int     `yaml:"max_retries,omitempty"`
-	Streaming       *string  `yaml:"streaming,omitempty"`
-	DMPolicy        *string  `yaml:"dm_policy,omitempty"`
-	GroupPolicy     *string  `yaml:"group_policy,omitempty"`
-	AllowThreads    []string `yaml:"allow_threads,omitempty"`
-	PairingTTL      *string  `yaml:"pairing_ttl,omitempty"`
-}
-
 type skillsConfig struct {
 	Root      *string  `yaml:"root,omitempty"`
 	ExtraDirs []string `yaml:"extra_dirs,omitempty"`
 	Debug     *bool    `yaml:"debug,omitempty"`
+
+	AllowBundled      []string `yaml:"allow_bundled,omitempty"`
+	AllowBundledCamel []string `yaml:"allowBundled,omitempty"`
+	LoadMode          *string  `yaml:"load_mode,omitempty"`
+	LoadModeCamel     *string  `yaml:"loadMode,omitempty"`
+	MaxLoadedSkills   *int     `yaml:"max_loaded_skills,omitempty"`
+	MaxLoadedCamel    *int     `yaml:"maxLoadedSkills,omitempty"`
+
+	ToolResults          *bool   `yaml:"loaded_content_in_tool_results,omitempty"`
+	ToolResultsCamel     *bool   `yaml:"loadedContentInToolResults,omitempty"`
+	SkipSummaryFallback  *bool   `yaml:"skip_fallback_on_session_summary,omitempty"`
+	SkipFallbackCamel    *bool   `yaml:"skipFallbackOnSessionSummary,omitempty"`
+	ToolingGuidance      *string `yaml:"tooling_guidance,omitempty"`
+	ToolingGuidanceCamel *string `yaml:"toolingGuidance,omitempty"`
+
+	Entries map[string]skillEntryConfig `yaml:"entries,omitempty"`
+}
+
+type skillEntryConfig struct {
+	Enabled     *bool             `yaml:"enabled,omitempty"`
+	APIKey      string            `yaml:"api_key,omitempty"`
+	APIKeyCamel string            `yaml:"apiKey,omitempty"`
+	Env         map[string]string `yaml:"env,omitempty"`
 }
 
 type toolsConfig struct {
 	EnableLocalExec      *bool `yaml:"enable_local_exec,omitempty"`
 	EnableOpenClawTools  *bool `yaml:"enable_openclaw_tools,omitempty"`
+	EnableParallelTools  *bool `yaml:"enable_parallel_tools,omitempty"`
 	RefreshToolSetsOnRun *bool `yaml:"refresh_toolsets_on_run,omitempty"`
 
 	Providers []filePluginSpec `yaml:"providers,omitempty"`
@@ -847,6 +967,10 @@ func loadConfigFile(path string) (*fileConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	data, err = expandEnvPlaceholders(data)
+	if err != nil {
+		return nil, err
+	}
 
 	var cfg fileConfig
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -859,6 +983,70 @@ func loadConfigFile(path string) (*fileConfig, error) {
 		return nil, errors.New("multiple YAML documents are not supported")
 	}
 	return &cfg, nil
+}
+
+func expandEnvPlaceholders(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return data, nil
+	}
+	const prefix = "${"
+	if !bytes.Contains(data, []byte(prefix)) {
+		return data, nil
+	}
+
+	out := make([]byte, 0, len(data))
+	for i := 0; i < len(data); {
+		if data[i] != '$' || i+1 >= len(data) || data[i+1] != '{' {
+			out = append(out, data[i])
+			i++
+			continue
+		}
+
+		end := bytes.IndexByte(data[i+2:], '}')
+		if end < 0 {
+			out = append(out, data[i])
+			i++
+			continue
+		}
+		rawName := strings.TrimSpace(string(data[i+2 : i+2+end]))
+		if !isValidEnvName(rawName) {
+			out = append(out, data[i:i+2+end+1]...)
+			i += 2 + end + 1
+			continue
+		}
+
+		val, ok := os.LookupEnv(rawName)
+		if !ok {
+			return nil, fmt.Errorf(
+				"config: env var %s is not set",
+				rawName,
+			)
+		}
+		out = append(out, []byte(val)...)
+		i += 2 + end + 1
+	}
+	return out, nil
+}
+
+func isValidEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if i == 0 {
+			if isAlpha || r == '_' {
+				continue
+			}
+			return false
+		}
+		if isAlpha || isDigit || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (cfg *fileConfig) apply(
@@ -875,9 +1063,37 @@ func (cfg *fileConfig) apply(
 	if cfg.StateDir != nil && !flagWasSet(set, "state-dir") {
 		opts.StateDir = strings.TrimSpace(*cfg.StateDir)
 	}
+	if cfg.DebugRecorder != nil {
+		if cfg.DebugRecorder.Enabled != nil &&
+			!flagWasSet(set, flagDebugRecorder) {
+			opts.DebugRecorderEnabled = *cfg.DebugRecorder.Enabled
+		}
+		if cfg.DebugRecorder.Dir != nil &&
+			!flagWasSet(set, flagDebugRecorderDir) {
+			opts.DebugRecorderDir = strings.TrimSpace(*cfg.DebugRecorder.Dir)
+		}
+		if cfg.DebugRecorder.Mode != nil &&
+			!flagWasSet(set, flagDebugRecorderMode) {
+			opts.DebugRecorderMode = strings.TrimSpace(*cfg.DebugRecorder.Mode)
+		}
+	}
 
 	if cfg.HTTP != nil && cfg.HTTP.Addr != nil && !flagWasSet(set, "http-addr") {
 		opts.HTTPAddr = strings.TrimSpace(*cfg.HTTP.Addr)
+	}
+	if cfg.Admin != nil {
+		if cfg.Admin.Enabled != nil &&
+			!flagWasSet(set, flagAdminEnabled) {
+			opts.AdminEnabled = *cfg.Admin.Enabled
+		}
+		if cfg.Admin.Addr != nil &&
+			!flagWasSet(set, flagAdminAddr) {
+			opts.AdminAddr = strings.TrimSpace(*cfg.Admin.Addr)
+		}
+		if cfg.Admin.AutoPort != nil &&
+			!flagWasSet(set, flagAdminAutoPort) {
+			opts.AdminAutoPort = *cfg.Admin.AutoPort
+		}
 	}
 
 	if cfg.Agent != nil {
@@ -1018,70 +1234,6 @@ func (cfg *fileConfig) apply(
 		}
 	}
 
-	if cfg.Telegram != nil {
-		if cfg.Telegram.Token != nil &&
-			!flagWasSet(set, "telegram-token") {
-			opts.TelegramToken = strings.TrimSpace(
-				*cfg.Telegram.Token,
-			)
-		}
-		if cfg.Telegram.StartFromLatest != nil &&
-			!flagWasSet(set, "telegram-start-from-latest") {
-			opts.TelegramStartFromLatest = *cfg.Telegram.StartFromLatest
-		}
-		if cfg.Telegram.Proxy != nil &&
-			!flagWasSet(set, "telegram-proxy") {
-			opts.TelegramProxy = strings.TrimSpace(
-				*cfg.Telegram.Proxy,
-			)
-		}
-		if cfg.Telegram.HTTPTimeout != nil &&
-			!flagWasSet(set, "telegram-http-timeout") {
-			dur, err := parseDuration(*cfg.Telegram.HTTPTimeout)
-			if err != nil {
-				return fmt.Errorf("telegram.http_timeout: %w", err)
-			}
-			opts.TelegramHTTPTimeout = dur
-		}
-		if cfg.Telegram.MaxRetries != nil &&
-			!flagWasSet(set, "telegram-max-retries") {
-			opts.TelegramMaxRetries = *cfg.Telegram.MaxRetries
-		}
-		if cfg.Telegram.Streaming != nil &&
-			!flagWasSet(set, "telegram-streaming") {
-			opts.TelegramStreaming = strings.TrimSpace(
-				*cfg.Telegram.Streaming,
-			)
-		}
-		if cfg.Telegram.DMPolicy != nil &&
-			!flagWasSet(set, "telegram-dm-policy") {
-			opts.TelegramDMPolicy = strings.TrimSpace(
-				*cfg.Telegram.DMPolicy,
-			)
-		}
-		if cfg.Telegram.GroupPolicy != nil &&
-			!flagWasSet(set, "telegram-group-policy") {
-			opts.TelegramGroupPolicy = strings.TrimSpace(
-				*cfg.Telegram.GroupPolicy,
-			)
-		}
-		if len(cfg.Telegram.AllowThreads) > 0 &&
-			!flagWasSet(set, "telegram-allow-threads") {
-			opts.TelegramAllowThreads = strings.Join(
-				cfg.Telegram.AllowThreads,
-				csvDelimiter,
-			)
-		}
-		if cfg.Telegram.PairingTTL != nil &&
-			!flagWasSet(set, "telegram-pairing-ttl") {
-			dur, err := parseDuration(*cfg.Telegram.PairingTTL)
-			if err != nil {
-				return fmt.Errorf("telegram.pairing_ttl: %w", err)
-			}
-			opts.TelegramPairingTTL = dur
-		}
-	}
-
 	if len(cfg.Channels) > 0 {
 		opts.Channels = convertPluginSpecs(cfg.Channels)
 	}
@@ -1100,6 +1252,55 @@ func (cfg *fileConfig) apply(
 		if cfg.Skills.Debug != nil && !flagWasSet(set, "skills-debug") {
 			opts.SkillsDebug = *cfg.Skills.Debug
 		}
+		allowBundled := cfg.Skills.AllowBundled
+		if len(allowBundled) == 0 {
+			allowBundled = cfg.Skills.AllowBundledCamel
+		}
+		if len(allowBundled) > 0 &&
+			!flagWasSet(set, flagSkillsAllowBundled) {
+			opts.SkillsAllowBundled = strings.Join(
+				allowBundled,
+				csvDelimiter,
+			)
+		}
+		if len(cfg.Skills.Entries) > 0 {
+			opts.SkillConfigs = convertSkillConfigs(
+				cfg.Skills.Entries,
+			)
+		}
+		loadMode := firstStringPtr(
+			cfg.Skills.LoadMode,
+			cfg.Skills.LoadModeCamel,
+		)
+		if loadMode != nil && !flagWasSet(set, flagSkillsLoadMode) {
+			opts.SkillsLoadMode = strings.TrimSpace(*loadMode)
+		}
+		maxLoaded := firstIntPtr(
+			cfg.Skills.MaxLoadedSkills,
+			cfg.Skills.MaxLoadedCamel,
+		)
+		if maxLoaded != nil && !flagWasSet(set, flagSkillsMaxLoaded) {
+			opts.SkillsMaxLoaded = *maxLoaded
+		}
+		toolResults := firstBoolPtr(
+			cfg.Skills.ToolResults,
+			cfg.Skills.ToolResultsCamel,
+		)
+		if toolResults != nil && !flagWasSet(set, flagSkillsToolResults) {
+			opts.SkillsToolResults = *toolResults
+		}
+		skipFallback := firstBoolPtr(
+			cfg.Skills.SkipSummaryFallback,
+			cfg.Skills.SkipFallbackCamel,
+		)
+		if skipFallback != nil &&
+			!flagWasSet(set, flagSkillsSkipFallback) {
+			opts.SkillsSkipFallback = *skipFallback
+		}
+		opts.SkillsToolingGuide = firstStringPtr(
+			cfg.Skills.ToolingGuidance,
+			cfg.Skills.ToolingGuidanceCamel,
+		)
 	}
 
 	if cfg.Tools != nil {
@@ -1107,9 +1308,16 @@ func (cfg *fileConfig) apply(
 			!flagWasSet(set, "enable-local-exec") {
 			opts.EnableLocalExec = *cfg.Tools.EnableLocalExec
 		}
-		if cfg.Tools.EnableOpenClawTools != nil &&
-			!flagWasSet(set, "enable-openclaw-tools") {
-			opts.EnableOpenClawTools = *cfg.Tools.EnableOpenClawTools
+		if cfg.Tools.EnableOpenClawTools != nil {
+			opts.enableOpenClawToolsExplicit = true
+			if !flagWasSet(set, "enable-openclaw-tools") {
+				opts.EnableOpenClawTools =
+					*cfg.Tools.EnableOpenClawTools
+			}
+		}
+		if cfg.Tools.EnableParallelTools != nil &&
+			!flagWasSet(set, flagEnableParallelTools) {
+			opts.EnableParallelTools = *cfg.Tools.EnableParallelTools
 		}
 		if cfg.Tools.RefreshToolSetsOnRun != nil &&
 			!flagWasSet(set, "refresh-toolsets-on-run") {
@@ -1300,6 +1508,36 @@ func convertPluginSpecs(specs []filePluginSpec) []pluginSpec {
 	return out
 }
 
+func convertSkillConfigs(
+	entries map[string]skillEntryConfig,
+) map[string]ocskills.SkillConfig {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	out := make(map[string]ocskills.SkillConfig, len(entries))
+	for rawKey, rawCfg := range entries {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			continue
+		}
+
+		apiKey := strings.TrimSpace(rawCfg.APIKey)
+		if apiKey == "" {
+			apiKey = strings.TrimSpace(rawCfg.APIKeyCamel)
+		}
+		out[key] = ocskills.SkillConfig{
+			Enabled: rawCfg.Enabled,
+			APIKey:  apiKey,
+			Env:     rawCfg.Env,
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func applySessionSummary(
 	cfg *summaryConfig,
 	opts *runOptions,
@@ -1377,4 +1615,64 @@ func parseDuration(raw string) (time.Duration, error) {
 func flagWasSet(set map[string]struct{}, name string) bool {
 	_, ok := set[name]
 	return ok
+}
+
+func loadModeExitCode(set map[string]struct{}) int {
+	if flagWasSet(set, flagSkillsLoadMode) {
+		return 2
+	}
+	return 1
+}
+
+func finalizeRunOptions(opts *runOptions) error {
+	if opts == nil {
+		return nil
+	}
+	mode, err := normalizeSkillsLoadMode(opts.SkillsLoadMode)
+	if err != nil {
+		return err
+	}
+	opts.SkillsLoadMode = mode
+	opts.AdminAddr = strings.TrimSpace(opts.AdminAddr)
+	if opts.AdminEnabled && opts.AdminAddr == "" {
+		opts.AdminAddr = defaultAdminAddr
+	}
+	return nil
+}
+
+func normalizeSkillsLoadMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	if mode == "" {
+		return defaultSkillsLoadMode, nil
+	}
+	switch mode {
+	case "once", "turn", "session":
+		return mode, nil
+	default:
+		return "", fmt.Errorf(
+			"invalid skills load mode %q: want once|turn|session",
+			raw,
+		)
+	}
+}
+
+func firstBoolPtr(primary, fallback *bool) *bool {
+	if primary != nil {
+		return primary
+	}
+	return fallback
+}
+
+func firstIntPtr(primary, fallback *int) *int {
+	if primary != nil {
+		return primary
+	}
+	return fallback
+}
+
+func firstStringPtr(primary, fallback *string) *string {
+	if primary != nil {
+		return primary
+	}
+	return fallback
 }

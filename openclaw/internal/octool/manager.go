@@ -39,6 +39,7 @@ type Manager struct {
 
 	maxLines int
 	jobTTL   time.Duration
+	baseEnv  map[string]string
 
 	clock func() time.Time
 }
@@ -58,6 +59,15 @@ func WithJobTTL(d time.Duration) Option {
 		if d > 0 {
 			m.jobTTL = d
 		}
+	}
+}
+
+func WithBaseEnv(env map[string]string) Option {
+	return func(m *Manager) {
+		if len(env) == 0 {
+			return
+		}
+		m.baseEnv = copyEnvMap(env)
 	}
 }
 
@@ -88,10 +98,12 @@ type execParams struct {
 }
 
 type execResult struct {
-	Status    string `json:"status"`
-	Output    string `json:"output,omitempty"`
-	ExitCode  int    `json:"exitCode,omitempty"`
-	SessionID string `json:"sessionId,omitempty"`
+	Status     string   `json:"status"`
+	Output     string   `json:"output,omitempty"`
+	ExitCode   int      `json:"exitCode,omitempty"`
+	SessionID  string   `json:"sessionId,omitempty"`
+	MediaFiles []string `json:"media_files,omitempty"`
+	MediaDirs  []string `json:"media_dirs,omitempty"`
 }
 
 func (m *Manager) Exec(
@@ -120,7 +132,12 @@ func (m *Manager) Exec(
 	timeout := time.Duration(timeoutS) * time.Second
 
 	if !params.Background && yieldMs == 0 && !params.Pty {
-		out, code, err := runForeground(ctx, params, timeout)
+		out, code, err := runForeground(
+			ctx,
+			params,
+			timeout,
+			m.baseEnv,
+		)
 		if err != nil {
 			return execResult{}, err
 		}
@@ -189,13 +206,14 @@ func runForeground(
 	ctx context.Context,
 	params execParams,
 	timeout time.Duration,
+	baseEnv map[string]string,
 ) (string, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := shellCmd(ctx, params.Command)
 	cmd.Dir = params.Workdir
-	cmd.Env = mergedEnv(params.Env)
+	cmd.Env = mergedEnv(baseEnv, params.Env)
 
 	out, err := cmd.CombinedOutput()
 	code := exitCode(err)
@@ -208,14 +226,20 @@ func shellCmd(ctx context.Context, command string) *exec.Cmd {
 	return exec.CommandContext(ctx, shell, flag, command)
 }
 
-func mergedEnv(extra map[string]string) []string {
-	if len(extra) == 0 {
+func mergedEnv(
+	baseEnv map[string]string,
+	extra map[string]string,
+) []string {
+	if len(baseEnv) == 0 && len(extra) == 0 {
 		return nil
 	}
-	base := os.Environ()
-	out := make([]string, 0, len(base)+len(extra))
-	out = append(out, base...)
+	env := os.Environ()
+	out := make([]string, 0, len(env)+len(baseEnv)+len(extra))
+	out = append(out, env...)
 
+	for k, v := range baseEnv {
+		out = setEnv(out, k, v)
+	}
 	for k, v := range extra {
 		out = setEnv(out, k, v)
 	}
@@ -251,7 +275,7 @@ func (m *Manager) startBackground(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	cmd := shellCmd(ctx, params.Command)
 	cmd.Dir = params.Workdir
-	cmd.Env = mergedEnv(params.Env)
+	cmd.Env = mergedEnv(m.baseEnv, params.Env)
 
 	sess := newSession(newSessionID(), params.Command, m.maxLines)
 	sess.cancel = cancel
@@ -309,14 +333,38 @@ func (m *Manager) startBackground(
 	m.mu.Unlock()
 
 	go func() {
-		err := cmd.Wait()
+		// Use cmd.Process.Wait() instead of cmd.Wait() because
+		// cmd.Wait() closes the pipe read ends returned by StdoutPipe
+		// and StderrPipe, which races with readFrom goroutines still
+		// reading from those pipes.  See the exec.StdoutPipe docs:
+		// "It is thus incorrect to call Wait before all reads from the
+		// pipe have completed."
+		ps, _ := cmd.Process.Wait()
 		waitDone(sess.ioDone, defaultIODrain)
-		sess.markDone(exitCode(err))
+		code := -1
+		if ps != nil {
+			code = ps.ExitCode()
+		}
+		sess.markDone(code)
 		cancel()
 		_ = sess.closeIO()
 	}()
 
 	return sess, nil
+}
+
+func copyEnvMap(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for key, value := range env {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func waitDone(done <-chan struct{}, timeout time.Duration) {
@@ -364,6 +412,11 @@ func (m *Manager) list() []processSession {
 	}
 	sortSessions(out)
 	return out
+}
+
+// ListSessions returns the current exec_command session snapshots.
+func (m *Manager) ListSessions() []ProcessSession {
+	return m.list()
 }
 
 func (m *Manager) poll(id string, limit *int) (processPoll, error) {

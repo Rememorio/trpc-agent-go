@@ -168,8 +168,8 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		s.startAsyncPersistWorker()
 	}
 
-	// Start async summary workers if summarizer is configured.
-	if opts.summarizer != nil && opts.asyncSummaryNum > 0 {
+	// Start async summary workers if summary generation is configured.
+	if isummary.HasSummarizer(opts.summarizer) && opts.asyncSummaryNum > 0 {
 		s.asyncWorker = isummary.NewAsyncSummaryWorker(isummary.AsyncSummaryConfig{
 			Summarizer:        opts.summarizer,
 			AsyncSummaryNum:   opts.asyncSummaryNum,
@@ -335,18 +335,6 @@ func (s *Service) GetSession(
 					"failed: %w",
 				err,
 			)
-		}
-
-		// Refresh session TTL if configured and session exists.
-		if sess != nil && s.opts.sessionTTL > 0 {
-			if err := s.refreshSessionTTL(c.Context, c.Key); err != nil {
-				log.WarnfContext(
-					c.Context,
-					"failed to refresh session TTL: %v",
-					err,
-				)
-				// Do not fail GetSession; just log a warning.
-			}
 		}
 		return sess, nil
 	}
