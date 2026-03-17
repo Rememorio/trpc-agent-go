@@ -671,6 +671,43 @@ func logDirectQATrace(
 	)
 }
 
+func logSessionRecallTrace(trace *SessionRecallTrace) {
+	if trace == nil {
+		return
+	}
+	log.Printf(
+		"    🧠 Session Recall: mode=%s k=%d min_score=%.2f hits=%d",
+		trace.SearchMode,
+		trace.MaxResults,
+		trace.MinScore,
+		len(trace.Hits),
+	)
+	for i, hit := range trace.Hits {
+		log.Printf(
+			"      [%d] session=%s role=%s score=%.4f dense=%.4f sparse=%.4f event=%s",
+			i+1,
+			hit.SessionID,
+			hit.Role,
+			hit.Score,
+			hit.DenseScore,
+			hit.SparseScore,
+			hit.EventID,
+		)
+		log.Printf(
+			"          %s",
+			truncateLogLine(hit.Text, 240),
+		)
+	}
+}
+
+func truncateLogLine(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit-3] + "..."
+}
+
 func logVerboseQAResult(
 	index, total int,
 	qa dataset.QAItem,
@@ -682,6 +719,9 @@ func logVerboseQAResult(
 	)
 	if qaResult == nil {
 		return
+	}
+	if qaResult.SessionRecall != nil {
+		logSessionRecallTrace(qaResult.SessionRecall)
 	}
 	if len(qaResult.Steps) > 0 {
 		logQATrace(

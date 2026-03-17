@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
@@ -155,7 +156,9 @@ func (e *SessionRecallEvaluator) Evaluate(
 					qa.QuestionID, err,
 				)
 			}
-			qaResult = qaResultFromError(qa, err)
+			if qaResult == nil {
+				qaResult = qaResultFromError(qa, err)
+			}
 		}
 		if e.config.Verbose {
 			logVerboseQAResult(i, len(sample.QA), qa, qaResult)
@@ -225,6 +228,15 @@ func (e *SessionRecallEvaluator) evaluateQA(
 		)
 	}()
 
+	recallTrace, err := e.searchSessionRecall(
+		ctx, userID, sessionID, qa.Question,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"session recall search: %w", err,
+		)
+	}
+
 	msg := model.NewUserMessage(qa.Question)
 	var runOpts []agent.RunOption
 	if len(historyMsgs) > 0 {
@@ -244,7 +256,16 @@ func (e *SessionRecallEvaluator) evaluateQA(
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("runner run: %w", err)
+		return &QAResult{
+			QuestionID:    qa.QuestionID,
+			Question:      qa.Question,
+			Category:      qa.Category,
+			Expected:      qa.Answer,
+			Predicted:     fallbackAnswer,
+			Metrics:       metrics.QAMetrics{F1: 0, BLEU: 0},
+			LatencyMs:     time.Since(start).Milliseconds(),
+			SessionRecall: recallTrace,
+		}, fmt.Errorf("runner run: %w", err)
 	}
 	predicted := res.text
 
@@ -262,16 +283,76 @@ func (e *SessionRecallEvaluator) evaluateQA(
 	}
 
 	return &QAResult{
-		QuestionID: qa.QuestionID,
-		Question:   qa.Question,
-		Category:   qa.Category,
-		Expected:   qa.Answer,
-		Predicted:  predicted,
-		Metrics:    m,
-		LatencyMs:  time.Since(start).Milliseconds(),
-		TokenUsage: &res.usage,
-		Steps:      res.steps,
+		QuestionID:    qa.QuestionID,
+		Question:      qa.Question,
+		Category:      qa.Category,
+		Expected:      qa.Answer,
+		Predicted:     predicted,
+		Metrics:       m,
+		LatencyMs:     time.Since(start).Milliseconds(),
+		TokenUsage:    &res.usage,
+		Steps:         res.steps,
+		SessionRecall: recallTrace,
 	}, nil
+}
+
+func (e *SessionRecallEvaluator) searchSessionRecall(
+	ctx context.Context,
+	userID, sessionID, question string,
+) (*SessionRecallTrace, error) {
+	searchable, ok := e.sessionService.(session.SearchableService)
+	if !ok {
+		return nil, fmt.Errorf(
+			"session service does not implement SearchableService",
+		)
+	}
+
+	req := session.EventSearchRequest{
+		Query: strings.TrimSpace(question),
+		UserKey: session.UserKey{
+			AppName: sessionRecallAppName,
+			UserID:  userID,
+		},
+		MaxResults: e.config.SessionRecallResults,
+		MinScore:   e.config.SessionRecallMinScore,
+		SearchMode: session.SearchModeHybrid,
+	}
+	if sessionID != "" {
+		req.ExcludeSessionIDs = []string{sessionID}
+	}
+
+	results, err := searchable.SearchEvents(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return buildSessionRecallTrace(req, results), nil
+}
+
+func buildSessionRecallTrace(
+	req session.EventSearchRequest,
+	results []session.EventSearchResult,
+) *SessionRecallTrace {
+	trace := &SessionRecallTrace{
+		Query:      req.Query,
+		MaxResults: req.MaxResults,
+		MinScore:   req.MinScore,
+		SearchMode: req.SearchMode,
+		Hits:       make([]SessionRecallHit, 0, len(results)),
+	}
+	for _, result := range results {
+		trace.Hits = append(trace.Hits, SessionRecallHit{
+			SessionID:        result.SessionKey.SessionID,
+			SessionCreatedAt: result.SessionCreatedAt,
+			EventID:          result.Event.ID,
+			EventCreatedAt:   result.EventCreatedAt,
+			Role:             result.Role,
+			Text:             result.Text,
+			Score:            result.Score,
+			DenseScore:       result.DenseScore,
+			SparseScore:      result.SparseScore,
+		})
+	}
+	return trace
 }
 
 func (e *SessionRecallEvaluator) seedSession(
