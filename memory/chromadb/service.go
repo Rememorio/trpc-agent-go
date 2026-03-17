@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -769,6 +771,9 @@ type httpChromaClient struct {
 	tenant     string
 	database   string
 	httpClient *http.Client
+
+	pathMu             sync.RWMutex
+	collectionPathMode string
 }
 
 type ensureCollectionRequest struct {
@@ -829,14 +834,28 @@ type queryResponse struct {
 	Metadatas json.RawMessage `json:"metadatas"`
 }
 
+type chromaAPIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *chromaAPIError) Error() string {
+	return fmt.Sprintf("chromadb api error: %s", e.Message)
+}
+
 func (c *httpChromaClient) EnsureCollection(
 	ctx context.Context,
 	name string,
 ) (string, error) {
 	payload := ensureCollectionRequest{Name: name, GetOrCreate: true}
 	var resp collectionResponse
-	if err := c.doJSON(ctx, http.MethodPost,
-		"/api/v1/collections", payload, &resp); err != nil {
+	if err := c.doJSONPaths(
+		ctx,
+		http.MethodPost,
+		c.collectionsPaths(),
+		payload,
+		&resp,
+	); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(resp.ID) == "" {
@@ -868,8 +887,13 @@ func (c *httpChromaClient) Upsert(
 		Documents:  docs,
 		Metadatas:  metadatas,
 	}
-	path := "/api/v1/collections/" + collectionID + "/upsert"
-	return c.doJSON(ctx, http.MethodPost, path, payload, nil)
+	return c.doJSONPaths(
+		ctx,
+		http.MethodPost,
+		c.collectionActionPaths(collectionID, "upsert"),
+		payload,
+		nil,
+	)
 }
 
 func (c *httpChromaClient) Get(
@@ -886,8 +910,13 @@ func (c *httpChromaClient) Get(
 		Include: []string{"documents", "metadatas"},
 	}
 	var resp getResponse
-	path := "/api/v1/collections/" + collectionID + "/get"
-	if err := c.doJSON(ctx, http.MethodPost, path, payload, &resp); err != nil {
+	if err := c.doJSONPaths(
+		ctx,
+		http.MethodPost,
+		c.collectionActionPaths(collectionID, "get"),
+		payload,
+		&resp,
+	); err != nil {
 		return nil, err
 	}
 	documents, err := decodeFlatStrings(resp.Documents)
@@ -908,8 +937,13 @@ func (c *httpChromaClient) Delete(
 	where map[string]any,
 ) error {
 	payload := deleteRequest{IDs: ids, Where: where}
-	path := "/api/v1/collections/" + collectionID + "/delete"
-	return c.doJSON(ctx, http.MethodPost, path, payload, nil)
+	return c.doJSONPaths(
+		ctx,
+		http.MethodPost,
+		c.collectionActionPaths(collectionID, "delete"),
+		payload,
+		nil,
+	)
 }
 
 func (c *httpChromaClient) Query(
@@ -926,8 +960,13 @@ func (c *httpChromaClient) Query(
 		Include:         []string{"documents", "metadatas"},
 	}
 	var resp queryResponse
-	path := "/api/v1/collections/" + collectionID + "/query"
-	if err := c.doJSON(ctx, http.MethodPost, path, payload, &resp); err != nil {
+	if err := c.doJSONPaths(
+		ctx,
+		http.MethodPost,
+		c.collectionActionPaths(collectionID, "query"),
+		payload,
+		&resp,
+	); err != nil {
 		return nil, err
 	}
 	idRows, err := decodeNestedStrings(resp.IDs)
@@ -965,7 +1004,6 @@ func (c *httpChromaClient) Count(
 	const pageSize = 1000
 
 	total := 0
-	path := "/api/v1/collections/" + collectionID + "/get"
 	for offset := 0; ; offset += pageSize {
 		payload := countRequest{
 			Where:   where,
@@ -974,7 +1012,13 @@ func (c *httpChromaClient) Count(
 			Include: []string{},
 		}
 		var resp countResponse
-		if err := c.doJSON(ctx, http.MethodPost, path, payload, &resp); err != nil {
+		if err := c.doJSONPaths(
+			ctx,
+			http.MethodPost,
+			c.collectionActionPaths(collectionID, "get"),
+			payload,
+			&resp,
+		); err != nil {
 			return 0, err
 		}
 		total += len(resp.IDs)
@@ -986,6 +1030,85 @@ func (c *httpChromaClient) Count(
 
 func (c *httpChromaClient) Close() error {
 	return nil
+}
+
+func (c *httpChromaClient) collectionsPaths() []string {
+	v1 := "/api/v1/collections"
+	if !c.hasCloudCollectionContext() {
+		return []string{v1}
+	}
+	v2 := fmt.Sprintf(
+		"/api/v2/tenants/%s/databases/%s/collections",
+		url.PathEscape(strings.TrimSpace(c.tenant)),
+		url.PathEscape(strings.TrimSpace(c.database)),
+	)
+	c.pathMu.RLock()
+	mode := c.collectionPathMode
+	c.pathMu.RUnlock()
+	switch mode {
+	case "v1":
+		return []string{v1}
+	case "v2":
+		return []string{v2}
+	default:
+		return []string{v2, v1}
+	}
+}
+
+func (c *httpChromaClient) collectionActionPaths(
+	collectionID string,
+	action string,
+) []string {
+	paths := c.collectionsPaths()
+	escapedCollectionID := url.PathEscape(collectionID)
+	for i := range paths {
+		paths[i] = paths[i] + "/" + escapedCollectionID + "/" + action
+	}
+	return paths
+}
+
+func (c *httpChromaClient) hasCloudCollectionContext() bool {
+	return strings.TrimSpace(c.tenant) != "" &&
+		strings.TrimSpace(c.database) != ""
+}
+
+func (c *httpChromaClient) rememberCollectionPath(path string) {
+	if !c.hasCloudCollectionContext() {
+		return
+	}
+	mode := "v1"
+	if strings.HasPrefix(path, "/api/v2/") {
+		mode = "v2"
+	}
+	c.pathMu.Lock()
+	c.collectionPathMode = mode
+	c.pathMu.Unlock()
+}
+
+func (c *httpChromaClient) doJSONPaths(
+	ctx context.Context,
+	method string,
+	paths []string,
+	payload any,
+	out any,
+) error {
+	var lastNotFound error
+	for _, path := range paths {
+		err := c.doJSON(ctx, method, path, payload, out)
+		if err == nil {
+			c.rememberCollectionPath(path)
+			return nil
+		}
+		var apiErr *chromaAPIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+			return err
+		}
+		lastNotFound = err
+	}
+	if lastNotFound != nil {
+		return lastNotFound
+	}
+	return errors.New("no chromadb api path configured")
 }
 
 func (c *httpChromaClient) doJSON(
@@ -1011,6 +1134,7 @@ func (c *httpChromaClient) doJSON(
 	req.Header.Set("Content-Type", "application/json")
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
+		req.Header.Set("X-Chroma-Token", c.authToken)
 	}
 	if c.tenant != "" {
 		req.Header.Set("X-Chroma-Tenant", c.tenant)
@@ -1032,7 +1156,7 @@ func (c *httpChromaClient) doJSON(
 		if msg == "" {
 			msg = resp.Status
 		}
-		return fmt.Errorf("chromadb api error: %s", msg)
+		return &chromaAPIError{StatusCode: resp.StatusCode, Message: msg}
 	}
 	if out == nil {
 		return nil

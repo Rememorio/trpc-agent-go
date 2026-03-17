@@ -98,14 +98,16 @@ func WithAuthToken(token string) ServiceOpt {
 	}
 }
 
-// WithTenant sets tenant header for ChromaDB cloud deployments.
+// WithTenant sets the tenant for ChromaDB cloud deployments.
+// When used together with WithDatabase, the HTTP client targets v2 paths.
 func WithTenant(tenant string) ServiceOpt {
 	return func(opts *ServiceOpts) {
 		opts.tenant = tenant
 	}
 }
 
-// WithDatabase sets database header for ChromaDB cloud deployments.
+// WithDatabase sets the database for ChromaDB cloud deployments.
+// When used together with WithTenant, the HTTP client targets v2 paths.
 func WithDatabase(database string) ServiceOpt {
 	return func(opts *ServiceOpts) {
 		opts.database = database

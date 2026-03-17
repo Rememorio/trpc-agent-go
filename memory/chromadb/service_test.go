@@ -775,12 +775,14 @@ func TestHelpers_DecodeAndConvert(t *testing.T) {
 
 func TestHTTPClient_BasicRequests(t *testing.T) {
 	var seenAuth string
+	var seenToken string
 	var seenTenant string
 	var seenDatabase string
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/collections", func(w http.ResponseWriter, r *http.Request) {
 		seenAuth = r.Header.Get("Authorization")
+		seenToken = r.Header.Get("X-Chroma-Token")
 		seenTenant = r.Header.Get("X-Chroma-Tenant")
 		seenDatabase = r.Header.Get("X-Chroma-Database")
 		w.Header().Set("Content-Type", "application/json")
@@ -839,6 +841,7 @@ func TestHTTPClient_BasicRequests(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "col-1", collectionID)
 	require.Equal(t, "Bearer token", seenAuth)
+	require.Equal(t, "token", seenToken)
 	require.Equal(t, "tenant", seenTenant)
 	require.Equal(t, "database", seenDatabase)
 
@@ -856,6 +859,107 @@ func TestHTTPClient_BasicRequests(t *testing.T) {
 	require.Len(t, items, 1)
 
 	count, err := client.Count(ctx, "col-1", nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+
+	err = client.Delete(ctx, "col-1", []string{"m1"}, nil)
+	require.NoError(t, err)
+}
+
+func TestHTTPClient_CloudV2Requests(t *testing.T) {
+	var seenAuth string
+	var seenToken string
+	var seenTenant string
+	var seenDatabase string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections", func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		seenToken = r.Header.Get("X-Chroma-Token")
+		seenTenant = r.Header.Get("X-Chroma-Tenant")
+		seenDatabase = r.Header.Get("X-Chroma-Database")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"id\":\"col-1\"}"))
+	})
+	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/upsert", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/get", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Limit   int            `json:"limit"`
+			Where   map[string]any `json:"where"`
+			Include []string       `json:"include"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		w.Header().Set("Content-Type", "application/json")
+		if payload.Limit == 1000 {
+			require.Equal(t, map[string]any{"user_id": "u1"}, payload.Where)
+			require.Empty(t, payload.Include)
+			_, _ = w.Write([]byte("{\"ids\":[\"m1\"]}"))
+			return
+		}
+		_, _ = w.Write([]byte("{" +
+			"\"ids\":[\"m1\"]," +
+			"\"documents\":[\"doc\"]," +
+			"\"metadatas\":[{" +
+			"\"app_name\":\"app\"," +
+			"\"user_id\":\"u1\"," +
+			"\"topics\":\"[]\"," +
+			"\"created_at_ns\":1," +
+			"\"updated_at_ns\":2" +
+			"}]" +
+			"}"))
+	})
+	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/query", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{" +
+			"\"ids\":[[\"m1\"]]," +
+			"\"documents\":[[\"doc\"]]," +
+			"\"metadatas\":[[{" +
+			"\"app_name\":\"app\"," +
+			"\"user_id\":\"u1\"," +
+			"\"topics\":\"[]\"," +
+			"\"created_at_ns\":1," +
+			"\"updated_at_ns\":2" +
+			"}]]" +
+			"}"))
+	})
+	mux.HandleFunc("/api/v2/tenants/tenant/databases/database/collections/col-1/delete", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := &httpChromaClient{
+		baseURL:    server.URL,
+		authToken:  "token",
+		tenant:     "tenant",
+		database:   "database",
+		httpClient: &http.Client{Timeout: time.Second},
+	}
+
+	ctx := context.Background()
+	collectionID, err := client.EnsureCollection(ctx, "mem")
+	require.NoError(t, err)
+	require.Equal(t, "col-1", collectionID)
+	require.Equal(t, "Bearer token", seenAuth)
+	require.Equal(t, "token", seenToken)
+	require.Equal(t, "tenant", seenTenant)
+	require.Equal(t, "database", seenDatabase)
+
+	err = client.Upsert(ctx, "col-1", []chromaRecord{{ID: "m1"}}, [][]float64{{1, 2}})
+	require.NoError(t, err)
+
+	items, err := client.Get(ctx, "col-1", nil, nil, 0)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	items, err = client.Query(ctx, "col-1", []float64{1, 2}, 1, nil)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+
+	count, err := client.Count(ctx, "col-1", map[string]any{"user_id": "u1"})
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
 
