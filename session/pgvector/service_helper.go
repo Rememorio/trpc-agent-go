@@ -297,71 +297,6 @@ func (s *Service) addEvent(
 	evt *event.Event,
 ) error {
 	now := time.Now()
-
-	var sessState *SessionState
-	var currentExpiresAt *time.Time
-	err := s.pgClient.Query(ctx,
-		func(rows *sql.Rows) error {
-			if rows.Next() {
-				var stateBytes []byte
-				if err := rows.Scan(
-					&stateBytes, &currentExpiresAt,
-				); err != nil {
-					return err
-				}
-				sessState = &SessionState{}
-				if err := json.Unmarshal(
-					stateBytes, sessState,
-				); err != nil {
-					return fmt.Errorf(
-						"unmarshal session state "+
-							"failed: %w", err,
-					)
-				}
-			}
-			return nil
-		},
-		fmt.Sprintf(
-			`SELECT state, expires_at FROM %s
-			WHERE app_name = $1 AND user_id = $2
-			AND session_id = $3
-			AND deleted_at IS NULL`,
-			s.tableSessionStates,
-		),
-		key.AppName, key.UserID, key.SessionID,
-	)
-	if err != nil {
-		return fmt.Errorf(
-			"get session state failed: %w", err,
-		)
-	}
-	if sessState == nil {
-		return fmt.Errorf("session not found")
-	}
-
-	if currentExpiresAt != nil &&
-		currentExpiresAt.Before(now) {
-		log.InfofContext(ctx,
-			"appending event to expired session "+
-				"(app=%s, user=%s, session=%s), "+
-				"will extend expires_at",
-			key.AppName, key.UserID, key.SessionID,
-		)
-	}
-
-	sessState.UpdatedAt = now
-	if sessState.State == nil {
-		sessState.State = make(session.StateMap)
-	}
-	session.ApplyEventStateDeltaMap(
-		sessState.State, evt,
-	)
-	updatedStateBytes, err := json.Marshal(sessState)
-	if err != nil {
-		return fmt.Errorf(
-			"marshal session state failed: %w", err,
-		)
-	}
 	eventBytes, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf(
@@ -377,6 +312,66 @@ func (s *Service) addEvent(
 
 	err = s.pgClient.Transaction(ctx,
 		func(tx *sql.Tx) error {
+			var (
+				stateBytes       []byte
+				currentExpiresAt *time.Time
+				sessState        SessionState
+			)
+			row := tx.QueryRowContext(
+				ctx,
+				fmt.Sprintf(
+					`SELECT state, expires_at FROM %s
+					WHERE app_name = $1 AND user_id = $2
+					AND session_id = $3
+					AND deleted_at IS NULL
+					FOR UPDATE`,
+					s.tableSessionStates,
+				),
+				key.AppName, key.UserID, key.SessionID,
+			)
+			if err := row.Scan(
+				&stateBytes, &currentExpiresAt,
+			); err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("session not found")
+				}
+				return fmt.Errorf(
+					"get session state failed: %w", err,
+				)
+			}
+			if err := json.Unmarshal(
+				stateBytes, &sessState,
+			); err != nil {
+				return fmt.Errorf(
+					"unmarshal session state failed: %w",
+					err,
+				)
+			}
+			if currentExpiresAt != nil &&
+				currentExpiresAt.Before(now) {
+				log.InfofContext(ctx,
+					"appending event to expired session "+
+						"(app=%s, user=%s, session=%s), "+
+						"will extend expires_at",
+					key.AppName, key.UserID, key.SessionID,
+				)
+			}
+			sessState.UpdatedAt = now
+			if sessState.State == nil {
+				sessState.State = make(session.StateMap)
+			}
+			session.ApplyEventStateDeltaMap(
+				sessState.State, evt,
+			)
+			updatedStateBytes, err := json.Marshal(
+				&sessState,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"marshal session state failed: %w",
+					err,
+				)
+			}
 			_, err = tx.ExecContext(ctx,
 				fmt.Sprintf(
 					`UPDATE %s SET state = $1,
@@ -405,14 +400,15 @@ func (s *Service) addEvent(
 					fmt.Sprintf(
 						`INSERT INTO %s
 						(app_name, user_id, session_id,
-						 event, created_at, updated_at)
+						 event, created_at, updated_at,
+						 expires_at)
 						VALUES
-						($1, $2, $3, $4, $5, $6)`,
+						($1, $2, $3, $4, $5, $6, $7)`,
 						s.tableSessionEvents,
 					),
 					key.AppName, key.UserID,
 					key.SessionID, eventBytes,
-					now, now,
+					now, now, expiresAt,
 				)
 				if err != nil {
 					return fmt.Errorf(

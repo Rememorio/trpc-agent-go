@@ -75,10 +75,12 @@ func TestAddEvent_SessionNotFound(t *testing.T) {
 		AppName: "app", UserID: "user", SessionID: "sess",
 	}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		))
+	mock.ExpectRollback()
 
 	err := s.addEvent(
 		context.Background(), key, &event.Event{},
@@ -101,12 +103,11 @@ func TestAddEvent_TransactionError(t *testing.T) {
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnError(fmt.Errorf("tx error"))
 	mock.ExpectRollback()
@@ -135,8 +136,10 @@ func TestAddEvent_QueryStateError(t *testing.T) {
 		AppName: "app", UserID: "user", SessionID: "sess",
 	}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnError(fmt.Errorf("query error"))
+	mock.ExpectRollback()
 
 	err := s.addEvent(
 		context.Background(), key, &event.Event{},
@@ -566,14 +569,13 @@ func TestAddEvent_PartialEvent_NoInsert(t *testing.T) {
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
 	// Transaction with only state update (no event
 	// insert for partial).
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
@@ -612,12 +614,11 @@ func TestAddEvent_WithTTL(t *testing.T) {
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO session_events").
