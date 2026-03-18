@@ -1506,7 +1506,9 @@ When `WithPreloadMemory(N)` uses a positive value, the framework first probes
 how many memories the user has. If the count is at most `N`, it injects all
 memories. If the count is larger than `N`, it switches to query-aware
 `memory_search` behavior internally and injects only the top `N` relevant
-results for the current user message.
+results for the current user message. If query extraction is empty, the
+search fails, or the search returns no matches, it falls back to directly
+loading up to `N` memories.
 
 **Injection Mechanism**: Preloaded memories are **merged** into the existing
 system prompt rather than inserted as a separate system message. This ensures

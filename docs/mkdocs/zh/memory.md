@@ -1549,6 +1549,8 @@ llmAgent := llmagent.New(
 当 `WithPreloadMemory(N)` 使用正数时，框架会先探测用户当前的 memory 总量。
 如果总量不超过 `N`，则直接全量注入；如果总量超过 `N`，则在框架内部切换为
 基于当前用户问题的 `memory_search` 语义，只注入最相关的前 `N` 条结果。
+如果当前 `query` 为空、检索报错，或检索结果为空，则会回退为直接加载最多
+`N` 条记忆。
 
 **注入机制**：预加载的记忆会**合并**到现有的系统提示词中，而不是作为独立的 system message 插入。这确保了请求中始终只有一个 system message，兼容某些对多个 system message 支持不完善的模型（如 Qwen3.5 系列可能会返回 "System message must be at the beginning" 错误）。
 

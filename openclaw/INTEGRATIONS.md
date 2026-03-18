@@ -819,7 +819,9 @@ Recommendation: keep this small (like 10–50) so it stays readable and
 doesn't dominate the prompt.
 With a positive value, OpenClaw preloads all memories when the user has
 at most `N` memories, and otherwise injects the top `N` search results
-for the current user message.
+for the current user message. If query extraction is empty, the search
+fails, or the search returns no matches, it falls back to directly
+loading up to `N` memories.
 
 ### Cap raw history when you do not use summary (optional)
 

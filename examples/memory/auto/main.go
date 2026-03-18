@@ -205,7 +205,9 @@ func (c *autoMemoryChat) setup(_ context.Context) error {
 		// Memory preloading injects memories into the system prompt before
 		// each request.
 		// Use WithPreloadMemory(N) for adaptive preload: load all memories
-		// when count <= N, otherwise inject the top-N search results.
+		// when count <= N, otherwise inject the top-N search results and
+		// fall back to directly loading up to N memories if search cannot
+		// provide usable results.
 		// Use WithPreloadMemory(-1) to load all memories.
 		// Default is 0 (disabled, use memory_search/memory_load tools instead).
 		llmagent.WithPreloadMemory(-1),

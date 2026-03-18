@@ -437,9 +437,12 @@ Use `-debug` flag to see preloaded memories in the system prompt.
 
 In auto memory mode, `WithPreloadMemory(N)` uses framework-managed adaptive
 preloading: small memory sets are injected in full, while larger memory sets
-inject only the top `N` search results for the current user message. Use
-`WithPreloadMemory(-1)` to force full preload, or enable `memory_load` via
-`WithToolEnabled(memory.LoadToolName, true)` for agent-driven loading.
+inject only the top `N` search results for the current user message. If
+query extraction is empty, the search fails, or the search returns no
+matches, it falls back to directly loading up to `N` memories. Use
+`WithPreloadMemory(-1)` to force full preload, or enable `memory_load`
+via `WithToolEnabled(memory.LoadToolName, true)` for agent-driven
+loading.
 
 ## Comparison with Manual Memory
 
