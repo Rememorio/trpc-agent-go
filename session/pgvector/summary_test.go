@@ -227,18 +227,13 @@ func TestGetSessionSummaryText_FallbackInvalidJSON(
 			[]string{"summary"},
 		).AddRow([]byte(`{invalid`)))
 
-	// Fallback query.
-	mock.ExpectQuery("SELECT summary FROM").
-		WillReturnRows(
-			sqlmock.NewRows([]string{"summary"}),
-		)
-
 	text, ok := s.GetSessionSummaryText(
 		context.Background(), sess,
 		session.WithSummaryFilterKey("custom"),
 	)
 	assert.Empty(t, text)
 	assert.False(t, ok)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestGetSessionSummaryText_PrimaryInvalidJSON(
@@ -263,7 +258,7 @@ func TestGetSessionSummaryText_PrimaryInvalidJSON(
 	assert.False(t, ok)
 }
 
-func TestGetSessionSummaryText_DBErrorFallback(
+func TestGetSessionSummaryText_DBErrorNoFallback(
 	t *testing.T,
 ) {
 	s, mock, db := newTestService(t, nil)
@@ -275,20 +270,13 @@ func TestGetSessionSummaryText_DBErrorFallback(
 	mock.ExpectQuery("SELECT summary FROM").
 		WillReturnError(fmt.Errorf("db error"))
 
-	// Fallback: no filterKey match for
-	// SummaryFilterKeyAllContents, so second query
-	// fires.
-	mock.ExpectQuery("SELECT summary FROM").
-		WillReturnRows(
-			sqlmock.NewRows([]string{"summary"}),
-		)
-
 	text, ok := s.GetSessionSummaryText(
 		context.Background(), sess,
 		session.WithSummaryFilterKey("custom"),
 	)
 	assert.Empty(t, text)
 	assert.False(t, ok)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestCreateSessionSummary_SummarizerNoUpdate(

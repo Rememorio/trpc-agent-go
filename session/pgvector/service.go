@@ -12,6 +12,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,8 @@ import (
 var _ session.Service = (*Service)(nil)
 var _ session.TrackService = (*Service)(nil)
 var _ session.SearchableService = (*Service)(nil)
+
+var errServiceClosing = errors.New("service is closing")
 
 // SessionState is the state of a session.
 type SessionState struct {
@@ -69,6 +72,7 @@ type Service struct {
 	cleanupDone     chan struct{}
 	cleanupOnce     sync.Once
 	persistWg       sync.WaitGroup
+	indexerWg       sync.WaitGroup
 	once            sync.Once
 
 	// Table names with prefix applied.
@@ -199,7 +203,10 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 	}
 
 	if !opts.skipDBInit {
-		s.initDB(context.Background())
+		if err := s.initDB(context.Background()); err != nil {
+			_ = pgClient.Close()
+			return nil, err
+		}
 	}
 
 	if opts.enableAsyncPersist {
@@ -879,23 +886,17 @@ func (s *Service) appendEventInternal(
 	e *event.Event,
 	key session.Key,
 	opts ...session.Option,
-) error {
+) (retErr error) {
 	sess.UpdateUserSession(e, opts...)
 
 	if s.opts.enableAsyncPersist {
 		defer func() {
 			if r := recover(); r != nil {
-				if err, ok := r.(error); ok &&
-					err.Error() ==
-						"send on closed channel" {
-					log.ErrorfContext(ctx,
-						"pgvector session service "+
-							"append event failed: %v",
-						r,
-					)
-					return
-				}
-				panic(r)
+				retErr = handleClosedChannelPanic(
+					ctx,
+					"pgvector session service append event failed: %v",
+					r,
+				)
 			}
 		}()
 
@@ -926,7 +927,7 @@ func (s *Service) AppendTrackEvent(
 	sess *session.Session,
 	trackEvent *session.TrackEvent,
 	opts ...session.Option,
-) error {
+) (retErr error) {
 	key := session.Key{
 		AppName:   sess.AppName,
 		UserID:    sess.UserID,
@@ -944,17 +945,11 @@ func (s *Service) AppendTrackEvent(
 	if s.opts.enableAsyncPersist {
 		defer func() {
 			if r := recover(); r != nil {
-				if err, ok := r.(error); ok &&
-					err.Error() ==
-						"send on closed channel" {
-					log.ErrorfContext(ctx,
-						"pgvector session service "+
-							"append track event "+
-							"failed: %v", err,
-					)
-					return
-				}
-				panic(r)
+				retErr = handleClosedChannelPanic(
+					ctx,
+					"pgvector session service append track event failed: %v",
+					r,
+				)
 			}
 		}()
 
@@ -998,6 +993,7 @@ func (s *Service) Close() error {
 			close(ch)
 		}
 		s.persistWg.Wait()
+		s.indexerWg.Wait()
 
 		if s.asyncWorker != nil {
 			s.asyncWorker.Stop()
@@ -1088,7 +1084,9 @@ func (s *Service) triggerAsyncIndexEvent(
 	if !shouldPersistEvent(evt) {
 		return
 	}
+	s.indexerWg.Add(1)
 	go func() {
+		defer s.indexerWg.Done()
 		ctx, cancel := context.WithTimeout(
 			context.Background(),
 			s.opts.embedTimeout,
@@ -1096,6 +1094,26 @@ func (s *Service) triggerAsyncIndexEvent(
 		defer cancel()
 		s.asyncIndexEvent(ctx, sess, evt)
 	}()
+}
+
+func handleClosedChannelPanic(
+	ctx context.Context,
+	format string,
+	panicValue any,
+) error {
+	switch v := panicValue.(type) {
+	case error:
+		if v.Error() == "send on closed channel" {
+			log.ErrorfContext(ctx, format, panicValue)
+			return errServiceClosing
+		}
+	case string:
+		if v == "send on closed channel" {
+			log.ErrorfContext(ctx, format, panicValue)
+			return errServiceClosing
+		}
+	}
+	panic(panicValue)
 }
 
 func (s *Service) indexEventAfterPersist(

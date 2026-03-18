@@ -58,8 +58,17 @@ func (s *Service) SearchEvents(
 			"embedder not configured for vector search")
 	}
 
+	searchCtx := ctx
+	if s.opts.embedTimeout > 0 {
+		var cancel context.CancelFunc
+		searchCtx, cancel = context.WithTimeout(
+			ctx, s.opts.embedTimeout,
+		)
+		defer cancel()
+	}
+
 	// Generate query embedding.
-	qEmb, err := s.opts.embedder.GetEmbedding(ctx, query)
+	qEmb, err := s.opts.embedder.GetEmbedding(searchCtx, query)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"generate query embedding: %w", err,
@@ -74,7 +83,7 @@ func (s *Service) SearchEvents(
 
 	if req.SearchMode == session.SearchModeDense {
 		return s.executeDenseSearch(
-			ctx, req, vector, topK,
+			searchCtx, req, vector, topK,
 		)
 	}
 
@@ -84,13 +93,13 @@ func (s *Service) SearchEvents(
 		s.opts.candidateRatio,
 	)
 	denseResults, err := s.executeDenseSearch(
-		ctx, req, vector, candidateLimit,
+		searchCtx, req, vector, candidateLimit,
 	)
 	if err != nil {
 		return nil, err
 	}
 	keywordResults, err := s.executeKeywordSearch(
-		ctx, req, query, candidateLimit,
+		searchCtx, req, query, candidateLimit,
 	)
 	if err != nil {
 		log.WarnfContext(
@@ -578,9 +587,6 @@ func (s *Service) updateEventEmbedding(
 		case evt.ID != "":
 			matchExpr = `event->>'id' = $7`
 			matchValue = evt.ID
-		case evt.InvocationID != "":
-			matchExpr = `event->>'invocationId' = $7`
-			matchValue = evt.InvocationID
 		}
 	}
 	if matchValue == "" {

@@ -319,8 +319,8 @@ func TestInitDB_Success(t *testing.T) {
 		"CREATE INDEX IF NOT EXISTS.*USING hnsw",
 	).WillReturnResult(sqlmock.NewResult(0, 0))
 
-	// Should not panic.
-	s.initDB(context.Background())
+	// Should not return an error.
+	require.NoError(t, s.initDB(context.Background()))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -370,14 +370,14 @@ func TestInitDB_HNSWIndexFailureIsNonFatal(
 		fmt.Errorf("pgvector not installed"),
 	)
 
-	// Should not panic even if HNSW fails.
-	s.initDB(context.Background())
+	// Should not return an error even if HNSW fails.
+	require.NoError(t, s.initDB(context.Background()))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// --- Tests for initDB panic paths ---
+// --- Tests for initDB error paths ---
 
-func TestInitDB_PanicsOnExtensionError(t *testing.T) {
+func TestInitDB_ErrorsOnExtensionError(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()
 
@@ -387,12 +387,14 @@ func TestInitDB_PanicsOnExtensionError(t *testing.T) {
 		fmt.Errorf("extension error"),
 	)
 
-	assert.Panics(t, func() {
-		s.initDB(context.Background())
-	})
+	err := s.initDB(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(),
+		"enable pgvector extension failed")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestInitDB_PanicsOnCreateTablesError(t *testing.T) {
+func TestInitDB_ErrorsOnCreateTablesError(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()
 
@@ -403,12 +405,13 @@ func TestInitDB_PanicsOnCreateTablesError(t *testing.T) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS").
 		WillReturnError(fmt.Errorf("table error"))
 
-	assert.Panics(t, func() {
-		s.initDB(context.Background())
-	})
+	err := s.initDB(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "create tables failed")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestInitDB_PanicsOnCreateIndexesError(
+func TestInitDB_ErrorsOnCreateIndexesError(
 	t *testing.T,
 ) {
 	s, mock, db := newTestService(t, nil)
@@ -427,12 +430,13 @@ func TestInitDB_PanicsOnCreateIndexesError(
 	mock.ExpectExec("CREATE.*INDEX IF NOT EXISTS").
 		WillReturnError(fmt.Errorf("index error"))
 
-	assert.Panics(t, func() {
-		s.initDB(context.Background())
-	})
+	err := s.initDB(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "create indexes failed")
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestInitDB_PanicsOnAddVectorColumnsError(
+func TestInitDB_ErrorsOnAddVectorColumnsError(
 	t *testing.T,
 ) {
 	s, mock, db := newTestService(t, nil)
@@ -460,7 +464,8 @@ func TestInitDB_PanicsOnAddVectorColumnsError(
 			fmt.Errorf("alter column error"),
 		)
 
-	assert.Panics(t, func() {
-		s.initDB(context.Background())
-	})
+	err := s.initDB(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "add vector columns failed")
+	require.NoError(t, mock.ExpectationsWereMet())
 }

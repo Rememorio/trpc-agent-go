@@ -204,8 +204,9 @@ func (s *Service) GetSessionSummaryText(
 	}
 
 	// Fallback to full-session summary.
-	if filterKey !=
-		session.SummaryFilterKeyAllContents {
+	if err == nil &&
+		filterKey !=
+			session.SummaryFilterKeyAllContents {
 		err = s.pgClient.Query(ctx,
 			func(rows *sql.Rows) error {
 				if rows.Next() {

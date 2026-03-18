@@ -156,10 +156,12 @@ func TestAddTrackEvent_SessionNotFound(t *testing.T) {
 		AppName: "app", UserID: "user", SessionID: "sess",
 	}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		))
+	mock.ExpectRollback()
 
 	te := &session.TrackEvent{
 		Track:     "track1",
@@ -180,8 +182,10 @@ func TestAddTrackEvent_QueryError(t *testing.T) {
 		AppName: "app", UserID: "user", SessionID: "sess",
 	}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnError(fmt.Errorf("db error"))
+	mock.ExpectRollback()
 
 	te := &session.TrackEvent{
 		Track:     "track1",

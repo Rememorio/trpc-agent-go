@@ -104,17 +104,15 @@ func (s *Service) getSession(
 	events := eventsList[0]
 
 	summaries := make(map[string]*session.Summary)
-	if len(events) > 0 {
-		summariesList, err := s.getSummariesList(
-			ctx, []session.Key{key},
+	summariesList, err := s.getSummariesList(
+		ctx, []session.Key{key},
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"get summaries failed: %w", err,
 		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"get summaries failed: %w", err,
-			)
-		}
-		summaries = summariesList[0]
 	}
+	summaries = summariesList[0]
 
 	sess := session.NewSession(
 		key.AppName, key.UserID, key.SessionID,
@@ -264,10 +262,7 @@ func (s *Service) listSessions(
 		[]*session.Session, 0, len(sessStates),
 	)
 	for i, st := range sessStates {
-		var summaries map[string]*session.Summary
-		if len(eventsList[i]) > 0 {
-			summaries = summariesList[i]
-		}
+		summaries := summariesList[i]
 		sess := session.NewSession(
 			key.AppName, key.UserID, st.ID,
 			session.WithSessionState(st.State),
@@ -382,7 +377,7 @@ func (s *Service) addEvent(
 
 	err = s.pgClient.Transaction(ctx,
 		func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx,
+			_, err = tx.ExecContext(ctx,
 				fmt.Sprintf(
 					`UPDATE %s SET state = $1,
 					updated_at = $2, expires_at = $3
@@ -443,78 +438,6 @@ func (s *Service) addTrackEvent(
 	trackEvent *session.TrackEvent,
 ) error {
 	now := time.Now()
-
-	var sessState *SessionState
-	var currentExpiresAt *time.Time
-	err := s.pgClient.Query(ctx,
-		func(rows *sql.Rows) error {
-			if rows.Next() {
-				var stateBytes []byte
-				if err := rows.Scan(
-					&stateBytes, &currentExpiresAt,
-				); err != nil {
-					return err
-				}
-				sessState = &SessionState{}
-				if err := json.Unmarshal(
-					stateBytes, sessState,
-				); err != nil {
-					return fmt.Errorf(
-						"unmarshal session state "+
-							"failed: %w", err,
-					)
-				}
-			}
-			return nil
-		},
-		fmt.Sprintf(
-			`SELECT state, expires_at FROM %s
-			WHERE app_name = $1 AND user_id = $2
-			AND session_id = $3
-			AND deleted_at IS NULL`,
-			s.tableSessionStates,
-		),
-		key.AppName, key.UserID, key.SessionID,
-	)
-	if err != nil {
-		return fmt.Errorf(
-			"get session state failed: %w", err,
-		)
-	}
-	if sessState == nil {
-		return fmt.Errorf("session not found")
-	}
-
-	if currentExpiresAt != nil &&
-		currentExpiresAt.Before(now) {
-		log.InfofContext(ctx,
-			"appending track event to expired "+
-				"session (app=%s, user=%s, "+
-				"session=%s), will extend expires_at",
-			key.AppName, key.UserID, key.SessionID,
-		)
-	}
-
-	sess := &session.Session{
-		ID:      key.SessionID,
-		AppName: key.AppName,
-		UserID:  key.UserID,
-		State:   sessState.State,
-	}
-	if err := sess.AppendTrackEvent(
-		trackEvent,
-	); err != nil {
-		return err
-	}
-	sessState.State = sess.SnapshotState()
-	sessState.UpdatedAt = sess.UpdatedAt
-
-	updatedStateBytes, err := json.Marshal(sessState)
-	if err != nil {
-		return fmt.Errorf(
-			"marshal session state failed: %w", err,
-		)
-	}
 	eventBytes, err := json.Marshal(trackEvent)
 	if err != nil {
 		return fmt.Errorf(
@@ -530,7 +453,73 @@ func (s *Service) addTrackEvent(
 
 	err = s.pgClient.Transaction(ctx,
 		func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx,
+			var (
+				stateBytes       []byte
+				currentExpiresAt *time.Time
+				sessState        SessionState
+			)
+			row := tx.QueryRowContext(
+				ctx,
+				fmt.Sprintf(
+					`SELECT state, expires_at FROM %s
+					WHERE app_name = $1 AND user_id = $2
+					AND session_id = $3
+					AND deleted_at IS NULL
+					FOR UPDATE`,
+					s.tableSessionStates,
+				),
+				key.AppName, key.UserID, key.SessionID,
+			)
+			if err := row.Scan(
+				&stateBytes, &currentExpiresAt,
+			); err != nil {
+				if err == sql.ErrNoRows {
+					return fmt.Errorf("session not found")
+				}
+				return fmt.Errorf(
+					"get session state failed: %w", err,
+				)
+			}
+			if err := json.Unmarshal(
+				stateBytes, &sessState,
+			); err != nil {
+				return fmt.Errorf(
+					"unmarshal session state failed: %w",
+					err,
+				)
+			}
+			if currentExpiresAt != nil &&
+				currentExpiresAt.Before(now) {
+				log.InfofContext(ctx,
+					"appending track event to expired "+
+						"session (app=%s, user=%s, "+
+						"session=%s), will extend expires_at",
+					key.AppName, key.UserID, key.SessionID,
+				)
+			}
+			sess := &session.Session{
+				ID:      key.SessionID,
+				AppName: key.AppName,
+				UserID:  key.UserID,
+				State:   sessState.State,
+			}
+			if err := sess.AppendTrackEvent(
+				trackEvent,
+			); err != nil {
+				return err
+			}
+			sessState.State = sess.SnapshotState()
+			sessState.UpdatedAt = sess.UpdatedAt
+			updatedStateBytes, err := json.Marshal(
+				&sessState,
+			)
+			if err != nil {
+				return fmt.Errorf(
+					"marshal session state failed: %w",
+					err,
+				)
+			}
+			_, err = tx.ExecContext(ctx,
 				fmt.Sprintf(
 					`UPDATE %s SET state = $1,
 					updated_at = $2, expires_at = $3

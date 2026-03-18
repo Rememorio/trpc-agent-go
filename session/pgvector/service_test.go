@@ -30,18 +30,21 @@ import (
 
 // mockEmbedder is a mock implementation of embedder.Embedder.
 type mockEmbedder struct {
-	embedding  []float64
-	err        error
-	callCount  int
-	lastText   string
-	dimensions int
+	embedding          []float64
+	err                error
+	callCount          int
+	lastText           string
+	lastDeadline       time.Time
+	lastCtxHasDeadline bool
+	dimensions         int
 }
 
 func (m *mockEmbedder) GetEmbedding(
-	_ context.Context, text string,
+	ctx context.Context, text string,
 ) ([]float64, error) {
 	m.callCount++
 	m.lastText = text
+	m.lastDeadline, m.lastCtxHasDeadline = ctx.Deadline()
 	return m.embedding, m.err
 }
 
@@ -700,16 +703,6 @@ func TestAsyncIndexEvent_Success(t *testing.T) {
 	s, mock, db := newTestService(t, emb)
 	defer db.Close()
 
-	mock.ExpectExec("UPDATE session_events SET").
-		WithArgs(
-			"hello world",
-			string(model.RoleAssistant),
-			anyVectorArg{},
-			"app", "user", "sess-1",
-			"inv-1",
-		).
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
 	evt := &event.Event{
 		InvocationID: "inv-1",
 		Response: &model.Response{
@@ -721,6 +714,16 @@ func TestAsyncIndexEvent_Success(t *testing.T) {
 			},
 		},
 	}
+	eventBytes, _ := json.Marshal(evt)
+	mock.ExpectExec("UPDATE session_events SET").
+		WithArgs(
+			"hello world",
+			string(model.RoleAssistant),
+			anyVectorArg{},
+			"app", "user", "sess-1",
+			string(eventBytes),
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	sess := &session.Session{
 		ID: "sess-1", AppName: "app", UserID: "user",
 	}
@@ -737,16 +740,6 @@ func TestIndexEventAfterPersist_SyncIndexing(t *testing.T) {
 	s, mock, db := newTestService(t, emb)
 	defer db.Close()
 	s.opts.syncIndexing = true
-
-	mock.ExpectExec("UPDATE session_events SET").
-		WithArgs(
-			"[SessionDate: 2025-01-02] assistant: hello world",
-			string(model.RoleAssistant),
-			anyVectorArg{},
-			"app", "user", "sess-1",
-			"inv-1",
-		).
-		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	s.opts.indexTextBuilder = func(
 		sess *session.Session,
@@ -773,6 +766,16 @@ func TestIndexEventAfterPersist_SyncIndexing(t *testing.T) {
 			},
 		},
 	}
+	eventBytes, _ := json.Marshal(evt)
+	mock.ExpectExec("UPDATE session_events SET").
+		WithArgs(
+			"[SessionDate: 2025-01-02] assistant: hello world",
+			string(model.RoleAssistant),
+			anyVectorArg{},
+			"app", "user", "sess-1",
+			string(eventBytes),
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	sess := &session.Session{
 		ID:        "sess-1",
 		AppName:   "app",
@@ -797,16 +800,6 @@ func TestAsyncIndexEvent_UpdateError(t *testing.T) {
 	s, mock, db := newTestService(t, emb)
 	defer db.Close()
 
-	mock.ExpectExec("UPDATE session_events SET").
-		WithArgs(
-			"hello",
-			string(model.RoleUser),
-			anyVectorArg{},
-			"app", "user", "sess-1",
-			"inv-1",
-		).
-		WillReturnError(fmt.Errorf("db down"))
-
 	evt := &event.Event{
 		InvocationID: "inv-1",
 		Response: &model.Response{
@@ -818,6 +811,16 @@ func TestAsyncIndexEvent_UpdateError(t *testing.T) {
 			},
 		},
 	}
+	eventBytes, _ := json.Marshal(evt)
+	mock.ExpectExec("UPDATE session_events SET").
+		WithArgs(
+			"hello",
+			string(model.RoleUser),
+			anyVectorArg{},
+			"app", "user", "sess-1",
+			string(eventBytes),
+		).
+		WillReturnError(fmt.Errorf("db down"))
 	sess := &session.Session{
 		ID: "sess-1", AppName: "app", UserID: "user",
 	}
@@ -2341,6 +2344,10 @@ func TestGetSession_SuccessPath(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"session_id", "event"},
 		))
+	mock.ExpectQuery("SELECT session_id, filter_key, summary").
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"session_id", "filter_key", "summary"},
+		))
 
 	// refreshSessionTTL.
 	mock.ExpectExec("UPDATE .* SET updated_at").
@@ -2395,6 +2402,10 @@ func TestGetSession_SuccessNoTTL(t *testing.T) {
 	mock.ExpectQuery("SELECT session_id, event").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"session_id", "event"},
+		))
+	mock.ExpectQuery("SELECT session_id, filter_key, summary").
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"session_id", "filter_key", "summary"},
 		))
 
 	sess, err := s.GetSession(
@@ -3280,6 +3291,7 @@ func TestAppendEventInternal_SyncWithAsyncIndex(
 			},
 		},
 	}
+	eventBytes, _ := json.Marshal(evt)
 
 	sessState := SessionState{
 		ID:    "sess",
@@ -3291,7 +3303,6 @@ func TestAppendEventInternal_SyncWithAsyncIndex(
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -3306,7 +3317,7 @@ func TestAppendEventInternal_SyncWithAsyncIndex(
 			string(model.RoleAssistant),
 			anyVectorArg{},
 			"app", "user", "sess",
-			"inv-sync",
+			string(eventBytes),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -3350,7 +3361,7 @@ func TestAppendEventInternal_AsyncPersist_ClosedChan(
 			SessionID: "sess",
 		},
 	)
-	assert.NoError(t, err)
+	assert.ErrorIs(t, err, errServiceClosing)
 }
 
 func TestAppendTrackEvent_AsyncPersist_ClosedChan(
@@ -3377,7 +3388,7 @@ func TestAppendTrackEvent_AsyncPersist_ClosedChan(
 	err := s.AppendTrackEvent(
 		context.Background(), sess, te,
 	)
-	assert.NoError(t, err)
+	assert.ErrorIs(t, err, errServiceClosing)
 }
 
 // --- Tests for AppendTrackEvent sync mode ---
@@ -3402,14 +3413,12 @@ func TestAppendTrackEvent_SyncMode_Success(
 		Timestamp: time.Now(),
 	}
 
-	// addTrackEvent: query session state.
+	// addTrackEvent transaction.
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	// Transaction.
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO session_track").
@@ -3437,11 +3446,12 @@ func TestAppendTrackEvent_SyncMode_AddError(
 		Timestamp: time.Now(),
 	}
 
-	// Session not found.
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		))
+	mock.ExpectRollback()
 
 	err := s.AppendTrackEvent(
 		context.Background(), sess, te,
@@ -3528,12 +3538,11 @@ func TestAddTrackEvent_Success(t *testing.T) {
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO session_track").
@@ -3567,12 +3576,11 @@ func TestAddTrackEvent_WithTTL(t *testing.T) {
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO session_track").
@@ -3605,12 +3613,11 @@ func TestAddTrackEvent_TransactionError(t *testing.T) {
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnError(fmt.Errorf("tx error"))
 	mock.ExpectRollback()
@@ -3636,10 +3643,12 @@ func TestAddTrackEvent_InvalidStateJSON(t *testing.T) {
 		SessionID: "sess",
 	}
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow([]byte(`{bad json`), nil))
+	mock.ExpectRollback()
 
 	te := &session.TrackEvent{
 		Track:     "track1",
@@ -3669,12 +3678,11 @@ func TestAddTrackEvent_ExpiredSession(t *testing.T) {
 	stateBytes, _ := json.Marshal(sessState)
 	past := time.Now().Add(-1 * time.Hour)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, past))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO session_track").
@@ -3785,7 +3793,6 @@ func TestStartAsyncPersistWorker_Integration(
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
 	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -3841,12 +3848,11 @@ func TestStartAsyncPersistWorker_TrackEvent(
 	}
 	stateBytes, _ := json.Marshal(sessState)
 
+	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT state, expires_at FROM").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"state", "expires_at"},
 		).AddRow(stateBytes, nil))
-
-	mock.ExpectBegin()
 	mock.ExpectExec("UPDATE .* SET state").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO session_track").
@@ -4366,6 +4372,10 @@ func TestGetSession_WithRefreshTTLError(t *testing.T) {
 	mock.ExpectQuery("SELECT session_id, event").
 		WillReturnRows(sqlmock.NewRows(
 			[]string{"session_id", "event"},
+		))
+	mock.ExpectQuery("SELECT session_id, filter_key, summary").
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"session_id", "filter_key", "summary"},
 		))
 
 	// refreshSessionTTL fails but should not cause

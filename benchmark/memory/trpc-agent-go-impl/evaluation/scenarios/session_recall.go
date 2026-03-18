@@ -141,9 +141,7 @@ func (e *SessionRecallEvaluator) Evaluate(
 	catAgg := metrics.NewCategoryAggregator()
 	var sampleUsage TokenUsage
 
-	historyMsgs := buildHistoryMessages(
-		sample, e.config.QAHistoryTurns,
-	)
+	var historyMsgs []model.Message
 
 	for i, qa := range sample.QA {
 		qaResult, err := e.evaluateQA(

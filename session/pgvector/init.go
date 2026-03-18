@@ -20,38 +20,38 @@ import (
 
 // initDB initializes the database schema including pgvector
 // extension, tables, indexes, and HNSW vector index.
-func (s *Service) initDB(ctx context.Context) {
+func (s *Service) initDB(ctx context.Context) error {
 	if err := enablePgvectorExtension(
 		ctx, s.pgClient,
 	); err != nil {
-		panic(fmt.Sprintf(
-			"enable pgvector extension failed: %v", err,
-		))
+		return fmt.Errorf(
+			"enable pgvector extension failed: %w", err,
+		)
 	}
 	if err := createTables(
 		ctx, s.pgClient, s.opts.schema, s.opts.tablePrefix,
 	); err != nil {
-		panic(fmt.Sprintf(
-			"create tables failed: %v", err,
-		))
+		return fmt.Errorf(
+			"create tables failed: %w", err,
+		)
 	}
 	if err := createIndexes(
 		ctx, s.pgClient,
 		s.opts.schema, s.opts.tablePrefix,
 	); err != nil {
-		panic(fmt.Sprintf(
-			"create indexes failed: %v", err,
-		))
+		return fmt.Errorf(
+			"create indexes failed: %w", err,
+		)
 	}
 	if err := s.addVectorColumns(ctx); err != nil {
-		panic(fmt.Sprintf(
-			"add vector columns failed: %v", err,
-		))
+		return fmt.Errorf(
+			"add vector columns failed: %w", err,
+		)
 	}
 	if err := s.createTextSearchIndex(ctx); err != nil {
-		panic(fmt.Sprintf(
-			"create text search index failed: %v", err,
-		))
+		return fmt.Errorf(
+			"create text search index failed: %w", err,
+		)
 	}
 	if err := s.createHNSWIndex(ctx); err != nil {
 		// HNSW index creation may fail if pgvector is not
@@ -61,6 +61,7 @@ func (s *Service) initDB(ctx context.Context) {
 				"failed (non-fatal): %v", err,
 		)
 	}
+	return nil
 }
 
 // enablePgvectorExtension enables the pgvector

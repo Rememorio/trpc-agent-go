@@ -566,6 +566,46 @@ func TestSearchEvents_TrimmedQuery(t *testing.T) {
 	assert.Equal(t, "hello world", emb.lastText)
 }
 
+func TestSearchEvents_UsesEmbedTimeout(t *testing.T) {
+	emb := &mockEmbedder{
+		embedding: []float64{0.1, 0.2, 0.3},
+	}
+	s, mock, db := newTestService(t, emb)
+	defer db.Close()
+	s.opts.embedTimeout = 3 * time.Second
+	now := time.Now()
+
+	rows := sqlmock.NewRows(
+		[]string{
+			"app_name", "user_id", "session_id",
+			"session_created_at", "event_created_at",
+			"event", "content_text", "role", "similarity",
+		},
+	)
+	mock.ExpectQuery(`SELECT se\.app_name`).
+		WithArgs(anyVectorArg{}, "app", "user").
+		WillReturnRows(rows)
+
+	_, err := s.SearchEvents(
+		context.Background(),
+		session.EventSearchRequest{
+			Query: "hello",
+			UserKey: session.UserKey{
+				AppName: "app",
+				UserID:  "user",
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.True(t, emb.lastCtxHasDeadline)
+	assert.WithinDuration(
+		t,
+		now.Add(s.opts.embedTimeout),
+		emb.lastDeadline,
+		500*time.Millisecond,
+	)
+}
+
 func TestBuildSearchEventsSQL_Filters(t *testing.T) {
 	s, _, db := newTestServiceWithSliceSupport(t, nil)
 	defer db.Close()
@@ -761,6 +801,7 @@ func TestUpdateEventEmbedding_Success(t *testing.T) {
 		UserID:  "user",
 	}
 	evt := &event.Event{InvocationID: "inv-1"}
+	eventBytes, _ := json.Marshal(evt)
 
 	mock.ExpectExec("UPDATE session_events SET").
 		WithArgs(
@@ -768,7 +809,7 @@ func TestUpdateEventEmbedding_Success(t *testing.T) {
 			"assistant",
 			anyVectorArg{},
 			"app", "user", "sess-1",
-			"inv-1",
+			string(eventBytes),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -791,6 +832,7 @@ func TestUpdateEventEmbedding_DBError(t *testing.T) {
 		UserID:  "user",
 	}
 	evt := &event.Event{InvocationID: "inv-1"}
+	eventBytes, _ := json.Marshal(evt)
 
 	mock.ExpectExec("UPDATE session_events SET").
 		WithArgs(
@@ -798,7 +840,7 @@ func TestUpdateEventEmbedding_DBError(t *testing.T) {
 			"user",
 			anyVectorArg{},
 			"app", "user", "sess-1",
-			"inv-1",
+			string(eventBytes),
 		).
 		WillReturnError(fmt.Errorf("db error"))
 
