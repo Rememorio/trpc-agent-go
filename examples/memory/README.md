@@ -300,7 +300,7 @@ llmAgent := llmagent.New(
     llmagent.WithModel(modelInstance),
     llmagent.WithTools(memoryService.Tools()), // Agentic mode
     // OR
-    llmagent.WithPreloadMemory(-1), // Auto mode
+    llmagent.WithPreloadMemory(-1), // Auto mode with full preload
 )
 
 // Step 2: Set memory service in runner
