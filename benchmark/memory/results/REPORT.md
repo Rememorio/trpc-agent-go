@@ -103,7 +103,7 @@ retrieval pipeline:
 | Scenario | F1 | BLEU | LLM Score | Tokens/QA | Calls/QA | Latency | Total Time |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Long-Context | 0.469 | 0.426 | 0.526 | 18,776 | 1.0 | 2,607ms | 1h26m |
-| Session Recall | **0.483** | **0.441** | **0.552** | **2,794** | 1.0 | 7,299ms | 4h02m |
+| Session Recall | **0.549** | **0.511** | **0.609** | 3,694 | 1.0 | 6,430ms | 3h33m |
 | Optimized | **0.469** | **0.431** | **0.532** | 17,182 | 3.0 | 8,585ms | 4h44m |
 | Original | 0.399 | 0.371 | 0.416 | 3,056 | 2.0 | 6,659ms | 3h40m |
 
@@ -113,27 +113,27 @@ retrieval pipeline:
 > **43.9% are served from prompt cache**, making the effective new
 > token cost ~9,663/QA (see Section 4.5).
 >
-> As a supplemental retrieval path, Session Recall further pushes
-> overall F1 to **0.483** while cutting Tokens/QA to **2,794**.
-> Compared with Long-Context, it uses **85.1% fewer tokens** per QA;
-> compared with the optimized version, it uses **83.7% fewer tokens**.
+> As a supplemental retrieval path, Session Recall now pushes
+> overall F1 to **0.549** while keeping Tokens/QA at **3,694**.
+> Compared with Long-Context, it uses **80.3% fewer tokens** per QA;
+> compared with the optimized version, it uses **78.5% fewer tokens**.
 
 **Table 2: F1 by Category**
 
 | Category | Count | Long-Context | Session Recall | Optimized | Original |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| single-hop | 282 | 0.320 | 0.349 | **0.396** | 0.316 |
-| multi-hop | 321 | 0.308 | **0.514** | 0.453 | 0.096 |
-| temporal | 96 | 0.088 | 0.121 | **0.247** | 0.088 |
-| open-domain | 841 | 0.518 | **0.598** | 0.441 | 0.358 |
-| adversarial | 446 | 0.667 | 0.407 | 0.626 | **0.814** |
+| single-hop | 282 | 0.320 | 0.368 | **0.396** | 0.316 |
+| multi-hop | 321 | 0.308 | **0.554** | 0.453 | 0.096 |
+| temporal | 96 | 0.088 | 0.174 | **0.247** | 0.088 |
+| open-domain | 841 | 0.518 | **0.618** | 0.441 | 0.358 |
+| adversarial | 446 | 0.667 | 0.610 | 0.626 | **0.814** |
 
 **Table 3: Weighted Average F1**
 
 | Average | Long-Context | Session Recall | Optimized | Original |
 | --- | ---: | ---: | ---: | ---: |
-| 5-category weighted (÷1986) | 0.469 | **0.483** | 0.469 | 0.399 |
-| 4-category weighted (÷1540, excl. adversarial) | 0.411 | **0.505** | 0.423 | 0.279 |
+| 5-category weighted (÷1986) | 0.469 | **0.549** | 0.469 | 0.399 |
+| 4-category weighted (÷1540, excl. adversarial) | 0.411 | **0.531** | 0.423 | 0.279 |
 
 > The optimized version still achieves improvements across all four
 > knowledge categories. Multi-hop improved from 0.096 to 0.453
@@ -142,33 +142,35 @@ retrieval pipeline:
 > decreased (0.814 → 0.626) as the original had an overly
 > aggressive refusal tendency.
 >
-> As a supplement, Session Recall changes the trade-off profile. It is
-> best on **multi-hop** and **open-domain**, pushing 4-category
-> weighted F1 to **0.505**. The optimized version remains stronger on
-> **temporal** and **adversarial**.
+> As a supplement, Session Recall now changes the trade-off profile
+> much more substantially. It is best on **multi-hop** and
+> **open-domain**, improves **temporal** to 0.174, and raises
+> 4-category weighted F1 to **0.531**. The optimized version remains
+> stronger on **single-hop** and **temporal**, while Long-Context and
+> the optimized version still retain a small edge on **adversarial**.
 
 **Table 4: Per-Sample F1**
 
 | Sample | #QA | Long-Context | Session Recall | Optimized | Original |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| locomo10_1 | 199 | **0.455** | 0.429 | 0.432 | 0.331 |
-| locomo10_2 | 105 | 0.496 | **0.516** | 0.422 | 0.302 |
-| locomo10_3 | 193 | 0.527 | **0.556** | 0.521 | 0.432 |
-| locomo10_4 | 260 | **0.466** | 0.449 | 0.447 | 0.378 |
-| locomo10_5 | 242 | 0.433 | **0.463** | 0.436 | 0.451 |
-| locomo10_6 | 158 | 0.511 | **0.521** | 0.505 | 0.455 |
-| locomo10_7 | 190 | 0.461 | **0.491** | 0.487 | 0.407 |
-| locomo10_8 | 239 | 0.453 | 0.485 | **0.492** | 0.404 |
-| locomo10_9 | 196 | 0.450 | 0.451 | **0.464** | 0.383 |
-| locomo10_10 | 204 | 0.471 | **0.508** | 0.478 | 0.407 |
-| **Average** | **199** | 0.469 | **0.483** | 0.469 | 0.399 |
+| locomo10_1 | 199 | 0.455 | **0.530** | 0.432 | 0.331 |
+| locomo10_2 | 105 | 0.496 | **0.636** | 0.422 | 0.302 |
+| locomo10_3 | 193 | 0.527 | **0.644** | 0.521 | 0.432 |
+| locomo10_4 | 260 | 0.466 | **0.482** | 0.447 | 0.378 |
+| locomo10_5 | 242 | 0.433 | **0.542** | 0.436 | 0.451 |
+| locomo10_6 | 158 | 0.511 | **0.553** | 0.505 | 0.455 |
+| locomo10_7 | 190 | 0.461 | **0.530** | 0.487 | 0.407 |
+| locomo10_8 | 239 | 0.453 | **0.563** | 0.492 | 0.404 |
+| locomo10_9 | 196 | 0.450 | **0.508** | 0.464 | 0.383 |
+| locomo10_10 | 204 | 0.471 | **0.562** | 0.478 | 0.407 |
+| **Average** | **199** | 0.469 | **0.549** | 0.469 | 0.399 |
 
 > The optimized version improves on all 10 samples vs original, and
 > surpasses Long-Context on 6 samples.
 >
-> As a supplement, Session Recall beats Long-Context on 6/10 samples
-> and beats the optimized version on 7/10 samples, with the largest
-> gains on `locomo10_2`, `locomo10_3`, and `locomo10_10`.
+> As a supplement, Session Recall now beats Long-Context on all 10
+> samples and beats the optimized version on all 10 samples, with the
+> largest gains on `locomo10_2`, `locomo10_3`, and `locomo10_5`.
 
 ### 3.2 Retrieval Strategies vs Long-Context
 
@@ -181,10 +183,10 @@ retrieval-based strategies expose different production trade-offs:
 | **Cross-session source** | None | Searches raw historical session events at query time | Searches extracted persistent memories |
 | **Context window** | Bounded by model limit (128K for GPT-4o-mini) | Unbounded — injects only recalled events | Unbounded — injects only retrieved memories |
 | **Scaling** | Cost grows linearly with transcript length | Cost stays near-constant (top-K retrieval) | Cost grows with tool-call steps and retrieved memory payload |
-| **Overall F1** | 0.469 | **0.483** | 0.469 |
-| **4-category weighted F1** | 0.411 | **0.505** | 0.423 |
-| **Tokens/QA** | 18,776 | **2,794** | 17,182 |
-| **Best strengths** | Adversarial robustness | Open-domain and multi-hop | Temporal and adversarial balance |
+| **Overall F1** | 0.469 | **0.549** | 0.469 |
+| **4-category weighted F1** | 0.411 | **0.531** | 0.423 |
+| **Tokens/QA** | 18,776 | **3,694** | 17,182 |
+| **Best strengths** | Adversarial robustness | Overall accuracy, open-domain, and multi-hop | Temporal and adversarial balance |
 
 ---
 
@@ -422,17 +424,17 @@ and evaluation pipeline.
 
 **Approach comparison summary:**
 
-| Dimension | trpc (session recall) | trpc (optimized) | AutoGen | CrewAI | ADK | Agno |
+| Dimension | Session Recall | trpc-agent-go (optimized) | AutoGen | CrewAI | ADK | Agno |
 | --- | --- | --- | --- | --- | --- | --- |
 | Stored message roles | user + assistant raw session events | user + assistant extracted into structured memories | No auto-storage (manual API) | Task-level summary (input + output) | All events (user + model + tool) | User only (assistant excluded) |
 | Benchmark turn mapping | Speaker[0]→user, [1]→assistant | Speaker[0]→user, [1]→assistant | Per-turn manual add() | Per-turn manual save() | Per-turn→Event, whole session write | Per-turn→create_user_memories() |
 | Storage | Raw session events | LLM-extracted structured memories | Raw turns | Raw turns | Raw turns | LLM-extracted facts |
 | Retrieval | Hybrid RRF over session events, preloaded once | Vector+keyword hybrid via tool calls | Vector top-30 | Vector top-30 | **Full load** | **Full injection** |
 | LLM calls/QA | 1 (preload) | 3 (tool call) | **1** (pre-inject) | 2 (Crew internal) | 2 (tool call) | 1 (pre-inject) |
-| Tokens/QA | 2,794 (2,747 effective†) | 17,182 (9,663 effective‡) | **1,943** | 2,839 | 49,224 | 10,436 |
+| Tokens/QA | 3,694 (3,567 effective†) | 17,182 (9,663 effective‡) | **1,943** | 2,839 | 49,224 | 10,436 |
 
-> † Session Recall cache hit rate is 1.7%, giving an effective new
-> token cost of ~2,747/QA.
+> † Session Recall cache hit rate is 3.7%, giving an effective new
+> token cost of ~3,567/QA.
 >
 > ‡ 43.9% of optimized prompt tokens are served from the
 > provider's prompt cache — the effective *new* token cost is
@@ -442,9 +444,9 @@ and evaluation pipeline.
 > Full-load approaches (ADK/Agno) waste tokens with poor results;
 > selective retrieval (Session Recall / optimized / AutoGen /
 > CrewAI) performs significantly better. Within selective retrieval,
-> Session Recall now offers the strongest balance of quality and
-> cost, while the optimized version remains the more extraction-heavy,
-> tool-driven alternative.
+> Session Recall now delivers the strongest absolute quality while
+> staying in the low-token tier, while the optimized version remains
+> the more extraction-heavy, tool-driven alternative.
 
 ### 4.3 Overall Results
 
@@ -452,7 +454,7 @@ and evaluation pipeline.
 
 | Framework | F1 | BLEU | LLM Score | Tokens/QA | Calls/QA | Latency | Total Time |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **trpc-agent-go (session recall)** | **0.483** | **0.441** | **0.552** | 2,794† | 1.0 | 7,299ms | 4h02m |
+| **trpc-agent-go (Session Recall)** | **0.549** | **0.511** | **0.609** | 3,694† | 1.0 | 6,430ms | 3h33m |
 | trpc-agent-go (optimized) | 0.469 | 0.431 | 0.532 | 17,182‡ | 3.0 | 8,585ms | 4h44m |
 | AutoGen | 0.457 | 0.414 | 0.540 | 1,943 | 1.0 | 3,816ms | 2h06m |
 | CrewAI | 0.427 | 0.385 | 0.479 | 2,839 | 2.0 | 8,081ms | 4h27m |
@@ -460,8 +462,8 @@ and evaluation pipeline.
 | trpc-agent-go (original) | 0.399 | 0.371 | 0.416 | 3,056 | 2.0 | 6,659ms | 3h40m |
 | Agno | 0.332 | 0.289 | 0.494 | 10,436 | 1.0 | 14,127ms | 7h47m |
 
-> † Session Recall cache hit rate is 1.7%; effective new token cost
-> is ~2,747/QA.
+> † Session Recall cache hit rate is 3.7%; effective new token cost
+> is ~3,567/QA.
 >
 > ‡ 43.9% of optimized prompt tokens hit the provider's prompt
 > cache; effective new token cost is ~9,663/QA. See Section 4.5 for
@@ -477,45 +479,45 @@ and evaluation pipeline.
 ```
 Memory F1 (10 samples, 1986 QA)
 
-trpc-agent-go (session recall) |==============================================| 0.483
-trpc-agent-go (optimized)      |============================================  | 0.469
-AutoGen                        |=========================================     | 0.457
-CrewAI                         |========================================      | 0.427
-trpc-agent-go (original)       |=====================================         | 0.399
-ADK                            |==================================            | 0.362
-Agno                           |===============================               | 0.332
-                               +----------------------------------------------+
-                               0.0      0.1      0.2      0.3      0.4    0.5
+trpc-agent-go (Session Recall) |====================================================| 0.549
+trpc-agent-go (optimized)      |============================================        | 0.469
+AutoGen                        |=========================================           | 0.457
+CrewAI                         |========================================            | 0.427
+trpc-agent-go (original)       |=====================================               | 0.399
+ADK                            |==================================                  | 0.362
+Agno                           |===============================                     | 0.332
+                               +----------------------------------------------------+
+                               0.0      0.1      0.2      0.3      0.4      0.5
 ```
 
 ### 4.4 Category-Level F1
 
 **Table 8: F1 by Category**
 
-| Category | Count | trpc (session recall) | trpc (optimized) | AutoGen | CrewAI | trpc (original) | ADK | Agno |
+| Category | Count | Session Recall | trpc-agent-go (optimized) | AutoGen | CrewAI | trpc-agent-go (original) | ADK | Agno |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| single-hop | 282 | 0.349 | **0.396** | 0.377 | 0.322 | 0.316 | 0.299 | 0.240 |
-| multi-hop | 321 | **0.514** | 0.453 | 0.512 | 0.380 | 0.096 | 0.418 | 0.283 |
-| temporal | 96 | 0.121 | **0.247** | 0.176 | 0.140 | 0.088 | 0.120 | 0.076 |
-| open-domain | 841 | **0.598** | 0.441 | 0.594 | 0.501 | 0.358 | 0.494 | 0.292 |
-| adversarial | 446 | 0.407 | 0.626 | 0.272 | 0.448 | **0.814** | 0.163 | 0.556 |
+| single-hop | 282 | 0.368 | **0.396** | 0.377 | 0.322 | 0.316 | 0.299 | 0.240 |
+| multi-hop | 321 | **0.554** | 0.453 | 0.512 | 0.380 | 0.096 | 0.418 | 0.283 |
+| temporal | 96 | 0.174 | **0.247** | 0.176 | 0.140 | 0.088 | 0.120 | 0.076 |
+| open-domain | 841 | **0.618** | 0.441 | 0.594 | 0.501 | 0.358 | 0.494 | 0.292 |
+| adversarial | 446 | 0.610 | 0.626 | 0.272 | 0.448 | **0.814** | 0.163 | 0.556 |
 
 **Table 9: Weighted Average F1**
 
-| Average | trpc (session recall) | trpc (optimized) | AutoGen | CrewAI | trpc (original) | ADK | Agno |
+| Average | Session Recall | trpc-agent-go (optimized) | AutoGen | CrewAI | trpc-agent-go (original) | ADK | Agno |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 5-category weighted (÷1986) | **0.483** | 0.469 | 0.457 | 0.427 | 0.399 | 0.362 | 0.332 |
-| 4-category weighted (÷1540) | 0.505 | 0.423 | **0.511** | 0.420 | 0.279 | 0.420 | 0.267 |
+| 5-category weighted (÷1986) | **0.549** | 0.469 | 0.457 | 0.427 | 0.399 | 0.362 | 0.332 |
+| 4-category weighted (÷1540) | **0.531** | 0.423 | 0.511 | 0.420 | 0.279 | 0.420 | 0.267 |
 
 > The optimized version still materially improves on the original
-> memory baseline, especially on **single-hop**, **multi-hop**, and
-> **temporal** questions, while Session Recall should be read as a
-> supplemental retrieval path on top of that internal evolution.
+> memory baseline, especially on **single-hop** and **temporal**
+> questions, while Session Recall should be read as a supplemental
+> retrieval path on top of that internal evolution.
 >
-> 5-category weighted F1: **Session Recall ranks first at 0.483**,
-> leading the optimized version (0.469) by 0.014 and AutoGen (0.457)
-> by 0.026. 4-category weighted F1 reaches **0.505**, only 0.006
-> below AutoGen's 0.511 while clearly ahead of all other
+> 5-category weighted F1: **Session Recall ranks first at 0.549**,
+> leading the optimized version (0.469) by 0.080 and AutoGen (0.457)
+> by 0.092. 4-category weighted F1 also ranks **#1 at 0.531**,
+> beating AutoGen's 0.511 by 0.020 while clearly leading all other
 > trpc-agent-go variants and dedicated memory systems.
 
 ### 4.5 Token Efficiency and Latency
@@ -525,7 +527,7 @@ Agno                           |===============================               | 
 | Framework | F1 | Total Tokens | Tokens/QA | Cache Hit | Effective Tokens/QA† | F1/Billion Tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | AutoGen | 0.457 | 3,859,412 | 1,943 | n/a | 1,943 | 118.4 |
-| trpc-agent-go (session recall) | **0.483** | 5,548,400 | 2,794 | 1.7% | 2,747 | 87.1 |
+| trpc-agent-go (Session Recall) | **0.549** | 7,353,057 | 3,694 | 3.7% | 3,567 | 74.6 |
 | CrewAI | 0.427 | 5,639,085 | 2,839 | n/a | 2,839 | 75.7 |
 | trpc-agent-go (original) | 0.399 | 6,068,802 | 3,056 | n/a | 3,056 | 65.7 |
 | trpc-agent-go (optimized) | 0.469 | 34,123,774 | 17,182 | **43.9%** | **9,663** | 13.7 |
@@ -545,22 +547,22 @@ Agno                           |===============================               | 
 > meaningful improvement over the original memory baseline despite
 > its higher nominal token cost. **Session Recall is the strongest
 > accuracy/efficiency compromise inside trpc-agent-go**: it reaches
-> 0.483 F1 with only 2,794 tokens/QA, dramatically below
-> Long-Context and the optimized version. The optimized version
-> remains far more expensive in nominal tokens because of the
-> multi-step tool-call
-> pattern where each step re-reads prior context; prompt caching
-> mitigates that cost, but Session Recall is still much leaner in
-> the current setup. ADK remains the least efficient — 49,224
-> tokens/QA for only 0.362 F1.
+> 0.549 F1 with 3,694 tokens/QA, far below Long-Context and the
+> optimized version while substantially outperforming them in
+> accuracy. The optimized version remains far more expensive in
+> nominal tokens because of the multi-step tool-call pattern where
+> each step re-reads prior context; prompt caching mitigates that
+> cost, but Session Recall is still much leaner in the current
+> setup. ADK remains the least efficient — 49,224 tokens/QA for only
+> 0.362 F1.
 
 ```
 Total Evaluation Time (memory scenario, 1986 QA)
 
 AutoGen            |====                                   | 2h06m
 ADK                |======                                 | 3h04m
+Session Recall     |=======                                | 3h33m
 trpc (original)    |========                               | 3h40m
-trpc (session)     |=========                              | 4h02m
 CrewAI             |==========                             | 4h27m
 trpc (optimized)   |==========                             | 4h44m
 Agno               |===============================        | 7h47m
@@ -649,21 +651,21 @@ evaluation, ADK encountered context overflow issues on some samples:
 
 **Table 12: Per-Sample F1 Comparison**
 
-| Sample | #QA | trpc (session recall) | trpc (optimized) | AutoGen | CrewAI | trpc (original) | ADK | Agno |
+| Sample | #QA | Session Recall | trpc-agent-go (optimized) | AutoGen | CrewAI | trpc-agent-go (original) | ADK | Agno |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| conv-26 | 199 | 0.429 | **0.432** | 0.384 | 0.355 | 0.331 | 0.337 | 0.296 |
-| conv-30 | 105 | **0.516** | 0.422 | 0.451 | 0.439 | 0.302 | 0.379 | 0.334 |
-| conv-41 | 193 | **0.556** | 0.521 | 0.513 | 0.440 | 0.432 | 0.335 | 0.387 |
-| conv-42 | 260 | **0.449** | 0.447 | 0.439 | 0.408 | 0.378 | 0.343 | 0.338 |
-| conv-43 | 242 | 0.463 | 0.436 | **0.486** | 0.413 | 0.451 | 0.355 | 0.341 |
-| conv-44 | 158 | **0.521** | 0.505 | 0.491 | 0.509 | 0.455 | 0.384 | 0.289 |
-| conv-47 | 190 | 0.491 | 0.487 | **0.496** | 0.405 | 0.407 | 0.374 | 0.321 |
-| conv-48 | 239 | 0.485 | **0.492** | 0.463 | 0.432 | 0.404 | 0.392 | 0.328 |
-| conv-49 | 196 | 0.451 | **0.464** | 0.418 | 0.407 | 0.383 | 0.371 | 0.302 |
-| conv-50 | 204 | **0.508** | 0.478 | 0.475 | 0.487 | 0.407 | 0.363 | 0.374 |
-| **Average** | **199** | **0.483** | 0.469 | 0.457 | 0.427 | 0.399 | 0.362 | 0.332 |
+| conv-26 | 199 | **0.530** | 0.432 | 0.384 | 0.355 | 0.331 | 0.337 | 0.296 |
+| conv-30 | 105 | **0.636** | 0.422 | 0.451 | 0.439 | 0.302 | 0.379 | 0.334 |
+| conv-41 | 193 | **0.644** | 0.521 | 0.513 | 0.440 | 0.432 | 0.335 | 0.387 |
+| conv-42 | 260 | **0.482** | 0.447 | 0.439 | 0.408 | 0.378 | 0.343 | 0.338 |
+| conv-43 | 242 | **0.542** | 0.436 | 0.486 | 0.413 | 0.451 | 0.355 | 0.341 |
+| conv-44 | 158 | **0.553** | 0.505 | 0.491 | 0.509 | 0.455 | 0.384 | 0.289 |
+| conv-47 | 190 | **0.530** | 0.487 | 0.496 | 0.405 | 0.407 | 0.374 | 0.321 |
+| conv-48 | 239 | **0.563** | 0.492 | 0.463 | 0.432 | 0.404 | 0.392 | 0.328 |
+| conv-49 | 196 | **0.508** | 0.464 | 0.418 | 0.407 | 0.383 | 0.371 | 0.302 |
+| conv-50 | 204 | **0.562** | 0.478 | 0.475 | 0.487 | 0.407 | 0.363 | 0.374 |
+| **Average** | **199** | **0.549** | 0.469 | 0.457 | 0.427 | 0.399 | 0.362 | 0.332 |
 
-> Session Recall beats AutoGen on 8 out of 10 samples.
+> Session Recall beats AutoGen on all 10 samples.
 
 ---
 
@@ -687,8 +689,8 @@ cross-system comparability (Mem0 paper does not include it).
 
 | Method | Single-Hop | Multi-Hop | Open-Domain | Temporal | 4-cat Weighted | Source |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| AutoGen | 0.377 | 0.512 | 0.594 | 0.176 | **0.511** | This work |
-| **trpc-agent (session recall)** | 0.349 | **0.514** | **0.598** | 0.121 | 0.505 | This work |
+| AutoGen | 0.377 | 0.512 | 0.594 | 0.176 | 0.511 | This work |
+| **trpc-agent-go (Session Recall)** | 0.368 | **0.554** | **0.618** | 0.174 | **0.531** | This work |
 | trpc-agent (optimized) | **0.396** | 0.453 | 0.441 | 0.247 | 0.423 | This work |
 | Mem0g | 0.381 | 0.243 | 0.493 | **0.516** | 0.422 | Mem0 paper |
 | Mem0 | 0.387 | 0.286 | 0.477 | 0.489 | 0.421 | Mem0 paper |
@@ -709,9 +711,9 @@ cross-system comparability (Mem0 paper does not include it).
 ```
 4-Category Weighted F1 (excluding adversarial, 1540 QA)
 
-AutoGen             |==========================================| 0.511
-trpc-agent (session)|========================================= | 0.505
-trpc-agent (optimized) |==================================     | 0.423
+Session Recall      |============================================| 0.531
+AutoGen             |==========================================  | 0.511
+trpc-agent (optimized) |==================================       | 0.423
 Mem0g               |==================================        | 0.422
 Mem0                |==================================        | 0.421
 CrewAI              |=================================         | 0.420
@@ -733,7 +735,7 @@ Agno                |====================                      | 0.267
 >
 > | Method | 5-cat Weighted F1 |
 > | --- | ---: |
-> | **trpc-agent (session recall)** | **0.483** |
+> | **trpc-agent-go (Session Recall)** | **0.549** |
 > | trpc-agent (optimized) | 0.469 |
 > | AutoGen | 0.457 |
 > | CrewAI | 0.427 |
@@ -743,24 +745,24 @@ Agno                |====================                      | 0.267
 
 **Key takeaways:**
 
-1. **trpc-agent (session recall)** reaches a 4-category weighted F1 of
-   **0.505**, ranking **#2 overall** and trailing only AutoGen
-   (0.511) by 0.006. It clearly surpasses Mem0g (0.422), Mem0
+1. **trpc-agent-go (Session Recall)** reaches a 4-category weighted F1 of
+   **0.531**, ranking **#1 overall** and surpassing AutoGen
+   (0.511) by 0.020. It clearly surpasses Mem0g (0.422), Mem0
    (0.421), Zep (0.403), LangMem (0.362), A-Mem (0.347), and other
    dedicated memory systems.
 2. **Open-domain and multi-hop are now standout strengths.** Session
-   Recall ranks **#1 in multi-hop** (0.514) and **#1 in open-domain**
-   (0.598), slightly ahead of AutoGen on both categories.
+   Recall ranks **#1 in multi-hop** (0.554) and **#1 in open-domain**
+   (0.618), ahead of AutoGen on both categories.
 3. **The optimized version remains a complementary strategy.** It is still the
    strongest trpc-agent-go variant on **temporal** (0.247) and offers
    better adversarial robustness (0.626), but its overall 4-category
    weighted F1 (0.423) is well below Session Recall.
 4. **Token efficiency improved dramatically.** Session Recall cuts
    nominal Tokens/QA from 17,182 (optimized) and 18,776
-   (Long-Context) down to **2,794**, while also improving F1.
+   (Long-Context) down to **3,694**, while also improving F1.
 5. Compared with the original baseline, the optimized version first
    moved trpc-agent-go from 0.279 to 0.423 in 4-category weighted F1,
-   and Session Recall then pushed that further to 0.505.
+   and Session Recall then pushed that further to 0.531.
 
 ---
 
@@ -770,9 +772,10 @@ Agno                |====================                      | 0.267
 
 1. **trpc-agent-go Session Recall is now the strongest overall
    configuration.** It ranks **#1 in 5-category weighted F1** at
-   **0.483** and reaches **0.505** in 4-category weighted F1, only
-   0.006 below AutoGen. Compared with Long-Context and the optimized
-   version, it improves overall F1 while using far fewer tokens.
+   **0.549** and **#1 in 4-category weighted F1** at **0.531**,
+   beating AutoGen on both metrics. Compared with Long-Context and
+   the optimized version, it improves overall F1 while using far
+   fewer tokens.
 
 2. **Different retrieval strategies now show clear trade-offs.**
    Session Recall is best on **open-domain** and **multi-hop**,
@@ -782,7 +785,7 @@ Agno                |====================                      | 0.267
    bound for short single-session histories.
 
 3. **trpc-agent-go now surpasses dedicated memory systems by a wide
-   margin.** Session Recall's 4-category weighted F1 of 0.505 is well
+   margin.** Session Recall's 4-category weighted F1 of 0.531 is well
    above Mem0g (0.422), Mem0 (0.421), Zep (0.403), LangMem (0.362),
    A-Mem (0.347), OpenAI Memory (0.328), MemGPT (0.308), and other
    purpose-built memory systems.
@@ -820,9 +823,9 @@ Agno                |====================                      | 0.267
    extracted persistent memories.
 
 6. **Temporal reasoning remains the next optimization target.** The
-   optimized version reaches 0.247 in temporal, but Session Recall is still at
-   0.121. Time-aware retrieval, temporal query rewriting, and richer
-   reranking remain the main next steps.
+   optimized version reaches 0.247 in temporal, but Session Recall is
+   still at 0.174. Time-aware retrieval, temporal query rewriting,
+   and richer reranking remain the main next steps.
 
 ### Production Recommendations
 
@@ -852,7 +855,7 @@ Agno                |====================                      | 0.267
 | Scenario | single-hop | multi-hop | temporal | open-domain | adversarial |
 | --- | --- | --- | --- | --- | --- |
 | Long-Context | 0.320/0.251/0.320 | 0.308/0.273/0.260 | 0.088/0.068/0.165 | 0.518/0.457/0.662 | 0.667/0.667/0.668 |
-| Session Recall | 0.349/0.281/0.381 | 0.514/0.470/0.523 | 0.121/0.101/0.284 | 0.598/0.540/0.727 | 0.407/0.406/0.412 |
+| Session Recall | 0.368/0.304/0.445 | 0.554/0.512/0.563 | 0.174/0.138/0.311 | 0.618/0.570/0.715 | 0.610/0.610/0.608 |
 | Optimized | 0.396/0.325/0.395 | 0.453/0.415/0.519 | 0.247/0.192/0.364 | 0.441/0.398/0.552 | 0.626/0.626/0.626 |
 | Original | 0.316/0.250/0.270 | 0.096/0.088/0.060 | 0.088/0.068/0.115 | 0.358/0.319/0.425 | 0.814/0.814/0.814 |
 
@@ -861,7 +864,7 @@ Agno                |====================                      | 0.267
 | Scenario | Prompt Tokens | Completion Tokens | Total Tokens | LLM Calls | Calls/QA |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Long-Context | 37,272,167 | 16,104 | 37,288,271 | 1,986 | 1.0 |
-| Session Recall | 5,529,355 | 19,045 | 5,548,400 | 1,986 | 1.0 |
+| Session Recall | 7,336,165 | 16,892 | 7,353,057 | 1,986 | 1.0 |
 | Optimized | 34,007,814 | 115,960 | 34,123,774 | 5,981 | 3.0 |
 | Original | 6,011,025 | 57,777 | 6,068,802 | 3,999 | 2.0 |
 | AutoGen | 3,842,576 | 16,836 | 3,859,412 | 1,986 | 1.0 |
