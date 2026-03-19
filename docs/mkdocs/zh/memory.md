@@ -524,6 +524,15 @@ if err != nil {
 - **可配置**：可以通过 `WithToolEnabled()` 启用或禁用
 - **不可用**：该模式下无法使用此工具
 
+#### 默认工具约束
+
+内置 memory 工具的默认 declaration 还包含一组面向 LLM 的使用约束：
+
+- `memory_search`、`memory_load` 这类读工具，只会操作当前 `appName` 和 `userID` 作用域内的记忆。
+- 当当前用户请求本身就依赖已保存的记忆上下文时，Agent 应直接调用读工具，而不是额外增加一轮权限确认。
+- `memory_add`、`memory_update`、`memory_delete` 这类写工具，适用于用户明确要求“记住”“更正”“忘记”某条已保存信息的场景。
+- `memory_delete`、`memory_clear` 这类破坏性工具，只应在用户明确要求删除已保存记忆时使用。
+
 #### 启用/禁用工具
 
 提示：在 Auto 模式下，`WithToolEnabled()` 只会影响 `memory_search` 和 `memory_load`

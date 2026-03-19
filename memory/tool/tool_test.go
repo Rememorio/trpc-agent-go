@@ -758,6 +758,106 @@ func TestMemoryTool_Declaration_AllTools(t *testing.T) {
 	}
 }
 
+func TestMemoryTool_SearchDeclaration_EncouragesDirectLookup(t *testing.T) {
+	tool := NewSearchTool()
+	decl := tool.Declaration()
+	require.NotNil(t, decl)
+	require.NotNil(t, decl.InputSchema)
+	require.NotNil(t, decl.InputSchema.Properties)
+
+	assert.Contains(t, decl.Description, memoryToolScopeNote)
+	assert.Contains(t, decl.Description, memoryReadDirectUseNote)
+
+	querySchema := decl.InputSchema.Properties["query"]
+	require.NotNil(t, querySchema)
+	assert.Equal(t, searchMemoryQueryDescription, querySchema.Description)
+}
+
+func TestMemoryTool_LoadDeclaration_EncouragesDirectLookup(t *testing.T) {
+	tool := NewLoadTool()
+	decl := tool.Declaration()
+	require.NotNil(t, decl)
+	require.NotNil(t, decl.InputSchema)
+	require.NotNil(t, decl.InputSchema.Properties)
+
+	assert.Contains(t, decl.Description, memoryToolScopeNote)
+	assert.Contains(t, decl.Description, memoryReadDirectUseNote)
+
+	limitSchema := decl.InputSchema.Properties["limit"]
+	require.NotNil(t, limitSchema)
+	assert.Equal(t, loadLimitDescription, limitSchema.Description)
+}
+
+func TestMemoryTool_WriteDeclarations_ContainUsageGuidance(t *testing.T) {
+	tests := []struct {
+		name               string
+		tool               tool.CallableTool
+		expectedDescSubstr []string
+		fieldName          string
+		fieldDescription   string
+	}{
+		{
+			name: "add",
+			tool: NewAddTool(),
+			expectedDescSubstr: []string{
+				memoryToolScopeNote,
+				memoryWriteDirectUseNote,
+				memoryCaptureGuidance,
+			},
+			fieldName:        "memory",
+			fieldDescription: addMemoryDescription,
+		},
+		{
+			name: "update",
+			tool: NewUpdateTool(),
+			expectedDescSubstr: []string{
+				memoryToolScopeNote,
+				memoryWriteDirectUseNote,
+			},
+			fieldName:        "memory_id",
+			fieldDescription: updateMemoryIDDescription,
+		},
+		{
+			name: "delete",
+			tool: NewDeleteTool(),
+			expectedDescSubstr: []string{
+				memoryToolScopeNote,
+				memoryWriteDirectUseNote,
+				memoryDestructiveGuidance,
+			},
+			fieldName:        "memory_id",
+			fieldDescription: deleteMemoryIDDescription,
+		},
+		{
+			name: "clear",
+			tool: NewClearTool(),
+			expectedDescSubstr: []string{
+				memoryToolScopeNote,
+				memoryDestructiveGuidance,
+			},
+			fieldName:        "reason",
+			fieldDescription: clearReasonDescription,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decl := tt.tool.Declaration()
+			require.NotNil(t, decl)
+			require.NotNil(t, decl.InputSchema)
+			require.NotNil(t, decl.InputSchema.Properties)
+
+			for _, expected := range tt.expectedDescSubstr {
+				assert.Contains(t, decl.Description, expected)
+			}
+
+			fieldSchema := decl.InputSchema.Properties[tt.fieldName]
+			require.NotNil(t, fieldSchema)
+			assert.Equal(t, tt.fieldDescription, fieldSchema.Description)
+		})
+	}
+}
+
 func TestGetMemoryServiceFromContext(t *testing.T) {
 	t.Run("valid context with memory service", func(t *testing.T) {
 		service := newMockMemoryService()

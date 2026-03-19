@@ -430,6 +430,15 @@ The memory service provides 6 tools. Common tools are enabled by default, while 
 - **Configurable**: Can be enabled/disabled via `WithToolEnabled()`
 - **Unavailable**: Tool cannot be used in this mode
 
+#### Default tool guidance
+
+The built-in memory tools also include default declaration guidance for LLMs:
+
+- Read tools such as `memory_search` and `memory_load` only operate on memories already scoped to the current `appName` and `userID`.
+- When the current user request depends on remembered context, the agent should call the read tool directly instead of adding an extra permission-confirmation turn.
+- Write tools such as `memory_add`, `memory_update`, and `memory_delete` are intended for clear user-directed memory operations like remembering, correcting, or forgetting saved context.
+- Destructive tools such as `memory_delete` and `memory_clear` should only be used when the user explicitly asks to remove saved memory.
+
 #### Enable/Disable Tools
 
 Note: In Auto mode, `WithToolEnabled()` only affects whether `memory_search` and
