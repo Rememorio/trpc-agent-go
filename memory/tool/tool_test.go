@@ -26,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
 
 // mockMemoryService is a mock implementation of memory.Service for testing.
@@ -856,6 +857,32 @@ func TestMemoryTool_WriteDeclarations_ContainUsageGuidance(t *testing.T) {
 			assert.Equal(t, tt.fieldDescription, fieldSchema.Description)
 		})
 	}
+}
+
+func TestMemoryRequestTypes_PreserveSchemaMetadataForExternalTools(t *testing.T) {
+	passThrough := func(_ context.Context, req *SearchMemoryRequest) (*SearchMemoryResponse, error) {
+		return &SearchMemoryResponse{Query: req.Query}, nil
+	}
+
+	tool := function.NewFunctionTool(
+		passThrough,
+		function.WithName("external_memory_search"),
+		function.WithDescription("test"),
+	)
+
+	decl := tool.Declaration()
+	require.NotNil(t, decl)
+	require.NotNil(t, decl.InputSchema)
+	require.NotNil(t, decl.InputSchema.Properties)
+
+	querySchema := decl.InputSchema.Properties["query"]
+	require.NotNil(t, querySchema)
+	assert.Equal(t, "The search query to find relevant memories", querySchema.Description)
+
+	kindSchema := decl.InputSchema.Properties["kind"]
+	require.NotNil(t, kindSchema)
+	assert.Equal(t, "Filter by memory kind: 'fact' or 'episode'. Empty means all.", kindSchema.Description)
+	assert.Equal(t, []any{"fact", "episode"}, kindSchema.Enum)
 }
 
 func TestGetMemoryServiceFromContext(t *testing.T) {
