@@ -922,6 +922,8 @@ const (
 	// search returns fewer than this many results, a second unfiltered search can
 	// be merged back in if KindFallback is enabled.
 	MinKindFallbackResults = 3
+	// DefaultHybridRRFK is the standard Reciprocal Rank Fusion constant.
+	DefaultHybridRRFK = 60
 )
 
 // SearchMemoryEntries ranks keyword-search matches using shared scoring
@@ -1252,30 +1254,54 @@ func filterAndSortEntries(
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].score != filtered[j].score {
-			return filtered[i].score > filtered[j].score
-		}
-		if opts.OrderByEventTime {
-			ti := entryEventTime(filtered[i].entry)
-			tj := entryEventTime(filtered[j].entry)
-			switch {
-			case ti == nil && tj != nil:
-				return false
-			case ti != nil && tj == nil:
-				return true
-			case ti != nil && tj != nil && !ti.Equal(*tj):
-				return ti.Before(*tj)
-			}
-		}
-		if !filtered[i].entry.UpdatedAt.Equal(filtered[j].entry.UpdatedAt) {
-			return filtered[i].entry.UpdatedAt.After(filtered[j].entry.UpdatedAt)
-		}
-		if !filtered[i].entry.CreatedAt.Equal(filtered[j].entry.CreatedAt) {
-			return filtered[i].entry.CreatedAt.After(filtered[j].entry.CreatedAt)
-		}
-		return filtered[i].entry.ID < filtered[j].entry.ID
+		return lessSearchEntry(
+			filtered[i].entry,
+			filtered[j].entry,
+			filtered[i].score,
+			filtered[j].score,
+			opts.OrderByEventTime,
+		)
 	})
 	return filtered
+}
+
+func lessSearchEntry(
+	left *memory.Entry,
+	right *memory.Entry,
+	leftScore float64,
+	rightScore float64,
+	orderByEventTime bool,
+) bool {
+	switch {
+	case left == nil && right == nil:
+		return false
+	case left == nil:
+		return false
+	case right == nil:
+		return true
+	}
+	if leftScore != rightScore {
+		return leftScore > rightScore
+	}
+	if orderByEventTime {
+		ti := entryEventTime(left)
+		tj := entryEventTime(right)
+		switch {
+		case ti == nil && tj != nil:
+			return false
+		case ti != nil && tj == nil:
+			return true
+		case ti != nil && tj != nil && !ti.Equal(*tj):
+			return ti.Before(*tj)
+		}
+	}
+	if !left.UpdatedAt.Equal(right.UpdatedAt) {
+		return left.UpdatedAt.After(right.UpdatedAt)
+	}
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		return left.CreatedAt.After(right.CreatedAt)
+	}
+	return left.ID < right.ID
 }
 
 func matchesSearchFilters(entry *memory.Entry, opts memory.SearchOptions) bool {
@@ -1316,6 +1342,28 @@ func cloneScoredEntries(candidates []scoredEntry) []*memory.Entry {
 	return results
 }
 
+// SortSearchResults sorts scored memory entries by relevance first and then
+// applies event_time as a tie-breaker when requested.
+func SortSearchResults(results []*memory.Entry, orderByEventTime bool) {
+	sort.SliceStable(results, func(i, j int) bool {
+		var leftScore float64
+		if results[i] != nil {
+			leftScore = results[i].Score
+		}
+		var rightScore float64
+		if results[j] != nil {
+			rightScore = results[j].Score
+		}
+		return lessSearchEntry(
+			results[i],
+			results[j],
+			leftScore,
+			rightScore,
+			orderByEventTime,
+		)
+	})
+}
+
 // MergeSearchResults merges kind-filtered results with fallback results.
 // Results matching the preferred kind are ranked higher. Duplicates are
 // removed by memory ID.
@@ -1346,6 +1394,56 @@ func MergeSearchResults(
 	merged = append(merged, kindMatch...)
 	merged = append(merged, kindOther...)
 
+	if maxResults > 0 && len(merged) > maxResults {
+		merged = merged[:maxResults]
+	}
+	return merged
+}
+
+// MergeHybridResults combines ranked result lists using Reciprocal Rank Fusion.
+// Scores are assigned using 1 / (k + rank) and summed across result lists.
+func MergeHybridResults(
+	primary []*memory.Entry,
+	secondary []*memory.Entry,
+	k int,
+	maxResults int,
+) []*memory.Entry {
+	if k <= 0 {
+		k = DefaultHybridRRFK
+	}
+
+	type rrfEntry struct {
+		entry *memory.Entry
+		score float64
+	}
+
+	scores := make(map[string]*rrfEntry, len(primary)+len(secondary))
+	accumulate := func(results []*memory.Entry) {
+		for rank, entry := range results {
+			if entry == nil || entry.ID == "" {
+				continue
+			}
+			rrfScore := 1.0 / float64(k+rank+1)
+			if existing, ok := scores[entry.ID]; ok {
+				existing.score += rrfScore
+				continue
+			}
+			cloned := *entry
+			scores[entry.ID] = &rrfEntry{
+				entry: &cloned,
+				score: rrfScore,
+			}
+		}
+	}
+	accumulate(primary)
+	accumulate(secondary)
+
+	merged := make([]*memory.Entry, 0, len(scores))
+	for _, scored := range scores {
+		scored.entry.Score = scored.score
+		merged = append(merged, scored.entry)
+	}
+	SortSearchResults(merged, false)
 	if maxResults > 0 && len(merged) > maxResults {
 		merged = merged[:maxResults]
 	}
