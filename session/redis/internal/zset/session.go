@@ -920,6 +920,8 @@ func (c *Client) TrimConversations(ctx context.Context, key session.Key, count i
 
 // CreateSummary creates or updates a summary for the session.
 // Uses Lua script to atomically merge filterKey summary only if newer.
+// UpdatedAt is normalized to UTC before serialization so that the Lua-side
+// lexicographic comparison of ISO 8601 strings equals chronological order.
 func (c *Client) CreateSummary(
 	ctx context.Context,
 	key session.Key,
@@ -927,7 +929,11 @@ func (c *Client) CreateSummary(
 	sum *session.Summary,
 	ttl time.Duration,
 ) error {
-	payload, err := json.Marshal(sum)
+	// Normalize to UTC so Lua string comparison of "updated_at" is correct.
+	normalized := *sum
+	normalized.UpdatedAt = sum.UpdatedAt.UTC()
+
+	payload, err := json.Marshal(&normalized)
 	if err != nil {
 		return fmt.Errorf("marshal summary failed: %w", err)
 	}
