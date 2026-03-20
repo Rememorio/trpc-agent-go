@@ -1513,6 +1513,97 @@ func TestSearchEntries_KindFallbackMergesResults(t *testing.T) {
 	assert.Equal(t, "fact-1", results[3].ID)
 }
 
+func TestSortSearchResults_AppliesAllTieBreakers(t *testing.T) {
+	base := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+	sameUpdated := base.Add(10 * time.Minute)
+	sameCreated := base.Add(5 * time.Minute)
+	earlierEvent := base.Add(24 * time.Hour)
+	laterEvent := base.Add(48 * time.Hour)
+
+	makeEntry := func(
+		id string,
+		score float64,
+		eventTime *time.Time,
+		createdAt time.Time,
+		updatedAt time.Time,
+	) *memory.Entry {
+		entry := newSearchTestEntry(
+			id,
+			id,
+			nil,
+			createdAt,
+			updatedAt,
+		)
+		entry.Score = score
+		entry.Memory.EventTime = eventTime
+		return entry
+	}
+
+	results := []*memory.Entry{
+		nil,
+		makeEntry("id-b", 0.30, nil, sameCreated, sameUpdated),
+		makeEntry("created-older", 0.40, nil, base, sameUpdated),
+		makeEntry("updated-older", 0.50, nil, base, base),
+		makeEntry("event-late", 0.90, &laterEvent, base, base),
+		makeEntry("updated-newer", 0.50, nil, base, base.Add(time.Minute)),
+		makeEntry("event-early", 0.90, &earlierEvent, base, base),
+		makeEntry("created-newer", 0.40, nil, sameCreated, sameUpdated),
+		makeEntry("id-a", 0.30, nil, sameCreated, sameUpdated),
+	}
+
+	SortSearchResults(results, true)
+
+	require.Len(t, results, 9)
+	assert.Equal(t, "event-early", results[0].ID)
+	assert.Equal(t, "event-late", results[1].ID)
+	assert.Equal(t, "updated-newer", results[2].ID)
+	assert.Equal(t, "updated-older", results[3].ID)
+	assert.Equal(t, "created-newer", results[4].ID)
+	assert.Equal(t, "created-older", results[5].ID)
+	assert.Equal(t, "id-a", results[6].ID)
+	assert.Equal(t, "id-b", results[7].ID)
+	assert.Nil(t, results[8])
+}
+
+func TestMergeHybridResults_UsesDefaultKAndSkipsInvalidEntries(t *testing.T) {
+	base := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+	primary := []*memory.Entry{
+		nil,
+		newSearchTestEntry("mem-1", "vector", nil, base, base),
+		{ID: "", Memory: &memory.Memory{Memory: "invalid"}},
+		newSearchTestEntry(
+			"mem-2",
+			"vector-only",
+			nil,
+			base.Add(time.Minute),
+			base.Add(time.Minute),
+		),
+	}
+	secondary := []*memory.Entry{
+		newSearchTestEntry(
+			"mem-3",
+			"keyword-only",
+			nil,
+			base.Add(2*time.Minute),
+			base.Add(2*time.Minute),
+		),
+		newSearchTestEntry(
+			"mem-1",
+			"hybrid",
+			nil,
+			base.Add(3*time.Minute),
+			base.Add(3*time.Minute),
+		),
+	}
+
+	results := MergeHybridResults(primary, secondary, 0, 2)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "mem-1", results[0].ID)
+	assert.Equal(t, "mem-3", results[1].ID)
+	assert.Greater(t, results[0].Score, results[1].Score)
+}
+
 func TestIsPunctToken(t *testing.T) {
 	tests := []struct {
 		name     string
