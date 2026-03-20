@@ -123,7 +123,7 @@ func SummarizeSession(
 		}
 		base.SummariesMu.Lock()
 		if base.Summaries != nil && base.Summaries[filterKey] != nil {
-			base.Summaries[filterKey].UpdatedAt = latestTs.UTC()
+			base.Summaries[filterKey].UpdatedAt = latestTs
 		}
 		base.SummariesMu.Unlock()
 		return true, nil
@@ -173,15 +173,13 @@ func SummarizeSession(
 }
 
 func selectUpdatedAt(tmp *session.Session, prevAt, latestTs time.Time, hasDelta bool) time.Time {
-	updatedAt := prevAt.UTC()
 	if !hasDelta || latestTs.IsZero() {
-		return updatedAt
+		return prevAt
 	}
-
 	if ts := readLastIncludedTimestamp(tmp); !ts.IsZero() {
-		return ts.UTC()
+		return ts
 	}
-	return latestTs.UTC()
+	return latestTs
 }
 
 // lastIncludedTsKey is the key for the last included timestamp.

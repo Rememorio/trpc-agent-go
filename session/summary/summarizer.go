@@ -285,7 +285,7 @@ func (s *sessionSummarizer) recordLastIncludedTimestamp(sess *session.Session, e
 	if sess == nil || len(events) == 0 {
 		return
 	}
-	last := events[len(events)-1].Timestamp.UTC()
+	last := events[len(events)-1].Timestamp
 	sess.SetState(lastIncludedTsKey, []byte(last.Format(time.RFC3339Nano)))
 }
 

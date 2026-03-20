@@ -1457,7 +1457,7 @@ func TestSessionSummarizer_SummarizeWithSkipRecent(t *testing.T) {
 }
 
 func TestSessionSummarizer_RecordLastIncludedTimestamp(t *testing.T) {
-	now := time.Now().UTC()
+	now := time.Now()
 	keepTs := now.Add(-2 * time.Minute)
 	sess := &session.Session{
 		ID: "ts-session",

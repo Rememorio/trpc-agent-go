@@ -75,7 +75,7 @@ func TestSummarizeSession_UsesLastIncludedTimestamp(t *testing.T) {
 	sum := sess.Summaries[""]
 	sess.SummariesMu.RUnlock()
 	require.NotNil(t, sum)
-	assert.True(t, sum.UpdatedAt.Equal(t2.UTC()))
+	assert.True(t, sum.UpdatedAt.Equal(t2))
 }
 
 func TestSelectUpdatedAt_Fallbacks(t *testing.T) {
@@ -134,7 +134,7 @@ func (f *fakeSummarizerWithTs) Summarize(ctx context.Context, sess *session.Sess
 		sess.State = make(session.StateMap)
 	}
 	if !f.ts.IsZero() {
-		sess.State[lastIncludedTsKey] = []byte(f.ts.UTC().Format(time.RFC3339Nano))
+		sess.State[lastIncludedTsKey] = []byte(f.ts.Format(time.RFC3339Nano))
 	}
 	return f.out, nil
 }
@@ -360,7 +360,7 @@ func TestSummarizeSession_UsesLastIncludedTimestampWhenProvided(t *testing.T) {
 	require.True(t, updated)
 	require.NotNil(t, base.Summaries)
 	require.Equal(t, "sum", base.Summaries[""].Summary)
-	require.Equal(t, t2.UTC(), base.Summaries[""].UpdatedAt)
+	require.True(t, t2.Equal(base.Summaries[""].UpdatedAt))
 }
 
 func TestMeetsTimeCriteria(t *testing.T) {
