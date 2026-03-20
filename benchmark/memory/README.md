@@ -315,7 +315,7 @@ Results are saved in JSON format:
 | -------- | ---------------------------------- | -------------------------------------------- |
 | inmemory | Fast, no setup required            | No vector similarity, keyword-based matching |
 | pgvector | Vector similarity search, scalable | Requires PostgreSQL setup                    |
-| mysql    | Full-text search, widely deployed  | Requires MySQL setup                         |
+| mysql    | App-layer BM25-style keyword search | Requires MySQL setup                        |
 
 ### Expected Results
 

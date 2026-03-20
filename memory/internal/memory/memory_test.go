@@ -808,6 +808,23 @@ func TestBuildSearchTokens_Duplicates(t *testing.T) {
 	})
 }
 
+func TestBuildWeightedQueryTokens_AddsCJKTrigramFallback(t *testing.T) {
+	tokens := buildWeightedQueryTokens("甲乙丙丁")
+	weights := make(map[string]float64, len(tokens))
+	hasFallback := false
+	for _, token := range tokens {
+		weights[token.text] = token.weight
+		if token.weight < queryTokenWeight {
+			hasFallback = true
+		}
+	}
+
+	assert.Contains(t, weights, "甲乙丙")
+	assert.Contains(t, weights, "乙丙丁")
+	assert.True(t, hasFallback)
+	assert.Equal(t, cjkTrigramTokenWeight, weights["甲乙丙"])
+}
+
 func TestMatchMemoryEntry_EmptyTokensWithTopics(t *testing.T) {
 	entry := &memory.Entry{
 		Memory: &memory.Memory{
@@ -864,7 +881,7 @@ func TestBuildSearchTokens_MixedContent(t *testing.T) {
 	// Test with mixed CJK and English
 	result := BuildSearchTokens("hello世界test")
 	assert.NotNil(t, result)
-	// Should have both English words and CJK bigrams
+	// Should have both English words and CJK lexical tokens.
 	assert.NotEmpty(t, result)
 }
 
@@ -1227,32 +1244,26 @@ func TestShouldIncludeTool(t *testing.T) {
 	})
 }
 
-func TestScoreMemoryEntry_FallbackTopicMatch(t *testing.T) {
-	// When tokens are empty (e.g. single char query), fallback to substring
-	// matching. This test covers the topic match branch in fallback.
+func TestScoreMemoryEntry_PunctuationOnlyQueryDoesNotMatchTopic(t *testing.T) {
 	entry := &memory.Entry{
 		Memory: &memory.Memory{
 			Memory: "Some unrelated content",
 			Topics: []string{"special!topic"},
 		},
 	}
-
-	// "!" produces no tokens, so fallback is used.
-	// "special!" should match the topic via substring.
 	score := ScoreMemoryEntry(entry, "!")
-	assert.Equal(t, 0.5, score)
+	assert.Zero(t, score)
 }
 
-func TestScoreMemoryEntry_FallbackContentMatch(t *testing.T) {
+func TestScoreMemoryEntry_PunctuationOnlyQueryDoesNotMatchContent(t *testing.T) {
 	entry := &memory.Entry{
 		Memory: &memory.Memory{
 			Memory: "Test! content",
 			Topics: []string{"other"},
 		},
 	}
-	// "!" produces no tokens, fallback matches content substring.
 	score := ScoreMemoryEntry(entry, "!")
-	assert.Equal(t, 0.5, score)
+	assert.Zero(t, score)
 }
 
 func TestScoreMemoryEntry_FallbackNoMatch(t *testing.T) {
@@ -1276,7 +1287,8 @@ func TestScoreMemoryEntry_PartialTokenMatch(t *testing.T) {
 	}
 	// "coffee tea" -> tokens ["coffee", "tea"], only "coffee" matches.
 	score := ScoreMemoryEntry(entry, "coffee tea")
-	assert.Equal(t, 0.5, score)
+	assert.Greater(t, score, 0.34)
+	assert.Less(t, score, 0.45)
 }
 
 func TestScoreMemoryEntry_TopicOnlyMatch(t *testing.T) {
@@ -1289,7 +1301,19 @@ func TestScoreMemoryEntry_TopicOnlyMatch(t *testing.T) {
 	// "preferences xyz" -> tokens ["preferences", "xyz"],
 	// only "preferences" matches (in topics).
 	score := ScoreMemoryEntry(entry, "preferences xyz")
-	assert.Equal(t, 0.5, score)
+	assert.Greater(t, score, 0.3)
+	assert.Less(t, score, 0.4)
+}
+
+func TestScoreMemoryEntry_DoesNotMatchEnglishSubstrings(t *testing.T) {
+	entry := &memory.Entry{
+		Memory: &memory.Memory{
+			Memory: "We concatenate strings for logging",
+		},
+	}
+
+	score := ScoreMemoryEntry(entry, "cat")
+	assert.Zero(t, score)
 }
 
 func TestSearchMemoryEntries_RanksByScoreThenRecency(t *testing.T) {
@@ -1331,8 +1355,57 @@ func TestSearchMemoryEntries_RanksByScoreThenRecency(t *testing.T) {
 	})
 	require.Len(t, results, 3)
 	assert.Equal(t, "best-older", results[0].ID)
-	assert.Equal(t, "partial-topic-newest", results[1].ID)
-	assert.Equal(t, "partial-newer", results[2].ID)
+	assert.Equal(t, "partial-newer", results[1].ID)
+	assert.Equal(t, "partial-topic-newest", results[2].ID)
+}
+
+func TestSearchEntries_OrderByEventTimeKeepsHigherScoreFirst(t *testing.T) {
+	base := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	early := base.Add(24 * time.Hour)
+	late := base.Add(72 * time.Hour)
+
+	entries := []*memory.Entry{
+		newSearchTestEntry("earlier-weaker", "coffee", nil, base, base),
+		newSearchTestEntry(
+			"later-stronger",
+			"coffee tea",
+			nil,
+			base.Add(time.Minute),
+			base.Add(time.Minute),
+		),
+	}
+	entries[0].Memory.Kind = memory.KindEpisode
+	entries[0].Memory.EventTime = &early
+	entries[1].Memory.Kind = memory.KindEpisode
+	entries[1].Memory.EventTime = &late
+
+	results := SearchEntries(entries, memory.SearchOptions{
+		Query:            "coffee tea",
+		OrderByEventTime: true,
+		MaxResults:       10,
+	}, 0.3, 10)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "later-stronger", results[0].ID)
+	assert.Equal(t, "earlier-weaker", results[1].ID)
+}
+
+func TestSearchEntries_PrefersRarerPartialMatches(t *testing.T) {
+	now := time.Now().UTC()
+	entries := []*memory.Entry{
+		newSearchTestEntry("generic-1", "Caroline likes coffee", nil, now, now),
+		newSearchTestEntry("generic-2", "Caroline likes hiking", nil, now, now),
+		newSearchTestEntry("generic-3", "Caroline likes reading", nil, now, now),
+		newSearchTestEntry("rare", "Career planning includes counseling", nil, now, now),
+	}
+
+	results := SearchMemoryEntries(entries, "Caroline career", SearchOptions{
+		MinScore:   0.3,
+		MaxResults: 10,
+	})
+
+	require.Len(t, results, 4)
+	assert.Equal(t, "rare", results[0].ID)
 }
 
 func TestSearchMemoryEntries_LimitsAndBreaksTiesByID(t *testing.T) {
@@ -1512,16 +1585,13 @@ func TestBuildSearchTokens_SegmenterError(t *testing.T) {
 		segErr = errors.New("mock error")
 	})
 
-	// CJK query triggers getSegmenter, which returns error
-	// -> nil result.
 	result := BuildSearchTokens("中文测试")
-	assert.Nil(t, result)
+	assert.Equal(t, []string{"中文测试"}, result)
 }
 
 func TestBuildSearchTokens_CJKAllStopwords(t *testing.T) {
-	// CJK input where all tokens are stopwords -> toks is empty -> returns nil.
 	result := BuildSearchTokens("的了是在")
-	assert.Nil(t, result)
+	assert.Empty(t, result)
 }
 
 func newSearchTestEntry(
