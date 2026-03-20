@@ -589,6 +589,78 @@ func TestService_SearchMemories_OrderByEventTimeKeepsHigherSimilarityFirst(t *te
 	require.Greater(t, results[0].Score, results[1].Score)
 }
 
+func TestService_SearchMemories_KindFallbackKeepsRequestedKindFirst(t *testing.T) {
+	db, cleanup := openTempSQLiteDB(t)
+	defer cleanup()
+
+	svc, err := NewService(
+		db,
+		WithEmbedder(&mapEmbedder{
+			dimension: 2,
+			embeddings: map[string][]float64{
+				"alpha":            {1, 0},
+				"episode primary":  {0.6, 0.8},
+				"episode fallback": {0.7, 0.7},
+				"fact fallback":    {1, 0},
+			},
+		}),
+		WithIndexDimension(2),
+		WithMaxResults(10),
+	)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, svc.Close()) }()
+
+	ctx := context.Background()
+	userKey := memory.UserKey{AppName: "app", UserID: "u1"}
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		userKey,
+		"episode primary",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind: memory.KindEpisode,
+		}),
+	))
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		userKey,
+		"episode fallback",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind: memory.KindEpisode,
+		}),
+	))
+	require.NoError(t, svc.AddMemory(
+		ctx,
+		userKey,
+		"fact fallback",
+		nil,
+		memory.WithMetadata(&memory.Metadata{
+			Kind: memory.KindFact,
+		}),
+	))
+
+	results, err := svc.SearchMemories(
+		ctx,
+		userKey,
+		"alpha",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:        "alpha",
+			Kind:         memory.KindEpisode,
+			KindFallback: true,
+			MaxResults:   10,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	require.Equal(t, memory.KindEpisode, results[0].Memory.Kind)
+	require.Equal(t, "episode fallback", results[0].Memory.Memory)
+	require.Equal(t, memory.KindEpisode, results[1].Memory.Kind)
+	require.Equal(t, "episode primary", results[1].Memory.Memory)
+	require.Equal(t, memory.KindFact, results[2].Memory.Kind)
+	require.Equal(t, "fact fallback", results[2].Memory.Memory)
+}
+
 func TestService_Search_SoftDeleteFiltered(t *testing.T) {
 	db, cleanup := openTempSQLiteDB(t)
 	defer cleanup()

@@ -1147,6 +1147,22 @@ func containsOrderedTokens(docTokens, queryTokens []string) bool {
 }
 
 func fallbackPhraseScore(doc entrySearchStats, query string) float64 {
+	rawQuery := strings.TrimSpace(query)
+	if shouldAllowRawExactFallback(rawQuery) {
+		lowerRawQuery := strings.ToLower(rawQuery)
+		if strings.Contains(
+			strings.ToLower(doc.entry.Memory.Memory),
+			lowerRawQuery,
+		) {
+			return exactPhraseFallbackScore
+		}
+		if strings.Contains(
+			strings.ToLower(strings.Join(doc.entry.Memory.Topics, " ")),
+			lowerRawQuery,
+		) {
+			return exactPhraseFallbackScore * topicFieldWeight
+		}
+	}
 	if !shouldAllowExactFallback(query) {
 		return 0
 	}
@@ -1173,6 +1189,23 @@ func shouldAllowExactFallback(query string) bool {
 		return false
 	}
 	return true
+}
+
+func shouldAllowRawExactFallback(query string) bool {
+	if query == "" || len(BuildSearchTokens(query)) > 0 {
+		return false
+	}
+	var hasAlnum bool
+	var hasSpecial bool
+	for _, r := range query {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsNumber(r):
+			hasAlnum = true
+		case !unicode.IsSpace(r):
+			hasSpecial = true
+		}
+	}
+	return hasAlnum && hasSpecial
 }
 
 // SearchEntries applies keyword ranking together with public episodic-aware
@@ -1362,6 +1395,32 @@ func SortSearchResults(results []*memory.Entry, orderByEventTime bool) {
 			orderByEventTime,
 		)
 	})
+}
+
+// SortSearchResultsWithKindPriority sorts results within preferred and fallback
+// kind groups separately, then keeps the preferred kind group ahead.
+func SortSearchResultsWithKindPriority(
+	results []*memory.Entry,
+	preferredKind memory.Kind,
+	orderByEventTime bool,
+) {
+	if preferredKind == "" || len(results) < 2 {
+		SortSearchResults(results, orderByEventTime)
+		return
+	}
+	preferred := make([]*memory.Entry, 0, len(results))
+	fallback := make([]*memory.Entry, 0, len(results))
+	for _, entry := range results {
+		if entry != nil && EffectiveKind(entry.Memory) == preferredKind {
+			preferred = append(preferred, entry)
+			continue
+		}
+		fallback = append(fallback, entry)
+	}
+	SortSearchResults(preferred, orderByEventTime)
+	SortSearchResults(fallback, orderByEventTime)
+	pos := copy(results, preferred)
+	copy(results[pos:], fallback)
 }
 
 // MergeSearchResults merges kind-filtered results with fallback results.

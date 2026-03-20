@@ -1316,6 +1316,17 @@ func TestScoreMemoryEntry_DoesNotMatchEnglishSubstrings(t *testing.T) {
 	assert.Zero(t, score)
 }
 
+func TestScoreMemoryEntry_MatchesRawSpecialIdentifier(t *testing.T) {
+	entry := &memory.Entry{
+		Memory: &memory.Memory{
+			Memory: "We migrated the parser to C++ last week",
+		},
+	}
+
+	score := ScoreMemoryEntry(entry, "C++")
+	assert.Equal(t, exactPhraseFallbackScore, score)
+}
+
 func TestSearchMemoryEntries_RanksByScoreThenRecency(t *testing.T) {
 	now := time.Now().UTC()
 	entries := []*memory.Entry{
@@ -1563,6 +1574,34 @@ func TestSortSearchResults_AppliesAllTieBreakers(t *testing.T) {
 	assert.Equal(t, "id-a", results[6].ID)
 	assert.Equal(t, "id-b", results[7].ID)
 	assert.Nil(t, results[8])
+}
+
+func TestSortSearchResultsWithKindPriority_PrefersRequestedKind(t *testing.T) {
+	base := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+	makeEntry := func(
+		id string,
+		kind memory.Kind,
+		score float64,
+		updatedAt time.Time,
+	) *memory.Entry {
+		entry := newSearchTestEntry(id, id, nil, base, updatedAt)
+		entry.Memory.Kind = kind
+		entry.Score = score
+		return entry
+	}
+
+	results := []*memory.Entry{
+		makeEntry("fact-high", memory.KindFact, 0.95, base),
+		makeEntry("episode-mid", memory.KindEpisode, 0.70, base),
+		makeEntry("episode-high", memory.KindEpisode, 0.90, base.Add(time.Minute)),
+	}
+
+	SortSearchResultsWithKindPriority(results, memory.KindEpisode, false)
+
+	require.Len(t, results, 3)
+	assert.Equal(t, "episode-high", results[0].ID)
+	assert.Equal(t, "episode-mid", results[1].ID)
+	assert.Equal(t, "fact-high", results[2].ID)
 }
 
 func TestMergeHybridResults_UsesDefaultKAndSkipsInvalidEntries(t *testing.T) {

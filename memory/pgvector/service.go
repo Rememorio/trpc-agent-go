@@ -620,12 +620,23 @@ func (s *Service) SearchMemories(
 		results = filtered
 	}
 	if len(results) > 1 {
-		imemory.SortSearchResults(results, opts.OrderByEventTime)
+		if opts.Kind != "" && opts.KindFallback {
+			imemory.SortSearchResultsWithKindPriority(
+				results,
+				opts.Kind,
+				opts.OrderByEventTime,
+			)
+		} else {
+			imemory.SortSearchResults(results, opts.OrderByEventTime)
+		}
 	}
 
 	// Content-based deduplication of near-identical memories.
 	if opts.Deduplicate && len(results) > 1 {
 		results = deduplicateResults(results)
+	}
+	if maxResults > 0 && len(results) > maxResults {
+		results = results[:maxResults]
 	}
 
 	return results, nil

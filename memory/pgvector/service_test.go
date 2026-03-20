@@ -2577,6 +2577,53 @@ func TestService_SearchMemories_OrderByEventTimeKeepsHigherSimilarityFirst(t *te
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestService_SearchMemories_KindFallbackKeepsRequestedKindFirst(t *testing.T) {
+	db, mock := setupMockDB(t)
+	defer db.Close()
+
+	svc := setupMockService(t, db, mock, WithSkipDBInit(true))
+	defer svc.Close()
+
+	now := time.Date(2024, 5, 7, 0, 0, 0, 0, time.UTC)
+	rows := func() *sqlmock.Rows {
+		return sqlmock.NewRows(
+			[]string{"memory_id", "app_name", "user_id", "memory_content", "topics",
+				"memory_kind", "event_time", "participants", "location",
+				"created_at", "updated_at", "similarity"},
+		)
+	}
+
+	mock.ExpectQuery("SELECT memory_id, app_name, user_id, memory_content, topics").
+		WillReturnRows(rows().AddRow(
+			"mem-1", "test-app", "u1", "Episode primary", pq.Array([]string{"travel"}),
+			"episode", now, pq.Array([]string{"Alice"}), "Kyoto", now, now, 0.60,
+		))
+	mock.ExpectQuery("SELECT memory_id, app_name, user_id, memory_content, topics").
+		WillReturnRows(rows().
+			AddRow("mem-2", "test-app", "u1", "Episode fallback", pq.Array([]string{"travel"}),
+				"episode", now, pq.Array([]string{"Alice"}), "Kyoto", now, now, 0.70).
+			AddRow("mem-3", "test-app", "u1", "Fact fallback", pq.Array([]string{"profile"}),
+				"fact", nil, pq.Array([]string{}), nil, now, now, 0.95))
+
+	results, err := svc.SearchMemories(
+		context.Background(),
+		memory.UserKey{AppName: "test-app", UserID: "u1"},
+		"Kyoto",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:        "Kyoto",
+			Kind:         memory.KindEpisode,
+			KindFallback: true,
+			MaxResults:   4,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 3)
+	assert.Equal(t, "mem-2", results[0].ID)
+	assert.Equal(t, "mem-1", results[1].ID)
+	assert.Equal(t, "mem-3", results[2].ID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestService_SearchMemories_KindFallbackAndHybridSearch(t *testing.T) {
 	db, mock := setupMockDB(t)
 	defer db.Close()

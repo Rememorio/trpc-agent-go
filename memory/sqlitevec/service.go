@@ -737,7 +737,15 @@ func (s *Service) SearchMemories(
 		results = filtered
 	}
 	if len(results) > 1 {
-		imemory.SortSearchResults(results, searchOpts.OrderByEventTime)
+		if searchOpts.Kind != "" && searchOpts.KindFallback {
+			imemory.SortSearchResultsWithKindPriority(
+				results,
+				searchOpts.Kind,
+				searchOpts.OrderByEventTime,
+			)
+		} else {
+			imemory.SortSearchResults(results, searchOpts.OrderByEventTime)
+		}
 	}
 	if searchOpts.Deduplicate && len(results) > 1 {
 		results = imemory.DeduplicateResults(results)
