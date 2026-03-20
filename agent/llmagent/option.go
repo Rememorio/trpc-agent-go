@@ -14,9 +14,9 @@ import (
 	"reflect"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
-	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
@@ -489,7 +489,8 @@ func WithCodeExecutor(ce codeexecutor.CodeExecutor) Option {
 }
 
 // WithEnableCodeExecutionResponseProcessor controls whether the agent
-// auto-executes fenced code blocks found in model responses.
+// auto-executes assistant replies that are exactly one runnable fenced
+// code block.
 func WithEnableCodeExecutionResponseProcessor(enable bool) Option {
 	return func(opts *Options) {
 		opts.EnableCodeExecutionResponseProcessor = enable
