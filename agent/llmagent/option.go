@@ -14,9 +14,9 @@ import (
 	"reflect"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
-	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
@@ -472,7 +472,8 @@ func WithCodeExecutor(ce codeexecutor.CodeExecutor) Option {
 }
 
 // WithEnableCodeExecutionResponseProcessor controls whether the agent
-// auto-executes fenced code blocks found in model responses.
+// auto-executes assistant replies that are exactly one runnable fenced
+// code block.
 func WithEnableCodeExecutionResponseProcessor(enable bool) Option {
 	return func(opts *Options) {
 		opts.EnableCodeExecutionResponseProcessor = enable
@@ -542,7 +543,8 @@ func WithSkillLoadMode(mode string) Option {
 // WithMaxLoadedSkills caps how many skills remain "loaded" in session
 // state at the same time.
 //
-// When max <= 0, no cap is applied (default behavior).
+// When max <= 0, no cap is applied (default behavior). Recent skill
+// touches are tracked by skill_load / skill_select_docs state updates.
 func WithMaxLoadedSkills(max int) Option {
 	return func(opts *Options) {
 		opts.MaxLoadedSkills = max
