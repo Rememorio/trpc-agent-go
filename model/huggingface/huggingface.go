@@ -161,11 +161,6 @@ func (m *Model) handleNonStreamingRequest(
 ) {
 	defer close(responseChan)
 
-	// Call request callback if provided.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, hfRequest)
-	}
-
 	// Make HTTP request.
 	hfResponse, err := m.makeRequest(ctx, hfRequest)
 	if err != nil {
