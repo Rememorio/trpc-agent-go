@@ -2068,7 +2068,7 @@ func TestChatRequestCallbackSynchronous(t *testing.T) {
 
 			ch, err := m.GenerateContent(
 				context.Background(), req)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			// Callback must have fired synchronously
 			// before GenerateContent returned.

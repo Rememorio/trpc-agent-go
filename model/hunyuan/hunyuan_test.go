@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/hunyuan/internal/hunyuan"
@@ -1290,7 +1291,13 @@ func TestChatRequestCallbackSynchronous(t *testing.T) {
 						w.Header().Set("Content-Type",
 							"text/event-stream")
 						w.WriteHeader(http.StatusOK)
-						flusher, _ := w.(http.Flusher)
+						flusher, ok := w.(http.Flusher)
+						if !ok {
+							http.Error(w,
+								"no flusher",
+								http.StatusInternalServerError)
+							return
+						}
 						chunk := hunyuan.ChatCompletionResponse{
 							Id:      "s1",
 							Created: 1,
@@ -1361,7 +1368,7 @@ func TestChatRequestCallbackSynchronous(t *testing.T) {
 
 			ch, err := m.GenerateContent(
 				context.Background(), req)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			// Callback must have fired synchronously
 			// before GenerateContent returned.
