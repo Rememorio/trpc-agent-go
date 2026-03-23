@@ -39,6 +39,11 @@ func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, text, "# Memory")
 	require.Contains(t, text, "## Preferences")
+	require.Equal(
+		t,
+		filepath.Join(root, usersDirName, "telegram", "u1", memoryFileName),
+		path,
+	)
 }
 
 func TestStoreReadFileHonorsLimit(t *testing.T) {

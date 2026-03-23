@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,11 +24,9 @@ const (
 	usersDirName   = "users"
 	memoryFileName = "MEMORY.md"
 
-	dirPerm  = 0o700
-	filePerm = 0o600
-
-	maxScopedPrefixLen = 24
-	tempPatternSuffix  = ".tmp-*"
+	dirPerm           = 0o700
+	filePerm          = 0o600
+	tempPatternSuffix = ".tmp-*"
 )
 
 type Store struct {
@@ -69,7 +66,7 @@ func (s *Store) MemoryDir(
 		return "", errors.New("memorydocs: nil store")
 	}
 	channel = sanitizePathPart(channel)
-	key := scopedKey(userID)
+	key := sanitizePathPart(userID)
 	if channel == "" || key == "" {
 		return "", errors.New("memorydocs: empty user scope")
 	}
@@ -179,19 +176,6 @@ func (s *Store) removeScopedDir(ctx context.Context, dir string) error {
 	return nil
 }
 
-func scopedKey(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return ""
-	}
-	prefix := sanitizePathPart(trimmed)
-	sum := crc32.ChecksumIEEE([]byte(trimmed))
-	if prefix == "" {
-		return fmt.Sprintf("%08x", sum)
-	}
-	return fmt.Sprintf("%s-%08x", prefix, sum)
-}
-
 func sanitizePathPart(raw string) string {
 	raw = strings.ToLower(strings.TrimSpace(raw))
 	if raw == "" {
@@ -217,11 +201,7 @@ func sanitizePathPart(raw string) string {
 		}
 	}
 
-	out := strings.Trim(b.String(), "-")
-	if len(out) > maxScopedPrefixLen {
-		out = strings.Trim(out[:maxScopedPrefixLen], "-")
-	}
-	return out
+	return strings.Trim(b.String(), "-")
 }
 
 func writeFileAtomic(path string, data []byte) error {
