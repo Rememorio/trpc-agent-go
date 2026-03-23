@@ -27,6 +27,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
@@ -55,9 +56,10 @@ type inProcGatewayClient struct {
 	memories memory.Service
 	cronSvc  *cron.Service
 
-	debugDir string
-	uploads  *uploads.Store
-	personas *persona.Store
+	debugDir   string
+	uploads    *uploads.Store
+	personas   *persona.Store
+	memoryDocs *memorydocs.Store
 }
 
 func newInProcGatewayClient(
@@ -94,6 +96,13 @@ func (c *inProcGatewayClient) SetPersonaStore(store *persona.Store) {
 		return
 	}
 	c.personas = store
+}
+
+func (c *inProcGatewayClient) SetMemoryDocStore(store *memorydocs.Store) {
+	if c == nil {
+		return
+	}
+	c.memoryDocs = store
 }
 
 func (c *inProcGatewayClient) SendMessage(
@@ -222,6 +231,11 @@ func (c *inProcGatewayClient) ForgetUser(
 	if c.personas != nil {
 		if err := c.personas.ForgetUser(ctx, channel, userID); err != nil {
 			return fmt.Errorf("forget: delete personas: %w", err)
+		}
+	}
+	if c.memoryDocs != nil {
+		if err := c.memoryDocs.DeleteUser(ctx, channel, userID); err != nil {
+			return fmt.Errorf("forget: delete user memory docs: %w", err)
 		}
 	}
 

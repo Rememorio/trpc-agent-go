@@ -45,6 +45,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	tgapi "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/telegram"
@@ -2371,6 +2372,17 @@ func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	memoryRoot, err := memorydocs.DefaultRoot(debugDir)
+	require.NoError(t, err)
+	memoryStore, err := memorydocs.NewStore(memoryRoot)
+	require.NoError(t, err)
+	memoryPath, err := memoryStore.EnsureMemory(
+		ctx,
+		channelName,
+		userID,
+	)
+	require.NoError(t, err)
+
 	srv, err := gateway.New(&inProcGWTestRunner{})
 	require.NoError(t, err)
 
@@ -2383,6 +2395,7 @@ func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
 		uploadStore,
 	)
 	c.SetPersonaStore(personaStore)
+	c.SetMemoryDocStore(memoryStore)
 
 	require.NoError(t, c.ForgetUser(ctx, channelName, userID))
 
@@ -2417,6 +2430,9 @@ func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, persona.PresetDefault, currentPreset.ID)
+
+	_, err = os.Stat(memoryPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestInProcGatewayClient_ForgetUser_ClearsCronJobsOnlyOnce(

@@ -21,7 +21,7 @@ import (
 func TestResolveAgentPrompts_DefaultInstruction(t *testing.T) {
 	t.Parallel()
 
-	prompts, err := resolveAgentPrompts(runOptions{})
+	prompts, err := resolveAgentPromptsForDir(runOptions{}, t.TempDir())
 	require.NoError(t, err)
 	require.Equal(t, defaultAgentInstruction, prompts.Instruction)
 	require.Empty(t, prompts.SystemPrompt)
@@ -48,7 +48,7 @@ func TestResolveAgentPrompts_MergesInlineFilesAndDir(t *testing.T) {
 		AgentInstructionDir:   promptDir,
 	}
 
-	prompts, err := resolveAgentPrompts(opts)
+	prompts, err := resolveAgentPromptsForDir(opts, dir)
 	require.NoError(t, err)
 	require.Equal(
 		t,
@@ -60,9 +60,9 @@ func TestResolveAgentPrompts_MergesInlineFilesAndDir(t *testing.T) {
 func TestResolveAgentPrompts_InstructionReadErrorReturnsError(t *testing.T) {
 	t.Parallel()
 
-	_, err := resolveAgentPrompts(runOptions{
+	_, err := resolveAgentPromptsForDir(runOptions{
 		AgentInstructionFiles: "/no/such/file.md",
-	})
+	}, t.TempDir())
 	require.Error(t, err)
 }
 
@@ -72,18 +72,18 @@ func TestResolveAgentPrompts_DirWithoutMDReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	_ = writeTempPromptFile(t, dir, "a.txt", "ignored")
 
-	_, err := resolveAgentPrompts(runOptions{
+	_, err := resolveAgentPromptsForDir(runOptions{
 		AgentSystemPromptDir: dir,
-	})
+	}, t.TempDir())
 	require.Error(t, err)
 }
 
 func TestResolveAgentPrompts_MissingFileReturnsError(t *testing.T) {
 	t.Parallel()
 
-	_, err := resolveAgentPrompts(runOptions{
+	_, err := resolveAgentPromptsForDir(runOptions{
 		AgentSystemPromptFiles: "/no/such/file.md",
-	})
+	}, t.TempDir())
 	require.Error(t, err)
 }
 

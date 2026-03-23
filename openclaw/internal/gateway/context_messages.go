@@ -10,9 +10,11 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 )
 
@@ -22,13 +24,14 @@ func (s *Server) injectedContextMessages(
 	userID string,
 	sessionID string,
 ) []model.Message {
-	out := make([]model.Message, 0, 2)
+	out := make([]model.Message, 0, 4)
 	if msg := s.personaContextMessage(
 		userID,
 		sessionID,
 	); msg != nil {
 		out = append(out, *msg)
 	}
+	out = append(out, s.memoryDocContextMessages(userID, sessionID)...)
 	out = append(out, s.uploadContextMessages(userID, sessionID)...)
 	return out
 }
@@ -70,4 +73,35 @@ func buildPersonaContextText(preset persona.Preset) string {
 		preset.Prompt,
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (s *Server) memoryDocContextMessages(
+	userID string,
+	sessionID string,
+) []model.Message {
+	if s == nil || s.memoryDocStore == nil {
+		return nil
+	}
+
+	channel := channelFromSessionID(sessionID)
+	path, err := s.memoryDocStore.EnsureMemory(
+		context.Background(),
+		channel,
+		userID,
+	)
+	if err != nil {
+		return nil
+	}
+	text, err := s.memoryDocStore.ReadFile(
+		path,
+		memorydocs.MemoryReadLimit,
+	)
+	if err != nil {
+		return nil
+	}
+	content := memorydocs.BuildMemoryContextText(text)
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	return []model.Message{model.NewSystemMessage(content)}
 }

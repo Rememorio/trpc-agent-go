@@ -23,6 +23,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 )
 
@@ -64,6 +65,8 @@ const (
 	envLastPDFName    = "OPENCLAW_LAST_PDF_NAME"
 	envLastPDFMIME    = "OPENCLAW_LAST_PDF_MIME"
 
+	envMemoryFile = "OPENCLAW_MEMORY_FILE"
+
 	recentUploadsLimit = 6
 
 	execOutputMediaMarker    = "MEDIA:"
@@ -89,8 +92,9 @@ type execUploadMeta struct {
 }
 
 type execTool struct {
-	mgr     *Manager
-	uploads *uploads.Store
+	mgr        *Manager
+	uploads    *uploads.Store
+	memoryDocs *memorydocs.Store
 }
 
 // NewExecCommandTool creates the canonical host command tool.
@@ -108,6 +112,20 @@ func NewExecCommandTool(
 	}
 }
 
+// NewExecCommandToolWithMemoryDocs creates the canonical host command tool
+// with file-based memory-doc environment injection.
+func NewExecCommandToolWithMemoryDocs(
+	mgr *Manager,
+	uploadStore *uploads.Store,
+	memoryDocStore *memorydocs.Store,
+) tool.Tool {
+	return &execTool{
+		mgr:        mgr,
+		uploads:    uploadStore,
+		memoryDocs: memoryDocStore,
+	}
+}
+
 func (t *execTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{
 		Name: toolExecCommand,
@@ -118,12 +136,16 @@ func (t *execTool) Declaration() *tool.Declaration {
 			"OPENCLAW_LAST_UPLOAD_HOST_REF, " +
 			"OPENCLAW_LAST_UPLOAD_NAME, OPENCLAW_LAST_UPLOAD_MIME, " +
 			"kind-specific OPENCLAW_LAST_*_PATH vars, " +
+			"OPENCLAW_MEMORY_FILE, " +
 			"OPENCLAW_SESSION_UPLOADS_DIR, and " +
 			"OPENCLAW_RECENT_UPLOADS_JSON point to stable " +
-			"attachment metadata, host refs, and host paths. " +
+			"attachment metadata, memory-doc paths, host refs, " +
+			"and host paths. " +
 			"Do not use this just to inspect a PDF or spreadsheet " +
 			"already in chat; prefer read_document or " +
 			"read_spreadsheet for that. " +
+			"Use OPENCLAW_MEMORY_FILE only for stable, " +
+			"cross-session facts, preferences, and working style. " +
 			"Write derived " +
 			"outputs under OPENCLAW_SESSION_UPLOADS_DIR when " +
 			"you plan to send them back to the user. " +
@@ -221,7 +243,13 @@ func (t *execTool) Call(ctx context.Context, args []byte) (any, error) {
 	yield := firstInt(in.YieldTimeMS, in.YieldMs)
 	timeout := firstInt(in.TimeoutSec, in.TimeoutSecOld)
 	tty := firstBool(in.TTY, in.PTY)
-	env := mergeExecEnv(in.Env, uploadEnvFromContext(ctx, t.uploads))
+	env := mergeExecEnv(
+		in.Env,
+		mergeExecEnv(
+			uploadEnvFromContext(ctx, t.uploads),
+			memoryDocsEnvFromContext(ctx, t.memoryDocs),
+		),
+	)
 
 	res, err := t.mgr.Exec(ctx, execParams{
 		Command:    in.Command,
@@ -666,6 +694,34 @@ func uploadEnvFromContext(
 		envLastPDFMIME,
 	)
 	return env
+}
+
+func memoryDocsEnvFromContext(
+	ctx context.Context,
+	store *memorydocs.Store,
+) map[string]string {
+	inv, ok := agent.InvocationFromContext(ctx)
+	if !ok || inv == nil || inv.Session == nil || store == nil {
+		return nil
+	}
+
+	channel := uploadChannelFromSessionID(inv.Session.ID)
+	userID := strings.TrimSpace(inv.Session.UserID)
+	if channel == "" || userID == "" {
+		return nil
+	}
+
+	path, err := store.EnsureMemory(
+		context.Background(),
+		channel,
+		userID,
+	)
+	if err != nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return map[string]string{
+		envMemoryFile: path,
+	}
 }
 
 func addLatestKindUploadEnv(

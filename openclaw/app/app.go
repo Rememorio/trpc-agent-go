@@ -49,6 +49,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/deps"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/octool"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
@@ -96,6 +97,7 @@ const (
 		"OPENCLAW_SESSION_UPLOADS_DIR, OPENCLAW_LAST_UPLOAD_HOST_REF, " +
 		"OPENCLAW_LAST_UPLOAD_NAME, " +
 		"OPENCLAW_LAST_UPLOAD_MIME, and " +
+		"OPENCLAW_MEMORY_FILE, " +
 		"OPENCLAW_RECENT_UPLOADS_JSON instead of guessing " +
 		"attachment paths. When a user follows " +
 		"up about 'the PDF/audio/video I just sent', assume they " +
@@ -162,7 +164,12 @@ const (
 		"OPENCLAW_SESSION_UPLOADS_DIR. Prefer writing derived " +
 		"files under " +
 		"OPENCLAW_SESSION_UPLOADS_DIR when you will send them " +
-		"back to the user. Prefer already installed local tools " +
+		"back to the user. Use OPENCLAW_MEMORY_FILE only " +
+		"for stable cross-session facts, preferences, or " +
+		"working style. Do not store secrets or large transcripts " +
+		"in that file. " +
+		"If a memory file does not exist yet, you may create it " +
+		"at that exact path. Prefer already installed local tools " +
 		"for OCR, PDF, audio, image, and video work before " +
 		"trying package installs or long downloads. " +
 		"When creating a cron job from chat, omit channel and " +
@@ -550,6 +557,14 @@ func NewRuntime(
 	}
 	rt.memorySvc = memSvc
 
+	stores, err := newRuntimeStores(resolvedStateDir)
+	if err != nil {
+		return nil, &exitError{
+			Code: 1,
+			Err:  fmt.Errorf("create runtime stores failed: %w", err),
+		}
+	}
+
 	prompts, err := resolveAgentPrompts(opts)
 	if err != nil {
 		return nil, &exitError{
@@ -561,6 +576,8 @@ func NewRuntime(
 	openClawTools := buildOpenClawTools(
 		opts.EnableOpenClawTools,
 		resolvedStateDir,
+		stores.uploads,
+		stores.memoryDocs,
 	)
 	extraTools := append([]tool.Tool(nil), memSvc.Tools()...)
 	extraTools = append(extraTools, openClawTools.tools...)
@@ -647,35 +664,14 @@ func NewRuntime(
 	r := runner.NewRunner(opts.AppName, ag, runnerOpts...)
 	rt.runner = r
 
-	uploadStore, err := uploads.NewStore(resolvedStateDir)
-	if err != nil {
-		return nil, &exitError{
-			Code: 1,
-			Err:  fmt.Errorf("create upload store failed: %w", err),
-		}
-	}
-	personaPath, err := persona.DefaultStorePath(resolvedStateDir)
-	if err != nil {
-		return nil, &exitError{
-			Code: 1,
-			Err:  fmt.Errorf("create persona store path failed: %w", err),
-		}
-	}
-	personaStore, err := persona.NewStore(personaPath)
-	if err != nil {
-		return nil, &exitError{
-			Code: 1,
-			Err:  fmt.Errorf("create persona store failed: %w", err),
-		}
-	}
-
 	gwOpts := makeGatewayOptions(
 		splitCSV(opts.AllowUsers),
 		opts.RequireMention,
 		mentionPatterns,
 	)
-	gwOpts = append(gwOpts, gateway.WithUploadStore(uploadStore))
-	gwOpts = append(gwOpts, gateway.WithPersonaStore(personaStore))
+	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
+	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
+	gwOpts = append(gwOpts, gateway.WithMemoryDocStore(stores.memoryDocs))
 	if debugRec != nil {
 		gwOpts = append(gwOpts, gateway.WithDebugRecorder(debugRec))
 	}
@@ -711,9 +707,10 @@ func NewRuntime(
 		sessionSvc,
 		memSvc,
 		debugDir,
-		uploadStore,
+		stores.uploads,
 	)
-	gw.SetPersonaStore(personaStore)
+	gw.SetPersonaStore(stores.personas)
+	gw.SetMemoryDocStore(stores.memoryDocs)
 
 	if len(opts.Channels) > 0 {
 		extra, err := channelsFromRegistry(
@@ -903,6 +900,14 @@ func run(ctx context.Context, args []string) error {
 	}
 	defer closeMemoryService(memSvc)
 
+	stores, err := newRuntimeStores(resolvedStateDir)
+	if err != nil {
+		return &exitError{
+			Code: 1,
+			Err:  fmt.Errorf("create runtime stores failed: %w", err),
+		}
+	}
+
 	prompts, err := resolveAgentPrompts(opts)
 	if err != nil {
 		return &exitError{
@@ -914,6 +919,8 @@ func run(ctx context.Context, args []string) error {
 	openClawTools := buildOpenClawTools(
 		opts.EnableOpenClawTools,
 		resolvedStateDir,
+		stores.uploads,
+		stores.memoryDocs,
 	)
 	extraTools := append([]tool.Tool(nil), memSvc.Tools()...)
 	extraTools = append(extraTools, openClawTools.tools...)
@@ -999,35 +1006,14 @@ func run(ctx context.Context, args []string) error {
 	}
 	r := runner.NewRunner(opts.AppName, ag, runnerOpts...)
 
-	uploadStore, err := uploads.NewStore(resolvedStateDir)
-	if err != nil {
-		return &exitError{
-			Code: 1,
-			Err:  fmt.Errorf("create upload store failed: %w", err),
-		}
-	}
-	personaPath, err := persona.DefaultStorePath(resolvedStateDir)
-	if err != nil {
-		return &exitError{
-			Code: 1,
-			Err:  fmt.Errorf("create persona store path failed: %w", err),
-		}
-	}
-	personaStore, err := persona.NewStore(personaPath)
-	if err != nil {
-		return &exitError{
-			Code: 1,
-			Err:  fmt.Errorf("create persona store failed: %w", err),
-		}
-	}
-
 	gwOpts := makeGatewayOptions(
 		splitCSV(opts.AllowUsers),
 		opts.RequireMention,
 		mentionPatterns,
 	)
-	gwOpts = append(gwOpts, gateway.WithUploadStore(uploadStore))
-	gwOpts = append(gwOpts, gateway.WithPersonaStore(personaStore))
+	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
+	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
+	gwOpts = append(gwOpts, gateway.WithMemoryDocStore(stores.memoryDocs))
 	if debugRec != nil {
 		gwOpts = append(gwOpts, gateway.WithDebugRecorder(debugRec))
 	}
@@ -1049,9 +1035,10 @@ func run(ctx context.Context, args []string) error {
 		sessionSvc,
 		memSvc,
 		debugDir,
-		uploadStore,
+		stores.uploads,
 	)
-	gw.SetPersonaStore(personaStore)
+	gw.SetPersonaStore(stores.personas)
+	gw.SetMemoryDocStore(stores.memoryDocs)
 
 	a2aSurface, err := newA2ASurface(ag, r, opts)
 	if err != nil {
@@ -1902,9 +1889,57 @@ type openClawToolsBundle struct {
 	deps     *deps.Report
 }
 
+type runtimeStores struct {
+	uploads    *uploads.Store
+	personas   *persona.Store
+	memoryDocs *memorydocs.Store
+}
+
+func newRuntimeStores(stateDir string) (runtimeStores, error) {
+	uploadStore, err := uploads.NewStore(stateDir)
+	if err != nil {
+		return runtimeStores{}, fmt.Errorf("create upload store: %w", err)
+	}
+
+	personaPath, err := persona.DefaultStorePath(stateDir)
+	if err != nil {
+		return runtimeStores{}, fmt.Errorf(
+			"create persona store path: %w",
+			err,
+		)
+	}
+	personaStore, err := persona.NewStore(personaPath)
+	if err != nil {
+		return runtimeStores{}, fmt.Errorf("create persona store: %w", err)
+	}
+
+	memoryDocsRoot, err := memorydocs.DefaultRoot(stateDir)
+	if err != nil {
+		return runtimeStores{}, fmt.Errorf(
+			"create memory-doc root: %w",
+			err,
+		)
+	}
+	memoryDocStore, err := memorydocs.NewStore(memoryDocsRoot)
+	if err != nil {
+		return runtimeStores{}, fmt.Errorf(
+			"create memory-doc store: %w",
+			err,
+		)
+	}
+
+	return runtimeStores{
+		uploads:    uploadStore,
+		personas:   personaStore,
+		memoryDocs: memoryDocStore,
+	}, nil
+}
+
 func buildOpenClawTools(
 	enabled bool,
 	stateDir string,
+	uploadStore *uploads.Store,
+	memoryDocStore *memorydocs.Store,
 ) openClawToolsBundle {
 	if !enabled {
 		return openClawToolsBundle{}
@@ -1915,10 +1950,6 @@ func buildOpenClawTools(
 	)
 	router := outbound.NewRouter()
 	cronTool := cron.NewTool(nil)
-	var uploadStore *uploads.Store
-	if store, err := uploads.NewStore(stateDir); err == nil {
-		uploadStore = store
-	}
 	var depsReport *deps.Report
 	if sources, err := deps.SourcesForProfiles(deps.DefaultProfiles()); err ==
 		nil {
@@ -1931,7 +1962,11 @@ func buildOpenClawTools(
 	tools := []tool.Tool{
 		octool.NewReadDocumentTool(uploadStore),
 		octool.NewReadSpreadsheetTool(uploadStore),
-		octool.NewExecCommandTool(mgr, uploadStore),
+		octool.NewExecCommandToolWithMemoryDocs(
+			mgr,
+			uploadStore,
+			memoryDocStore,
+		),
 		octool.NewWriteStdinTool(mgr),
 		octool.NewKillSessionTool(mgr),
 		outbound.NewTool(router),
