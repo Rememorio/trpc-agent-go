@@ -47,8 +47,9 @@ type ServiceOpts struct {
 	// Tool related settings.
 	toolCreators      map[string]memory.ToolCreator
 	enabledTools      map[string]struct{}
-	toolExposure      map[string]bool
-	userExplicitlySet map[string]bool
+	toolExposed       map[string]struct{}
+	toolHidden        map[string]struct{}
+	userExplicitlySet map[string]struct{}
 	extraOptions      []any
 
 	// Memory extractor for auto memory mode.
@@ -69,10 +70,11 @@ func (o ServiceOpts) clone() ServiceOpts {
 	}
 
 	opts.enabledTools = maps.Clone(o.enabledTools)
-	opts.toolExposure = maps.Clone(o.toolExposure)
+	opts.toolExposed = maps.Clone(o.toolExposed)
+	opts.toolHidden = maps.Clone(o.toolHidden)
 
 	// Initialize userExplicitlySet map (empty for new clone).
-	opts.userExplicitlySet = make(map[string]bool)
+	opts.userExplicitlySet = make(map[string]struct{})
 
 	return opts
 }
@@ -151,14 +153,14 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 			opts.enabledTools = make(map[string]struct{})
 		}
 		if opts.userExplicitlySet == nil {
-			opts.userExplicitlySet = make(map[string]bool)
+			opts.userExplicitlySet = make(map[string]struct{})
 		}
 		if enabled {
 			opts.enabledTools[toolName] = struct{}{}
 		} else {
 			delete(opts.enabledTools, toolName)
 		}
-		opts.userExplicitlySet[toolName] = true
+		opts.userExplicitlySet[toolName] = struct{}{}
 	}
 }
 
@@ -170,10 +172,19 @@ func WithToolExposed(toolName string, exposed bool) ServiceOpt {
 		if !imemory.IsValidToolName(toolName) {
 			return
 		}
-		if opts.toolExposure == nil {
-			opts.toolExposure = make(map[string]bool)
+		if exposed {
+			if opts.toolExposed == nil {
+				opts.toolExposed = make(map[string]struct{})
+			}
+			opts.toolExposed[toolName] = struct{}{}
+			delete(opts.toolHidden, toolName)
+			return
 		}
-		opts.toolExposure[toolName] = exposed
+		if opts.toolHidden == nil {
+			opts.toolHidden = make(map[string]struct{})
+		}
+		opts.toolHidden[toolName] = struct{}{}
+		delete(opts.toolExposed, toolName)
 	}
 }
 

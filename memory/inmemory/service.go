@@ -80,7 +80,8 @@ func NewMemoryService(options ...ServiceOpt) *MemoryService {
 		opts.extractor,
 		opts.toolCreators,
 		opts.enabledTools,
-		opts.toolExposure,
+		opts.toolExposed,
+		opts.toolHidden,
 		svc.cachedTools,
 	)
 

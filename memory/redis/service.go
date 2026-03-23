@@ -97,7 +97,8 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		opts.extractor,
 		opts.toolCreators,
 		opts.enabledTools,
-		opts.toolExposure,
+		opts.toolExposed,
+		opts.toolHidden,
 		svc.cachedTools,
 	)
 

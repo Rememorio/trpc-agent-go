@@ -1318,12 +1318,14 @@ func TestServiceOpts_Coverage(t *testing.T) {
 	WithToolEnabled(memory.LoadToolName, true)(&opts2)
 	_, ok = opts2.enabledTools[memory.LoadToolName]
 	require.True(t, ok)
-	require.True(t, opts2.userExplicitlySet[memory.LoadToolName])
+	_, ok = opts2.userExplicitlySet[memory.LoadToolName]
+	require.True(t, ok)
 
 	WithToolEnabled(memory.LoadToolName, false)(&opts2)
 	_, ok = opts2.enabledTools[memory.LoadToolName]
 	require.False(t, ok)
-	require.True(t, opts2.userExplicitlySet[memory.LoadToolName])
+	_, ok = opts2.userExplicitlySet[memory.LoadToolName]
+	require.True(t, ok)
 
 	WithToolEnabled("bad_tool", true)(&opts2)
 }

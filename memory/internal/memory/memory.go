@@ -228,7 +228,7 @@ var autoModeDefaultEnabledTools = map[string]bool{
 //     by user.
 func ApplyAutoModeDefaults(
 	enabledTools map[string]struct{},
-	userExplicitlySet map[string]bool,
+	userExplicitlySet map[string]struct{},
 ) {
 	if enabledTools == nil {
 		return
@@ -236,7 +236,7 @@ func ApplyAutoModeDefaults(
 	// Apply auto mode defaults only for tools not explicitly set
 	// by user.
 	for toolName, defaultEnabled := range autoModeDefaultEnabledTools {
-		if userExplicitlySet[toolName] {
+		if _, ok := userExplicitlySet[toolName]; ok {
 			// User explicitly set this tool, don't override.
 			continue
 		}
@@ -254,19 +254,21 @@ func ApplyAutoModeDefaults(
 //   - ext: the memory extractor (nil for agentic mode).
 //   - toolCreators: map of tool name to creator function.
 //   - enabledTools: set of enabled tool names.
-//   - toolExposure: explicit agent-facing exposure overrides for Tools().
+//   - exposedTools: explicit agent-facing exposure overrides for Tools().
+//   - hiddenTools: explicit agent-facing hide overrides for Tools().
 //   - cachedTools: map to cache created tools (will be modified).
 func BuildToolsList(
 	ext extractor.MemoryExtractor,
 	toolCreators map[string]memory.ToolCreator,
 	enabledTools map[string]struct{},
-	toolExposure map[string]bool,
+	exposedTools map[string]struct{},
+	hiddenTools map[string]struct{},
 	cachedTools map[string]tool.Tool,
 ) []tool.Tool {
 	// Collect tool names and sort for stable order.
 	names := make([]string, 0, len(toolCreators))
 	for name := range toolCreators {
-		if !shouldIncludeTool(name, ext, enabledTools, toolExposure) {
+		if !shouldIncludeTool(name, ext, enabledTools, exposedTools, hiddenTools) {
 			continue
 		}
 		names = append(names, name)
@@ -288,14 +290,15 @@ func shouldIncludeTool(
 	name string,
 	ext extractor.MemoryExtractor,
 	enabledTools map[string]struct{},
-	toolExposure map[string]bool,
+	exposedTools map[string]struct{},
+	hiddenTools map[string]struct{},
 ) bool {
 	// In auto memory mode, handle auto memory tools with special logic.
 	if ext != nil {
-		return shouldIncludeAutoMemoryTool(name, enabledTools, toolExposure)
+		return shouldIncludeAutoMemoryTool(name, enabledTools, exposedTools, hiddenTools)
 	}
 
-	return shouldIncludeAgenticTool(name, enabledTools, toolExposure)
+	return shouldIncludeAgenticTool(name, enabledTools, exposedTools, hiddenTools)
 }
 
 // shouldIncludeAgenticTool checks whether a tool should be exposed to the
@@ -303,14 +306,18 @@ func shouldIncludeTool(
 func shouldIncludeAgenticTool(
 	name string,
 	enabledTools map[string]struct{},
-	toolExposure map[string]bool,
+	exposedTools map[string]struct{},
+	hiddenTools map[string]struct{},
 ) bool {
 	_, ok := enabledTools[name]
 	if !ok {
 		return false
 	}
-	if exposed, hasOverride := toolExposure[name]; hasOverride {
-		return exposed
+	if _, ok := hiddenTools[name]; ok {
+		return false
+	}
+	if _, ok := exposedTools[name]; ok {
+		return true
 	}
 	return true
 }
@@ -329,14 +336,18 @@ var autoModeExposedTools = map[string]struct{}{
 func shouldIncludeAutoMemoryTool(
 	name string,
 	enabledTools map[string]struct{},
-	toolExposure map[string]bool,
+	exposedTools map[string]struct{},
+	hiddenTools map[string]struct{},
 ) bool {
 	// The tool must be enabled before it can be exposed.
 	if _, ok := enabledTools[name]; !ok {
 		return false
 	}
-	if exposed, hasOverride := toolExposure[name]; hasOverride {
-		return exposed
+	if _, ok := hiddenTools[name]; ok {
+		return false
+	}
+	if _, ok := exposedTools[name]; ok {
+		return true
 	}
 	_, ok := autoModeExposedTools[name]
 	return ok

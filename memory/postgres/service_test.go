@@ -3350,7 +3350,8 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
-		s.opts.toolExposure,
+		s.opts.toolExposed,
+		s.opts.toolHidden,
 		s.cachedTools,
 	)
 
@@ -3370,7 +3371,8 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
-		s.opts.toolExposure,
+		s.opts.toolExposed,
+		s.opts.toolHidden,
 		s.cachedTools,
 	)
 
@@ -3386,12 +3388,13 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 	assert.False(t, toolNames[memory.ClearToolName], "Clear tool should not be exposed via Tools()")
 
 	// Expose Add explicitly for hybrid mode.
-	s.opts.toolExposure = map[string]bool{memory.AddToolName: true}
+	s.opts.toolExposed = map[string]struct{}{memory.AddToolName: {}}
 	s.precomputedTools = imemory.BuildToolsList(
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
-		s.opts.toolExposure,
+		s.opts.toolExposed,
+		s.opts.toolHidden,
 		s.cachedTools,
 	)
 
