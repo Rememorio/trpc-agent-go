@@ -147,7 +147,7 @@ Memory provides 6 tools with different availability in each mode:
 | `memory_search` | Search memory  | ✅ Default            | ✅ Default                  | Search relevant memories |
 | `memory_load`   | Load memories  | ✅ Default            | ⚙️ Configurable             | Load recent memories    |
 | `memory_delete` | Delete memory  | ⚙️ Configurable       | ⚙️ Hidden by default        | Delete single memory    |
-| `memory_clear`  | Clear memories | ⚙️ Configurable       | ⚙️ Hidden by default        | Delete all memories     |
+| `memory_clear`  | Clear memories | ⚙️ Configurable       | ⚙️ Disabled by default      | Delete all memories     |
 
 **Notes:**
 
@@ -156,9 +156,9 @@ Memory provides 6 tools with different availability in each mode:
   - Default disabled: `memory_delete`, `memory_clear`
   - Can be enabled/disabled via `WithToolEnabled()`
 - **Auto Mode**: LLM extractor handles write operations in background, with read tools exposed by default
-  - Default enabled: `memory_search`
-  - Default disabled: `memory_load`
-  - Hidden by default: `memory_add`, `memory_update`, `memory_delete`, `memory_clear`
+  - Default enabled: `memory_add`, `memory_update`, `memory_delete`, `memory_search`
+  - Default disabled: `memory_load`, `memory_clear`
+  - Hidden by default: `memory_add`, `memory_update`, `memory_delete`
   - Use `WithToolExposed()` to selectively expose enabled write tools such as `memory_add`
 
 ## Prerequisites

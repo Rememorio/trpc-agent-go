@@ -56,11 +56,11 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 
 // Create LLM agent with memory tools.
-// Only search and clear tools are available since extractor is set.
+// Only search is available by default since extractor is set.
 llmAgent := llmagent.New(
     "auto-memory-assistant",
     llmagent.WithModel(chatModel),
-    llmagent.WithTools(memoryService.Tools()), // memory_search and memory_clear.
+    llmagent.WithTools(memoryService.Tools()), // memory_search by default.
 )
 
 // Create runner with memory service.

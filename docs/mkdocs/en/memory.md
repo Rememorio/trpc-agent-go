@@ -415,7 +415,7 @@ The memory service provides 6 tools. Common tools are enabled by default, while 
 | `memory_search` | Search memory  | ✅ Default      | ✅ Default           | Find by keywords                               |
 | `memory_load`   | Load memories  | ✅ Default      | ⚙️ Configurable      | Load recent memories                           |
 | `memory_delete` | Delete memory  | ⚙️ Configurable | ⚙️ Hidden by default | Delete single memory                           |
-| `memory_clear`  | Clear memories | ⚙️ Configurable | ⚙️ Hidden by default | Delete all memories                            |
+| `memory_clear`  | Clear memories | ⚙️ Configurable | ⚙️ Disabled by default | Delete all memories                          |
 
 **Notes**:
 
@@ -423,9 +423,9 @@ The memory service provides 6 tools. Common tools are enabled by default, while 
   - Default enabled tools: `memory_add`, `memory_update`, `memory_search`, `memory_load`
   - Default disabled tools: `memory_delete`, `memory_clear`
 - **Auto Mode**: LLM extractor handles write operations in background. Tools() exposes Search by default; Load can be enabled; `WithToolExposed()` can selectively expose enabled write tools for hybrid usage.
-  - Default enabled tools: `memory_search`
-  - Default disabled tools: `memory_load`
-  - Hidden by default: `memory_add`, `memory_update`, `memory_delete`, `memory_clear`
+  - Default enabled tools: `memory_add`, `memory_update`, `memory_delete`, `memory_search`
+  - Default disabled tools: `memory_load`, `memory_clear`
+  - Hidden by default: `memory_add`, `memory_update`, `memory_delete`
 - **Default**: Available immediately when service is created, no extra configuration needed
 - **Configurable**: Can be enabled/disabled via `WithToolEnabled()` and exposed via `WithToolExposed()`
 

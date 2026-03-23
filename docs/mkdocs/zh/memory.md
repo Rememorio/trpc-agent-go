@@ -504,31 +504,29 @@ if err != nil {
 
 | 工具            | 功能       | 工具驱动模式 | 自动提取模式 | 说明                            |
 | --------------- | ---------- | ------------ | ------------ | ------------------------------- |
-| `memory_add`    | 添加新记忆 | ✅ 默认启用  | ❌ 不可用    | 创建新记忆条目                  |
-| `memory_update` | 更新记忆   | ✅ 默认启用  | ❌ 不可用    | 修改现有记忆                    |
+| `memory_add`    | 添加新记忆 | ✅ 默认启用  | ⚙️ 默认隐藏  | 创建新记忆条目                  |
+| `memory_update` | 更新记忆   | ✅ 默认启用  | ⚙️ 默认隐藏  | 修改现有记忆                    |
 | `memory_search` | 搜索记忆   | ✅ 默认启用  | ✅ 默认启用  | 根据关键词查找                  |
 | `memory_load`   | 加载记忆   | ✅ 默认启用  | ⚙️ 可配置    | 加载最近的记忆                  |
-| `memory_delete` | 删除记忆   | ⚙️ 可配置    | ❌ 不可用    | 删除单条记忆                    |
-| `memory_clear`  | 清空记忆   | ⚙️ 可配置    | ❌ 不可用    | 删除所有记忆（Auto 模式不暴露） |
+| `memory_delete` | 删除记忆   | ⚙️ 可配置    | ⚙️ 默认隐藏  | 删除单条记忆                    |
+| `memory_clear`  | 清空记忆   | ⚙️ 可配置    | ⚙️ 默认禁用  | 删除所有记忆                    |
 
 **说明**：
 
 - **工具驱动模式**：Agent 主动调用工具管理记忆，所有工具均可配置
   - 默认启用工具：`memory_add`、`memory_update`、`memory_search`、`memory_load`
   - 默认禁用工具：`memory_delete`、`memory_clear`
-- **自动提取模式**：LLM 提取器自动管理写入操作，默认只暴露搜索工具，加载工具可选开启
-  - 默认启用工具：`memory_search`
-  - 默认禁用工具：`memory_load`
-  - 不暴露工具：`memory_add`、`memory_update`、`memory_delete`、`memory_clear`
+- **自动提取模式**：LLM 提取器在后台管理写入操作，默认只暴露搜索工具；可启用 `memory_load`，也可通过 `WithToolExposed()` 选择性暴露已启用的写工具
+  - 默认启用工具：`memory_add`、`memory_update`、`memory_delete`、`memory_search`
+  - 默认禁用工具：`memory_load`、`memory_clear`
+  - 默认不暴露工具：`memory_add`、`memory_update`、`memory_delete`
 - **默认启用**：创建服务时自动可用，无需额外配置
-- **可配置**：可以通过 `WithToolEnabled()` 启用或禁用
-- **不可用**：该模式下无法使用此工具
+- **可配置**：可以通过 `WithToolEnabled()` 启用或禁用，并通过 `WithToolExposed()` 控制是否对 Agent 暴露
 
 #### 启用/禁用工具
 
-提示：在 Auto 模式下，`WithToolEnabled()` 只会影响 `memory_search` 和 `memory_load`
-是否通过 `Tools()` 暴露；`memory_add`、`memory_update`、`memory_delete`、`memory_clear`
-不会暴露给 Agent。
+提示：`WithToolEnabled()` 控制记忆操作是否可用，`WithToolExposed()` 控制已启用工具是否通过
+`Tools()` 暴露给 Agent。在 Auto 模式下，写工具默认隐藏，只有显式暴露后 Agent 才能主动调用。
 
 ```go
 // 场景 1：用户可管理（允许删除单条记忆）
@@ -547,6 +545,12 @@ memoryService := memoryinmemory.NewMemoryService(
     memoryinmemory.WithToolEnabled(memory.AddToolName, false),
     memoryinmemory.WithToolEnabled(memory.UpdateToolName, false),
 )
+
+// 场景 4：Auto + 主动写记忆混合模式
+memoryService := memoryinmemory.NewMemoryService(
+    memoryinmemory.WithExtractor(memExtractor),
+    memoryinmemory.WithToolExposed(memory.AddToolName, true),
+)
 ```
 
 ### 覆盖语义（ID 与重复）
@@ -556,9 +560,8 @@ memoryService := memoryinmemory.NewMemoryService(
 
 ### 自定义工具实现
 
-提示：在 Auto 模式下，`Tools()` 只会暴露 `memory_search` 和 `memory_load`。
-如果你需要对用户暴露 `memory_clear` 等工具，请使用工具驱动模式，或在业务侧直接调用
-`ClearMemories()`。
+提示：在 Auto 模式下，`Tools()` 默认暴露 `memory_search`；`memory_load` 在启用后可暴露，
+其他已启用工具需配合 `WithToolExposed()` 显式暴露。像 `memory_clear` 这类危险操作通常更适合由业务侧直接控制。
 
 你可以用自定义实现覆盖默认工具。参考 [memory/tool/tool.go](https://github.com/trpc-group/trpc-agent-go/blob/main/memory/tool/tool.go) 了解如何实现自定义工具：
 
