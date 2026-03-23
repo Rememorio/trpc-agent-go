@@ -1265,6 +1265,7 @@ func TestService_Tools(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposure,
 		s.cachedTools,
 	)
 
@@ -1629,6 +1630,7 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposure,
 		s.cachedTools,
 	)
 
@@ -1648,6 +1650,7 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposure,
 		s.cachedTools,
 	)
 

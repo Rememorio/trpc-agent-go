@@ -142,12 +142,12 @@ Memory provides 6 tools with different availability in each mode:
 
 | Tool            | Function       | Agentic Mode (Simple) | Auto Extraction Mode (Auto) | Description             |
 | --------------- | -------------- | --------------------- | --------------------------- | ----------------------- |
-| `memory_add`    | Add new memory | ✅ Default            | ❌ Unavailable              | Create new memory entry |
-| `memory_update` | Update memory  | ✅ Default            | ❌ Unavailable              | Modify existing memory  |
+| `memory_add`    | Add new memory | ✅ Default            | ⚙️ Hidden by default        | Create new memory entry |
+| `memory_update` | Update memory  | ✅ Default            | ⚙️ Hidden by default        | Modify existing memory  |
 | `memory_search` | Search memory  | ✅ Default            | ✅ Default                  | Search relevant memories |
 | `memory_load`   | Load memories  | ✅ Default            | ⚙️ Configurable             | Load recent memories    |
-| `memory_delete` | Delete memory  | ⚙️ Configurable       | ❌ Unavailable              | Delete single memory    |
-| `memory_clear`  | Clear memories | ⚙️ Configurable       | ❌ Unavailable              | Delete all memories     |
+| `memory_delete` | Delete memory  | ⚙️ Configurable       | ⚙️ Hidden by default        | Delete single memory    |
+| `memory_clear`  | Clear memories | ⚙️ Configurable       | ⚙️ Hidden by default        | Delete all memories     |
 
 **Notes:**
 
@@ -155,11 +155,11 @@ Memory provides 6 tools with different availability in each mode:
   - Default enabled: `memory_add`, `memory_update`, `memory_search`, `memory_load`
   - Default disabled: `memory_delete`, `memory_clear`
   - Can be enabled/disabled via `WithToolEnabled()`
-- **Auto Mode**: LLM extractor handles write operations in background, only read tools are available
+- **Auto Mode**: LLM extractor handles write operations in background, with read tools exposed by default
   - Default enabled: `memory_search`
   - Default disabled: `memory_load`
-  - Not exposed: `memory_add`, `memory_update`, `memory_delete`, `memory_clear` (extractor handles writes)
-  - `WithToolEnabled()` only affects `memory_search` and `memory_load` availability
+  - Hidden by default: `memory_add`, `memory_update`, `memory_delete`, `memory_clear`
+  - Use `WithToolExposed()` to selectively expose enabled write tools such as `memory_add`
 
 ## Prerequisites
 

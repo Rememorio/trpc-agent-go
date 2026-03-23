@@ -58,6 +58,7 @@ type ServiceOpts struct {
 	// Tool related settings.
 	toolCreators      map[string]memory.ToolCreator
 	enabledTools      map[string]struct{}
+	toolExposure      map[string]bool
 	userExplicitlySet map[string]bool
 
 	// skipDBInit skips database initialization (table creation).
@@ -84,6 +85,7 @@ func (o ServiceOpts) clone() ServiceOpts {
 	}
 
 	opts.enabledTools = maps.Clone(o.enabledTools)
+	opts.toolExposure = maps.Clone(o.toolExposure)
 	opts.userExplicitlySet = make(map[string]bool)
 
 	return opts
@@ -219,5 +221,20 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 			delete(opts.enabledTools, toolName)
 		}
 		opts.userExplicitlySet[toolName] = true
+	}
+}
+
+// WithToolExposed controls whether an enabled memory tool is exposed via
+// Tools(). In auto memory mode this can be used to selectively expose write
+// tools such as memory_add to the agent.
+func WithToolExposed(toolName string, exposed bool) ServiceOpt {
+	return func(opts *ServiceOpts) {
+		if !imemory.IsValidToolName(toolName) {
+			return
+		}
+		if opts.toolExposure == nil {
+			opts.toolExposure = make(map[string]bool)
+		}
+		opts.toolExposure[toolName] = exposed
 	}
 }

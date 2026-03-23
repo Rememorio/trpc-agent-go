@@ -78,6 +78,7 @@ func NewService(db *sql.DB, options ...ServiceOpt) (*Service, error) {
 		opts.extractor,
 		opts.toolCreators,
 		opts.enabledTools,
+		opts.toolExposure,
 		s.cachedTools,
 	)
 

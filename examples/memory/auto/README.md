@@ -137,7 +137,9 @@ type ExtractionContext struct {
 
 ### Tool Availability
 
-In auto memory mode, `WithToolEnabled` controls all 6 tools, but they serve different purposes:
+In auto memory mode, `WithToolEnabled` controls whether tools are available,
+while `WithToolExposed` controls which enabled tools the agent can call via
+`Tools()`.
 
 **Front-end Tools** (exposed via `Tools()` for agent to call):
 
@@ -146,7 +148,7 @@ In auto memory mode, `WithToolEnabled` controls all 6 tools, but they serve diff
 | `memory_search` | ✅ On   | Search memories by query      |
 | `memory_load`   | ❌ Off  | Load all or recent N memories |
 
-**Back-end Tools** (used by extractor in background, not exposed to agent):
+**Back-end Tools** (used by extractor in background by default):
 
 | Tool            | Default | Description                            |
 | --------------- | ------- | -------------------------------------- |
@@ -162,6 +164,8 @@ memoryService := memoryinmemory.NewMemoryService(
     memoryinmemory.WithExtractor(memExtractor),
     // Front-end: enable memory_load for agent to call.
     memoryinmemory.WithToolEnabled(memory.LoadToolName, true),
+    // Hybrid: expose memory_add so the agent can save explicit long-term hints immediately.
+    memoryinmemory.WithToolExposed(memory.AddToolName, true),
     // Back-end: disable memory_delete so extractor cannot delete.
     memoryinmemory.WithToolEnabled(memory.DeleteToolName, false),
     // Back-end: enable memory_clear for extractor (use with caution).
@@ -169,18 +173,19 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 ```
 
-**Note**: `WithToolEnabled` can be called before or after `WithExtractor` - the order does not matter.
+**Note**: `WithToolEnabled` and `WithToolExposed` can be called before or after
+`WithExtractor` - the order does not matter.
 
 ### Comparison: Agentic Mode vs Auto Mode
 
 | Tool            | Agentic Mode (no extractor)             | Auto Mode (with extractor)                 |
 | --------------- | --------------------------------------- | ------------------------------------------ |
-| `memory_add`    | ✅ Agent calls via `Tools()`            | ✅ Extractor uses in background            |
-| `memory_update` | ✅ Agent calls via `Tools()`            | ✅ Extractor uses in background            |
+| `memory_add`    | ✅ Agent calls via `Tools()`            | ⚙️ Agent calls via `Tools()` if exposed; extractor uses in background |
+| `memory_update` | ✅ Agent calls via `Tools()`            | ⚙️ Agent calls via `Tools()` if exposed; extractor uses in background |
 | `memory_search` | ✅ Agent calls via `Tools()`            | ✅ Agent calls via `Tools()`               |
 | `memory_load`   | ✅ Agent calls via `Tools()`            | ⚙️ Agent calls via `Tools()` if enabled    |
-| `memory_delete` | ⚙️ Agent calls via `Tools()` if enabled | ✅ Extractor uses in background            |
-| `memory_clear`  | ⚙️ Agent calls via `Tools()` if enabled | ⚙️ Extractor uses in background if enabled |
+| `memory_delete` | ⚙️ Agent calls via `Tools()` if enabled | ⚙️ Agent calls via `Tools()` if exposed; extractor uses in background |
+| `memory_clear`  | ⚙️ Agent calls via `Tools()` if enabled | ⚙️ Agent calls via `Tools()` if exposed; extractor uses in background if enabled |
 
 ## Prerequisites
 

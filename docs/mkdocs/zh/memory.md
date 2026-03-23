@@ -1479,7 +1479,8 @@ type ExtractionContext struct {
 
 ### 工具控制
 
-在自动提取模式下，`WithToolEnabled` 可以控制所有 6 个工具的开关，但它们的作用不同：
+在自动提取模式下，`WithToolEnabled` 控制工具是否可用，`WithToolExposed`
+控制可用工具是否通过 `Tools()` 暴露给 Agent 调用。
 
 **前端工具**（通过 `Tools()` 暴露给 Agent 调用）：
 
@@ -1488,7 +1489,7 @@ type ExtractionContext struct {
 | `memory_search` | ✅ 开 | 按查询搜索记忆          |
 | `memory_load`   | ❌ 关 | 加载全部或最近 N 条记忆 |
 
-**后端工具**（提取器在后台使用，不暴露给 Agent）：
+**后端工具**（默认由提取器在后台使用）：
 
 | 工具            | 默认  | 说明                         |
 | --------------- | ----- | ---------------------------- |
@@ -1504,6 +1505,8 @@ memoryService := memoryinmemory.NewMemoryService(
     memoryinmemory.WithExtractor(memExtractor),
     // 前端：启用 memory_load 供 Agent 调用。
     memoryinmemory.WithToolEnabled(memory.LoadToolName, true),
+    // Hybrid：暴露 memory_add，便于 Agent 立即持久化明确提示的长期信息。
+    memoryinmemory.WithToolExposed(memory.AddToolName, true),
     // 后端：禁用 memory_delete，提取器将无法删除记忆。
     memoryinmemory.WithToolEnabled(memory.DeleteToolName, false),
     // 后端：启用 memory_clear 供提取器使用（谨慎使用）。
@@ -1511,18 +1514,19 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 ```
 
-**注意**：`WithToolEnabled` 可以在 `WithExtractor` 之前或之后调用，顺序不影响结果。
+**注意**：`WithToolEnabled` 和 `WithToolExposed` 都可以在
+`WithExtractor` 之前或之后调用，顺序不影响结果。
 
 ### 两种模式对比
 
 | 工具            | 工具驱动模式（无提取器）            | 自动提取模式（有提取器）            |
 | --------------- | ----------------------------------- | ----------------------------------- |
-| `memory_add`    | ✅ Agent 通过 `Tools()` 调用        | ✅ 提取器在后台使用                 |
-| `memory_update` | ✅ Agent 通过 `Tools()` 调用        | ✅ 提取器在后台使用                 |
+| `memory_add`    | ✅ Agent 通过 `Tools()` 调用        | ⚙️ 暴露后 Agent 可通过 `Tools()` 调用；提取器也会在后台使用 |
+| `memory_update` | ✅ Agent 通过 `Tools()` 调用        | ⚙️ 暴露后 Agent 可通过 `Tools()` 调用；提取器也会在后台使用 |
 | `memory_search` | ✅ Agent 通过 `Tools()` 调用        | ✅ Agent 通过 `Tools()` 调用        |
 | `memory_load`   | ✅ Agent 通过 `Tools()` 调用        | ⚙️ 启用后 Agent 通过 `Tools()` 调用 |
-| `memory_delete` | ⚙️ 启用后 Agent 通过 `Tools()` 调用 | ✅ 提取器在后台使用                 |
-| `memory_clear`  | ⚙️ 启用后 Agent 通过 `Tools()` 调用 | ⚙️ 启用后提取器在后台使用           |
+| `memory_delete` | ⚙️ 启用后 Agent 通过 `Tools()` 调用 | ⚙️ 暴露后 Agent 可通过 `Tools()` 调用；提取器也会在后台使用 |
+| `memory_clear`  | ⚙️ 启用后 Agent 通过 `Tools()` 调用 | ⚙️ 暴露后 Agent 可通过 `Tools()` 调用；启用后提取器也会在后台使用 |
 
 ### 记忆预加载
 

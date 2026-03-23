@@ -42,11 +42,13 @@ type serviceOpts struct {
 	toolCreators map[string]memory.ToolCreator
 	// enabledTools are the names of tools to enable.
 	enabledTools map[string]struct{}
+	// toolExposure controls whether enabled tools are exposed via Tools().
+	toolExposure map[string]bool
 	// userExplicitlySet tracks which tools were explicitly set by user via WithToolEnabled.
 	userExplicitlySet map[string]bool
 
 	// Memory extractor for auto memory mode.
-	// When set, write tools (add/update/delete) are not exposed to agent.
+	// When set, write tools are hidden from agent by default unless exposed explicitly.
 	extractor extractor.MemoryExtractor
 
 	// Async memory worker configuration.
@@ -64,6 +66,7 @@ func (o serviceOpts) clone() serviceOpts {
 	}
 
 	opts.enabledTools = maps.Clone(o.enabledTools)
+	opts.toolExposure = maps.Clone(o.toolExposure)
 
 	// Initialize userExplicitlySet map (empty for new clone).
 	opts.userExplicitlySet = make(map[string]bool)
@@ -133,6 +136,21 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 			delete(opts.enabledTools, toolName)
 		}
 		opts.userExplicitlySet[toolName] = true
+	}
+}
+
+// WithToolExposed controls whether an enabled memory tool is exposed via
+// Tools(). In auto memory mode this can be used to selectively expose write
+// tools such as memory_add to the agent.
+func WithToolExposed(toolName string, exposed bool) ServiceOpt {
+	return func(opts *serviceOpts) {
+		if !imemory.IsValidToolName(toolName) {
+			return
+		}
+		if opts.toolExposure == nil {
+			opts.toolExposure = make(map[string]bool)
+		}
+		opts.toolExposure[toolName] = exposed
 	}
 }
 

@@ -3350,6 +3350,7 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposure,
 		s.cachedTools,
 	)
 
@@ -3369,6 +3370,7 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposure,
 		s.cachedTools,
 	)
 
@@ -3382,4 +3384,22 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 	assert.True(t, toolNames[memory.LoadToolName], "Load tool should be returned when enabled")
 	assert.False(t, toolNames[memory.AddToolName], "Add tool should not be exposed via Tools()")
 	assert.False(t, toolNames[memory.ClearToolName], "Clear tool should not be exposed via Tools()")
+
+	// Expose Add explicitly for hybrid mode.
+	s.opts.toolExposure = map[string]bool{memory.AddToolName: true}
+	s.precomputedTools = imemory.BuildToolsList(
+		s.opts.extractor,
+		s.opts.toolCreators,
+		s.opts.enabledTools,
+		s.opts.toolExposure,
+		s.cachedTools,
+	)
+
+	tools = s.Tools()
+	toolNames = make(map[string]bool)
+	for _, tool := range tools {
+		toolNames[tool.Declaration().Name] = true
+	}
+	assert.Len(t, tools, 3, "Auto mode should return Search, Load, and Add when Add is explicitly exposed")
+	assert.True(t, toolNames[memory.AddToolName], "Add tool should be exposed when explicitly requested")
 }
