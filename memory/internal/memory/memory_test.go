@@ -1228,6 +1228,9 @@ func TestShouldIncludeTool(t *testing.T) {
 		}
 
 		assert.True(t, shouldIncludeTool(memory.AddToolName, nil, enabledTools, nil, nil))
+		assert.True(t, shouldIncludeTool(memory.AddToolName, nil, enabledTools, map[string]struct{}{
+			memory.AddToolName: {},
+		}, nil))
 		assert.False(t, shouldIncludeTool(memory.SearchToolName, nil, enabledTools, nil, nil))
 		assert.False(t, shouldIncludeTool(memory.AddToolName, nil, enabledTools, nil, map[string]struct{}{
 			memory.AddToolName: {},
@@ -1249,6 +1252,10 @@ func TestShouldIncludeTool(t *testing.T) {
 		assert.True(t, shouldIncludeTool(memory.AddToolName, ext, enabledTools, map[string]struct{}{
 			memory.AddToolName: {},
 		}, nil))
+		// Explicit hidden override should suppress default Search exposure.
+		assert.False(t, shouldIncludeTool(memory.SearchToolName, ext, enabledTools, nil, map[string]struct{}{
+			memory.SearchToolName: {},
+		}))
 	})
 }
 

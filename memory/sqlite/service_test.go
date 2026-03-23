@@ -438,6 +438,22 @@ func TestOptionsAndClose_Coverage(t *testing.T) {
 	require.True(t, ok)
 	WithToolEnabled("bad_tool", true)(&opts2)
 
+	WithToolExposed(memory.AddToolName, true)(&opts2)
+	_, ok = opts2.toolExposed[memory.AddToolName]
+	require.True(t, ok)
+	_, ok = opts2.toolHidden[memory.AddToolName]
+	require.False(t, ok)
+
+	WithToolExposed(memory.AddToolName, false)(&opts2)
+	_, ok = opts2.toolExposed[memory.AddToolName]
+	require.False(t, ok)
+	_, ok = opts2.toolHidden[memory.AddToolName]
+	require.True(t, ok)
+
+	WithToolExposed("bad_tool", true)(&opts2)
+	_, ok = opts2.toolExposed["bad_tool"]
+	require.False(t, ok)
+
 	WithToolEnabled(memory.LoadToolName, false)(&opts)
 	_, ok = opts.enabledTools[memory.LoadToolName]
 	require.False(t, ok)

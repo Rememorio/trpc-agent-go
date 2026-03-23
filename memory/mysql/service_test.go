@@ -320,22 +320,44 @@ func TestWithCustomTool(t *testing.T) {
 // TestWithToolEnabled tests enabling and disabling tools.
 // It verifies that valid tool names can be toggled and invalid ones are ignored.
 func TestWithToolEnabled(t *testing.T) {
-	opts := ServiceOpts{
-		toolCreators: make(map[string]memory.ToolCreator),
-		enabledTools: make(map[string]struct{}),
-	}
+	opts := ServiceOpts{}
 
 	WithToolEnabled(memory.AddToolName, true)(&opts)
 	_, hasAdd := opts.enabledTools[memory.AddToolName]
 	assert.True(t, hasAdd)
+	_, explicitlySet := opts.userExplicitlySet[memory.AddToolName]
+	assert.True(t, explicitlySet)
 
 	WithToolEnabled(memory.AddToolName, false)(&opts)
 	_, hasAdd = opts.enabledTools[memory.AddToolName]
 	assert.False(t, hasAdd)
+	_, explicitlySet = opts.userExplicitlySet[memory.AddToolName]
+	assert.True(t, explicitlySet)
 
 	// Test with invalid tool name (should do nothing).
 	WithToolEnabled("invalid_tool_name", true)(&opts)
 	assert.NotContains(t, opts.enabledTools, "invalid_tool_name")
+	assert.NotContains(t, opts.userExplicitlySet, "invalid_tool_name")
+}
+
+func TestWithToolExposed(t *testing.T) {
+	opts := ServiceOpts{}
+
+	WithToolExposed(memory.AddToolName, true)(&opts)
+	_, exposed := opts.toolExposed[memory.AddToolName]
+	_, hidden := opts.toolHidden[memory.AddToolName]
+	assert.True(t, exposed)
+	assert.False(t, hidden)
+
+	WithToolExposed(memory.AddToolName, false)(&opts)
+	_, exposed = opts.toolExposed[memory.AddToolName]
+	_, hidden = opts.toolHidden[memory.AddToolName]
+	assert.False(t, exposed)
+	assert.True(t, hidden)
+
+	WithToolExposed("invalid_tool_name", true)(&opts)
+	_, exposed = opts.toolExposed["invalid_tool_name"]
+	assert.False(t, exposed)
 }
 
 func TestWithExtraOptions(t *testing.T) {

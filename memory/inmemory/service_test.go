@@ -940,6 +940,32 @@ func TestTools_AutoMemoryMode_WithToolExposed(t *testing.T) {
 	assert.True(t, toolNames[memory.AddToolName], "Add should be exposed when explicitly requested")
 }
 
+func TestOptions_WithToolEnabledAndToolExposed(t *testing.T) {
+	opts := defaultOptions.clone()
+
+	WithToolEnabled(memory.LoadToolName, true)(&opts)
+	_, ok := opts.enabledTools[memory.LoadToolName]
+	require.True(t, ok)
+	_, ok = opts.userExplicitlySet[memory.LoadToolName]
+	require.True(t, ok)
+
+	WithToolExposed(memory.AddToolName, true)(&opts)
+	_, ok = opts.toolExposed[memory.AddToolName]
+	require.True(t, ok)
+	_, ok = opts.toolHidden[memory.AddToolName]
+	require.False(t, ok)
+
+	WithToolExposed(memory.AddToolName, false)(&opts)
+	_, ok = opts.toolExposed[memory.AddToolName]
+	require.False(t, ok)
+	_, ok = opts.toolHidden[memory.AddToolName]
+	require.True(t, ok)
+
+	WithToolExposed("invalid_tool_name", true)(&opts)
+	_, ok = opts.toolExposed["invalid_tool_name"]
+	require.False(t, ok)
+}
+
 func TestTools_AutoMemoryMode_OptionOrder(t *testing.T) {
 	ext := &mockExtractor{}
 
