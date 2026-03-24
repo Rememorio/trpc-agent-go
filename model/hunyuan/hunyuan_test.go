@@ -426,6 +426,135 @@ func TestChatStreamCompleteCallbackBeforeFinalResponse(t *testing.T) {
 	}
 }
 
+func TestHandleStreamingResponseWithoutFinalChunk(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+
+		chunk := hunyuan.ChatCompletionResponse{
+			Id:      "stream-id-1",
+			Created: time.Now().Unix(),
+			Choices: []*hunyuan.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Delta: &hunyuan.ChatCompletionResponseDelta{
+						Role:    "assistant",
+						Content: "Hello",
+					},
+				},
+			},
+		}
+		data, err := json.Marshal(chunk)
+		require.NoError(t, err)
+		_, err = fmt.Fprintf(w, "data: %s\n\n", string(data))
+		require.NoError(t, err)
+		flusher.Flush()
+		_, err = fmt.Fprint(w, "data: [DONE]\n\n")
+		require.NoError(t, err)
+		flusher.Flush()
+	}))
+	defer mockServer.Close()
+
+	streamCompleteCalled := make(chan error, 1)
+	m := New("hunyuan-lite",
+		WithSecretId("test-secret-id"),
+		WithSecretKey("test-secret-key"),
+		WithBaseUrl(mockServer.URL),
+		WithHost("test-host"),
+		WithChatStreamCompleteCallback(func(ctx context.Context,
+			chatRequest *hunyuan.ChatCompletionNewParams, streamErr error) {
+			streamCompleteCalled <- streamErr
+		}),
+	)
+
+	responseChan := make(chan *model.Response, 2)
+	m.handleStreamingResponse(context.Background(),
+		&hunyuan.ChatCompletionNewParams{}, responseChan)
+	close(responseChan)
+
+	var responses []*model.Response
+	for resp := range responseChan {
+		responses = append(responses, resp)
+	}
+
+	require.Len(t, responses, 1)
+	assert.True(t, responses[0].IsPartial)
+	assert.False(t, responses[0].Done)
+	select {
+	case streamErr := <-streamCompleteCalled:
+		assert.NoError(t, streamErr)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
+}
+
+func TestHandleStreamingResponseCallbackOnContextCancel(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+
+		chunk := hunyuan.ChatCompletionResponse{
+			Id:      "stream-id-1",
+			Created: time.Now().Unix(),
+			Choices: []*hunyuan.ChatCompletionResponseChoice{
+				{
+					Index: 0,
+					Delta: &hunyuan.ChatCompletionResponseDelta{
+						Role:    "assistant",
+						Content: "Hello",
+					},
+				},
+			},
+		}
+		data, err := json.Marshal(chunk)
+		require.NoError(t, err)
+		_, err = fmt.Fprintf(w, "data: %s\n\n", string(data))
+		require.NoError(t, err)
+		flusher.Flush()
+	}))
+	defer mockServer.Close()
+
+	streamCompleteCalled := make(chan error, 1)
+	m := New("hunyuan-lite",
+		WithSecretId("test-secret-id"),
+		WithSecretKey("test-secret-key"),
+		WithBaseUrl(mockServer.URL),
+		WithHost("test-host"),
+		WithChatStreamCompleteCallback(func(ctx context.Context,
+			chatRequest *hunyuan.ChatCompletionNewParams, streamErr error) {
+			streamCompleteCalled <- streamErr
+		}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	responseChan := make(chan *model.Response)
+	m.handleStreamingResponse(ctx, &hunyuan.ChatCompletionNewParams{}, responseChan)
+
+	select {
+	case streamErr := <-streamCompleteCalled:
+		require.ErrorIs(t, streamErr, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
+	select {
+	case resp := <-responseChan:
+		t.Fatalf("unexpected response: %#v", resp)
+	default:
+	}
+}
+
 func TestConvertMessage(t *testing.T) {
 	msg := model.Message{
 		Role:    model.RoleUser,

@@ -12,6 +12,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -731,6 +732,12 @@ type rtFunc func(*http.Request) (*http.Response, error)
 // RoundTrip implements http.RoundTripper.
 func (f rtFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+type errReader struct{ err error }
+
+func (r *errReader) Read(_ []byte) (int, error) {
+	return 0, r.err
+}
+
 func Test_HandleNonStreamingResponse_EndToEnd_NoNetwork(t *testing.T) {
 	// Mock HTTP client to return a fixed Anthropic message JSON body.
 	orig := model.DefaultNewHTTPClient
@@ -875,6 +882,60 @@ func Test_HandleStreamingResponse_EndToEnd_NoNetwork(t *testing.T) {
 	assert.True(t, chunkCalled)
 	select {
 	case <-streamCompleteCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
+}
+
+func Test_HandleStreamingResponse_StreamErrorUsesNilAccumulator(t *testing.T) {
+	streamErr := errors.New("stream read error")
+
+	orig := model.DefaultNewHTTPClient
+	t.Cleanup(func() { model.DefaultNewHTTPClient = orig })
+	model.DefaultNewHTTPClient = func(_ ...HTTPClientOption) model.HTTPClient {
+		return &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			h := make(http.Header)
+			h.Set("Content-Type", "text/event-stream")
+			return &http.Response{
+				StatusCode: 200,
+				Header:     h,
+				Body:       io.NopCloser(&errReader{err: streamErr}),
+			}, nil
+		})}
+	}
+
+	callbackCalled := make(chan struct{})
+	var callbackAcc *anthropic.Message
+	var callbackErr error
+	m := New(
+		"claude-test",
+		WithHTTPClientOptions(),
+		WithChatStreamCompleteCallback(func(_ context.Context,
+			_ *anthropic.MessageNewParams, acc *anthropic.Message, err error) {
+			callbackAcc = acc
+			callbackErr = err
+			close(callbackCalled)
+		}),
+	)
+	ctx := context.Background()
+	ch, err := m.GenerateContent(ctx, &model.Request{
+		Messages:         []model.Message{model.NewUserMessage("U")},
+		GenerationConfig: model.GenerationConfig{Stream: true},
+	})
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for resp := range ch {
+		responses = append(responses, resp)
+	}
+
+	require.Len(t, responses, 1)
+	assert.NotNil(t, responses[0].Error)
+	assert.True(t, responses[0].Done)
+	select {
+	case <-callbackCalled:
+		assert.Nil(t, callbackAcc)
+		assert.Error(t, callbackErr)
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for stream complete callback")
 	}
