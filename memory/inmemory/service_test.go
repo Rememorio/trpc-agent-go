@@ -920,12 +920,12 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 	assert.False(t, toolNames[memory.ClearToolName], "Clear tool should not be exposed via Tools()")
 }
 
-func TestTools_AutoMemoryMode_WithToolExposed(t *testing.T) {
+func TestTools_AutoMemoryMode_WithAutoMemoryExposedTools(t *testing.T) {
 	ext := &mockExtractor{}
 
 	service := NewMemoryService(
 		WithExtractor(ext),
-		WithToolExposed(memory.AddToolName, true),
+		WithAutoMemoryExposedTools(memory.AddToolName),
 	)
 	defer service.Close()
 
@@ -949,7 +949,7 @@ func TestOptions_WithToolEnabledAndToolExposed(t *testing.T) {
 	_, ok = opts.userExplicitlySet[memory.LoadToolName]
 	require.True(t, ok)
 
-	WithToolExposed(memory.AddToolName, true)(&opts)
+	WithAutoMemoryExposedTools(memory.AddToolName)(&opts)
 	_, ok = opts.toolExposed[memory.AddToolName]
 	require.True(t, ok)
 	_, ok = opts.toolHidden[memory.AddToolName]
@@ -961,7 +961,7 @@ func TestOptions_WithToolEnabledAndToolExposed(t *testing.T) {
 	_, ok = opts.toolHidden[memory.AddToolName]
 	require.True(t, ok)
 
-	WithToolExposed("invalid_tool_name", true)(&opts)
+	WithAutoMemoryExposedTools("invalid_tool_name")(&opts)
 	_, ok = opts.toolExposed["invalid_tool_name"]
 	require.False(t, ok)
 }
@@ -1011,9 +1011,9 @@ func TestTools_AutoMemoryMode_OptionOrder(t *testing.T) {
 	tools3 := service3.Tools()
 	assert.Len(t, tools3, 0, "No tools should be returned when Search is disabled")
 
-	// Test: WithToolExposed BEFORE WithExtractor should still work.
+	// Test: WithAutoMemoryExposedTools BEFORE WithExtractor should still work.
 	service4 := NewMemoryService(
-		WithToolExposed(memory.AddToolName, true),
+		WithAutoMemoryExposedTools(memory.AddToolName),
 		WithExtractor(ext),
 	)
 	defer service4.Close()
@@ -1025,10 +1025,10 @@ func TestTools_AutoMemoryMode_OptionOrder(t *testing.T) {
 	}
 	assert.True(t, toolNames4[memory.AddToolName], "Add should be exposed even when set before WithExtractor")
 
-	// Test: WithToolExposed AFTER WithExtractor should also work.
+	// Test: WithAutoMemoryExposedTools AFTER WithExtractor should also work.
 	service5 := NewMemoryService(
 		WithExtractor(ext),
-		WithToolExposed(memory.AddToolName, true),
+		WithAutoMemoryExposedTools(memory.AddToolName),
 	)
 	defer service5.Close()
 

@@ -159,7 +159,7 @@ Memory provides 6 tools with different availability in each mode:
   - Default enabled: `memory_add`, `memory_update`, `memory_delete`, `memory_search`
   - Default disabled: `memory_load`, `memory_clear`
   - Hidden by default: `memory_add`, `memory_update`, `memory_delete`
-  - Use `WithToolExposed()` to selectively expose enabled write tools such as `memory_add`
+  - Use `WithAutoMemoryExposedTools()` to selectively expose enabled write tools such as `memory_add`
 
 ## Prerequisites
 

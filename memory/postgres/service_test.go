@@ -245,10 +245,10 @@ func TestServiceOpts_WithToolEnabled(t *testing.T) {
 	assert.True(t, explicitlySet, "Expected explicit setting to be preserved")
 }
 
-func TestServiceOpts_WithToolExposed(t *testing.T) {
+func TestServiceOpts_WithAutoMemoryExposedTools(t *testing.T) {
 	opts := ServiceOpts{}
 
-	WithToolExposed(memory.AddToolName, true)(&opts)
+	WithAutoMemoryExposedTools(memory.AddToolName)(&opts)
 
 	_, exposed := opts.toolExposed[memory.AddToolName]
 	_, hidden := opts.toolHidden[memory.AddToolName]
@@ -262,7 +262,7 @@ func TestServiceOpts_WithToolExposed(t *testing.T) {
 	assert.False(t, exposed, "Expected tool exposure to be cleared")
 	assert.True(t, hidden, "Expected tool to be explicitly hidden")
 
-	WithToolExposed("invalid_tool", true)(&opts)
+	WithAutoMemoryExposedTools("invalid_tool")(&opts)
 	_, exposed = opts.toolExposed["invalid_tool"]
 	assert.False(t, exposed, "Expected invalid tool not to be tracked")
 }

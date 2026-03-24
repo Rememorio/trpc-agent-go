@@ -422,18 +422,18 @@ The memory service provides 6 tools. Common tools are enabled by default, while 
 - **Agentic Mode**: Agent actively calls tools to manage memory, all tools are configurable
   - Default enabled tools: `memory_add`, `memory_update`, `memory_search`, `memory_load`
   - Default disabled tools: `memory_delete`, `memory_clear`
-- **Auto Mode**: LLM extractor handles write operations in background. Tools() exposes Search by default; Load can be enabled; `WithToolExposed()` can selectively expose enabled write tools for hybrid usage.
+- **Auto Mode**: LLM extractor handles write operations in background. Tools() exposes Search by default; Load can be enabled; `WithAutoMemoryExposedTools()` can selectively expose enabled write tools for hybrid usage.
   - Default enabled tools: `memory_add`, `memory_update`, `memory_delete`, `memory_search`
   - Default disabled tools: `memory_load`, `memory_clear`
   - Hidden by default: `memory_add`, `memory_update`, `memory_delete`
 - **Default**: Available immediately when service is created, no extra configuration needed
-- **Configurable**: Can be enabled/disabled via `WithToolEnabled()` and exposed via `WithToolExposed()`
+- **Configurable**: Can be enabled/disabled via `WithToolEnabled()`; in Auto mode, enabled write tools can be exposed via `WithAutoMemoryExposedTools()`
 
 #### Enable/Disable Tools
 
 Note: `WithToolEnabled()` controls whether a memory operation is available at
-all. `WithToolExposed()` controls whether an enabled tool is returned from
-`Tools()` for the Agent to call. In Auto mode, write tools remain hidden by
+all. `WithAutoMemoryExposedTools()` controls which enabled tools are returned
+from `Tools()` for the Agent to call in Auto mode. Write tools remain hidden by
 default unless you expose them explicitly.
 
 ```go
@@ -457,7 +457,7 @@ memoryService := memoryinmemory.NewMemoryService(
 // Scenario 4: Hybrid auto memory + explicit agent writes
 memoryService := memoryinmemory.NewMemoryService(
     memoryinmemory.WithExtractor(memExtractor),
-    memoryinmemory.WithToolExposed(memory.AddToolName, true),
+    memoryinmemory.WithAutoMemoryExposedTools(memory.AddToolName),
 )
 ```
 
@@ -473,7 +473,7 @@ memoryService := memoryinmemory.NewMemoryService(
 
 Note: In Auto mode, `Tools()` exposes `memory_search` by default, `memory_load`
 when enabled, and any additional enabled tools you explicitly expose with
-`WithToolExposed()`. Dangerous operations like `memory_clear` should usually
+`WithAutoMemoryExposedTools()`. Dangerous operations like `memory_clear` should usually
 stay application-controlled.
 
 You can override default tools with custom implementations. See
@@ -1465,7 +1465,7 @@ memoryService := memoryinmemory.NewMemoryService(
     // Front-end: enable memory_load for agent to call.
     memoryinmemory.WithToolEnabled(memory.LoadToolName, true),
     // Hybrid: expose memory_add so the agent can store critical facts immediately.
-    memoryinmemory.WithToolExposed(memory.AddToolName, true),
+    memoryinmemory.WithAutoMemoryExposedTools(memory.AddToolName),
     // Back-end: disable memory_delete so extractor cannot delete.
     memoryinmemory.WithToolEnabled(memory.DeleteToolName, false),
     // Back-end: enable memory_clear for extractor (use with caution).
@@ -1473,7 +1473,7 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 ```
 
-**Note**: `WithToolEnabled` and `WithToolExposed` can be called before or after
+**Note**: `WithToolEnabled` and `WithAutoMemoryExposedTools` can be called before or after
 `WithExtractor` - the order does not matter.
 
 ### Comparison: Agentic Mode vs Auto Mode

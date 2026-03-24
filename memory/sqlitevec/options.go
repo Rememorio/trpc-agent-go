@@ -226,9 +226,18 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 	}
 }
 
+// WithAutoMemoryExposedTools exposes enabled tools via Tools() in auto memory
+// mode so the agent can call them directly. Invalid tool names are ignored.
+func WithAutoMemoryExposedTools(toolNames ...string) ServiceOpt {
+	return func(opts *ServiceOpts) {
+		for _, toolName := range toolNames {
+			WithToolExposed(toolName, true)(opts)
+		}
+	}
+}
+
 // WithToolExposed controls whether an enabled memory tool is exposed via
-// Tools(). In auto memory mode this can be used to selectively expose write
-// tools such as memory_add to the agent.
+// Tools(). Use WithAutoMemoryExposedTools for the common auto memory case.
 func WithToolExposed(toolName string, exposed bool) ServiceOpt {
 	return func(opts *ServiceOpts) {
 		if !imemory.IsValidToolName(toolName) {

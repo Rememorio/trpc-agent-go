@@ -516,17 +516,17 @@ if err != nil {
 - **工具驱动模式**：Agent 主动调用工具管理记忆，所有工具均可配置
   - 默认启用工具：`memory_add`、`memory_update`、`memory_search`、`memory_load`
   - 默认禁用工具：`memory_delete`、`memory_clear`
-- **自动提取模式**：LLM 提取器在后台管理写入操作，默认只暴露搜索工具；可启用 `memory_load`，也可通过 `WithToolExposed()` 选择性暴露已启用的写工具
+- **自动提取模式**：LLM 提取器在后台管理写入操作，默认只暴露搜索工具；可启用 `memory_load`，也可通过 `WithAutoMemoryExposedTools()` 选择性暴露已启用的写工具
   - 默认启用工具：`memory_add`、`memory_update`、`memory_delete`、`memory_search`
   - 默认禁用工具：`memory_load`、`memory_clear`
   - 默认不暴露工具：`memory_add`、`memory_update`、`memory_delete`
 - **默认启用**：创建服务时自动可用，无需额外配置
-- **可配置**：可以通过 `WithToolEnabled()` 启用或禁用，并通过 `WithToolExposed()` 控制是否对 Agent 暴露
+- **可配置**：可以通过 `WithToolEnabled()` 启用或禁用；在 Auto 模式下，可通过 `WithAutoMemoryExposedTools()` 控制哪些已启用写工具对 Agent 暴露
 
 #### 启用/禁用工具
 
-提示：`WithToolEnabled()` 控制记忆操作是否可用，`WithToolExposed()` 控制已启用工具是否通过
-`Tools()` 暴露给 Agent。在 Auto 模式下，写工具默认隐藏，只有显式暴露后 Agent 才能主动调用。
+提示：`WithToolEnabled()` 控制记忆操作是否可用，`WithAutoMemoryExposedTools()` 控制
+Auto 模式下哪些已启用工具会通过 `Tools()` 暴露给 Agent。写工具默认隐藏，只有显式暴露后 Agent 才能主动调用。
 
 ```go
 // 场景 1：用户可管理（允许删除单条记忆）
@@ -549,7 +549,7 @@ memoryService := memoryinmemory.NewMemoryService(
 // 场景 4：Auto + 主动写记忆混合模式
 memoryService := memoryinmemory.NewMemoryService(
     memoryinmemory.WithExtractor(memExtractor),
-    memoryinmemory.WithToolExposed(memory.AddToolName, true),
+    memoryinmemory.WithAutoMemoryExposedTools(memory.AddToolName),
 )
 ```
 
@@ -561,7 +561,7 @@ memoryService := memoryinmemory.NewMemoryService(
 ### 自定义工具实现
 
 提示：在 Auto 模式下，`Tools()` 默认暴露 `memory_search`；`memory_load` 在启用后可暴露，
-其他已启用工具需配合 `WithToolExposed()` 显式暴露。像 `memory_clear` 这类危险操作通常更适合由业务侧直接控制。
+其他已启用工具需配合 `WithAutoMemoryExposedTools()` 显式暴露。像 `memory_clear` 这类危险操作通常更适合由业务侧直接控制。
 
 你可以用自定义实现覆盖默认工具。参考 [memory/tool/tool.go](https://github.com/trpc-group/trpc-agent-go/blob/main/memory/tool/tool.go) 了解如何实现自定义工具：
 
@@ -1509,7 +1509,7 @@ memoryService := memoryinmemory.NewMemoryService(
     // 前端：启用 memory_load 供 Agent 调用。
     memoryinmemory.WithToolEnabled(memory.LoadToolName, true),
     // Hybrid：暴露 memory_add，便于 Agent 立即持久化明确提示的长期信息。
-    memoryinmemory.WithToolExposed(memory.AddToolName, true),
+    memoryinmemory.WithAutoMemoryExposedTools(memory.AddToolName),
     // 后端：禁用 memory_delete，提取器将无法删除记忆。
     memoryinmemory.WithToolEnabled(memory.DeleteToolName, false),
     // 后端：启用 memory_clear 供提取器使用（谨慎使用）。
@@ -1517,7 +1517,7 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 ```
 
-**注意**：`WithToolEnabled` 和 `WithToolExposed` 都可以在
+**注意**：`WithToolEnabled` 和 `WithAutoMemoryExposedTools` 都可以在
 `WithExtractor` 之前或之后调用，顺序不影响结果。
 
 ### 两种模式对比

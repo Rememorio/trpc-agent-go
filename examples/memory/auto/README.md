@@ -165,7 +165,7 @@ memoryService := memoryinmemory.NewMemoryService(
     // Front-end: enable memory_load for agent to call.
     memoryinmemory.WithToolEnabled(memory.LoadToolName, true),
     // Hybrid: expose memory_add so the agent can save explicit long-term hints immediately.
-    memoryinmemory.WithToolExposed(memory.AddToolName, true),
+    memoryinmemory.WithAutoMemoryExposedTools(memory.AddToolName),
     // Back-end: disable memory_delete so extractor cannot delete.
     memoryinmemory.WithToolEnabled(memory.DeleteToolName, false),
     // Back-end: enable memory_clear for extractor (use with caution).
@@ -173,7 +173,7 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 ```
 
-**Note**: `WithToolEnabled` and `WithToolExposed` can be called before or after
+**Note**: `WithToolEnabled` and `WithAutoMemoryExposedTools` can be called before or after
 `WithExtractor` - the order does not matter.
 
 ### Comparison: Agentic Mode vs Auto Mode

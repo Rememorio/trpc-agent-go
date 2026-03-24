@@ -340,10 +340,10 @@ func TestWithToolEnabled(t *testing.T) {
 	assert.NotContains(t, opts.userExplicitlySet, "invalid_tool_name")
 }
 
-func TestWithToolExposed(t *testing.T) {
+func TestWithAutoMemoryExposedTools(t *testing.T) {
 	opts := ServiceOpts{}
 
-	WithToolExposed(memory.AddToolName, true)(&opts)
+	WithAutoMemoryExposedTools(memory.AddToolName)(&opts)
 	_, exposed := opts.toolExposed[memory.AddToolName]
 	_, hidden := opts.toolHidden[memory.AddToolName]
 	assert.True(t, exposed)
@@ -355,7 +355,7 @@ func TestWithToolExposed(t *testing.T) {
 	assert.False(t, exposed)
 	assert.True(t, hidden)
 
-	WithToolExposed("invalid_tool_name", true)(&opts)
+	WithAutoMemoryExposedTools("invalid_tool_name")(&opts)
 	_, exposed = opts.toolExposed["invalid_tool_name"]
 	assert.False(t, exposed)
 }
