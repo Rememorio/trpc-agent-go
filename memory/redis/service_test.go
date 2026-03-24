@@ -146,6 +146,8 @@ func TestServiceOpts_WithCustomTool(t *testing.T) {
 	assert.NotNil(t, opts.toolCreators[toolName])
 	_, hasAdd := opts.enabledTools[toolName]
 	assert.True(t, hasAdd, "Expected tool to be enabled")
+	_, explicitlySet := opts.userExplicitlySet[toolName]
+	assert.True(t, explicitlySet, "Expected tool to be marked explicit")
 }
 
 func TestServiceOpts_WithToolEnabled(t *testing.T) {

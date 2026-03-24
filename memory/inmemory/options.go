@@ -46,7 +46,7 @@ type serviceOpts struct {
 	toolExposed map[string]struct{}
 	// toolHidden tracks tools explicitly hidden from Tools().
 	toolHidden map[string]struct{}
-	// userExplicitlySet tracks which tools were explicitly set by user via WithToolEnabled.
+	// userExplicitlySet tracks which tools were explicitly overridden by user options.
 	userExplicitlySet map[string]struct{}
 
 	// Memory extractor for auto memory mode.
@@ -118,8 +118,18 @@ func WithCustomTool(toolName string, creator memory.ToolCreator) ServiceOpt {
 		if !imemory.IsValidToolName(toolName) || creator == nil {
 			return
 		}
+		if opts.toolCreators == nil {
+			opts.toolCreators = make(map[string]memory.ToolCreator)
+		}
+		if opts.enabledTools == nil {
+			opts.enabledTools = make(map[string]struct{})
+		}
+		if opts.userExplicitlySet == nil {
+			opts.userExplicitlySet = make(map[string]struct{})
+		}
 		opts.toolCreators[toolName] = creator
 		opts.enabledTools[toolName] = struct{}{}
+		opts.userExplicitlySet[toolName] = struct{}{}
 	}
 }
 

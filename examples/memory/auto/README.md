@@ -1,6 +1,6 @@
 # 🧠 Auto Memory Chat
 
-This example demonstrates automatic memory extraction using the `Runner` orchestration component. Unlike the manual memory tools approach, auto memory extracts user information from conversations automatically in the background without explicit tool calls.
+This example demonstrates automatic memory extraction using the `Runner` orchestration component. Unlike the manual memory tools approach, auto memory extracts user information from conversations automatically in the background, while still allowing selected tools to be exposed when needed.
 
 ## What is Auto Memory?
 
@@ -12,7 +12,7 @@ Auto memory mode uses an LLM-based extractor to analyze conversations and automa
 | ------------------- | ----------------------------------- | --------------------------------------- |
 | **Memory Creation** | Agent explicitly calls `memory_add` | System extracts automatically           |
 | **User Experience** | Visible tool calls in conversation  | Transparent, no tool call interruptions |
-| **Available Tools** | 6 tools (4 default, 2 configurable) | Only `memory_search`                    |
+| **Available Tools** | 6 tools (4 default, 2 configurable) | Default `memory_search`; configurable `memory_load`; enabled write tools can be exposed |
 | **Processing**      | Synchronous during response         | Asynchronous after response             |
 | **Control**         | Agent decides what to remember      | Extractor analyzes and decides          |
 
@@ -20,7 +20,7 @@ Auto memory mode uses an LLM-based extractor to analyze conversations and automa
 
 - **🔄 Automatic Extraction**: LLM-based extractor analyzes conversations and creates memories
 - **🌊 Background Processing**: Memory extraction happens asynchronously after responses
-- **🔍 Search Only**: Agent can search memories but cannot manually add/update/delete
+- **🔍 Configurable Agent Tools**: `memory_search` is exposed by default; `memory_load` and selected enabled write tools can be exposed when needed
 - **💾 Transparent UX**: Users don't see memory tool calls, natural conversation flow
 - **⚡ Async Workers**: Configurable worker pool for memory extraction jobs
 
@@ -46,7 +46,7 @@ extractorModel := openai.New("deepseek-chat")
 memExtractor := extractor.NewExtractor(extractorModel)
 
 // Create memory service with auto extraction enabled.
-// When extractor is set, only search and clear tools are exposed.
+// When extractor is set, memory_search is exposed by default.
 memoryService := memoryinmemory.NewMemoryService(
     memoryinmemory.WithExtractor(memExtractor),
     // Optional: configure async worker settings.
@@ -56,7 +56,7 @@ memoryService := memoryinmemory.NewMemoryService(
 )
 
 // Create LLM agent with memory tools.
-// Only search is available by default since extractor is set.
+// memory_search is available by default; enable load or expose write tools when needed.
 llmAgent := llmagent.New(
     "auto-memory-assistant",
     llmagent.WithModel(chatModel),
@@ -137,9 +137,10 @@ type ExtractionContext struct {
 
 ### Tool Availability
 
-In auto memory mode, `WithToolEnabled` controls whether tools are available,
-while `WithToolExposed` controls which enabled tools the agent can call via
-`Tools()`.
+In auto memory mode, `WithToolEnabled` controls whether tools are available.
+`memory_search` is exposed through `Tools()` by default, `memory_load` is
+exposed once enabled, and `WithAutoMemoryExposedTools` selectively exposes
+enabled write tools for hybrid usage.
 
 **Front-end Tools** (exposed via `Tools()` for agent to call):
 

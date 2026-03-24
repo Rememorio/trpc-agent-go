@@ -1310,6 +1310,8 @@ func TestServiceOpts_Coverage(t *testing.T) {
 	require.True(t, ok)
 	_, ok = opts.enabledTools[memory.ClearToolName]
 	require.True(t, ok)
+	_, ok = opts.userExplicitlySet[memory.ClearToolName]
+	require.True(t, ok)
 
 	WithCustomTool("bad_tool", func() tool.Tool { return nil })(&opts)
 	WithCustomTool(memory.ClearToolName, nil)(&opts)

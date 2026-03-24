@@ -131,7 +131,7 @@ All examples support multiple storage backends:
 | ----------------- | ----------------------------------- | ------------------------------- |
 | Tool Registration | Manual (`WithTools`)                | Automatic (`WithExtractor`)     |
 | Memory Extraction | Agent calls tools directly          | Background extraction           |
-| Tools Available   | 6 tools (4 default, 2 configurable) | Limited (search, optional load) |
+| Tools Available   | 6 tools (4 default, 2 configurable) | `memory_search` by default; configurable `memory_load`; enabled write tools exposable |
 | Control Level     | High (explicit)                     | Medium (background)             |
 | Setup Complexity  | Simple                              | Complex                         |
 | Best For          | Fine-grained control needs          | Transparent memory needs        |
@@ -155,7 +155,7 @@ Memory provides 6 tools with different availability in each mode:
   - Default enabled: `memory_add`, `memory_update`, `memory_search`, `memory_load`
   - Default disabled: `memory_delete`, `memory_clear`
   - Can be enabled/disabled via `WithToolEnabled()`
-- **Auto Mode**: LLM extractor handles write operations in background, with read tools exposed by default
+- **Auto Mode**: LLM extractor handles write operations in background; `memory_search` is exposed by default, `memory_load` is configurable, and enabled write tools can be exposed with `WithAutoMemoryExposedTools()`
   - Default enabled: `memory_add`, `memory_update`, `memory_delete`, `memory_search`
   - Default disabled: `memory_load`, `memory_clear`
   - Hidden by default: `memory_add`, `memory_update`, `memory_delete`

@@ -34,7 +34,7 @@ Auto Mode is available when an Extractor is configured and is recommended as the
 | **How it works**    | Agent decides when to call memory tools        | System extracts memories automatically from conversations |
 | **User experience** | Visible - user sees tool calls                 | Transparent - memories created silently in background     |
 | **Control**         | Agent has full control over what to remember   | Extractor decides based on conversation analysis          |
-| **Available tools** | All 6 tools                                    | Search tool (search), optional load tool (load)           |
+| **Available tools** | All 6 tools                                    | `memory_search` by default; configurable `memory_load`; enabled write tools can be exposed |
 | **Processing**      | Synchronous - during response generation       | Asynchronous - background workers after response          |
 | **Best for**        | Precise control, user-driven memory management | Natural conversations, hands-off memory building          |
 
@@ -284,7 +284,7 @@ Agent: Nice to meet you, Alice! It's great to connect with someone from TechCorp
 | **Step 1**          | `NewMemoryService()`                | `NewMemoryService(WithExtractor(ext))` |
 | **Step 2**          | `WithTools(memoryService.Tools())`  | `WithTools(memoryService.Tools())`     |
 | **Step 3**          | `WithMemoryService(memoryService)`  | `WithMemoryService(memoryService)`     |
-| **Available tools** | add/update/delete/clear/search/load | search /load                           |
+| **Available tools** | add/update/delete/clear/search/load | search by default; load configurable; enabled write tools can be exposed |
 | **Memory creation** | Agent actively calls tools          | Background auto extraction             |
 
 ## Core Concepts
@@ -1438,8 +1438,9 @@ type ExtractionContext struct {
 ### Tool Control
 
 In auto extraction mode, `WithToolEnabled` controls whether each tool is
-available, while `WithToolExposed` controls which enabled tools the agent can
-call via `Tools()`.
+available. `memory_search` is exposed through `Tools()` by default,
+`memory_load` is exposed once enabled, and `WithAutoMemoryExposedTools`
+selectively exposes enabled write tools for hybrid usage.
 
 **Front-end Tools** (exposed via `Tools()` for agent to call):
 

@@ -940,6 +940,42 @@ func TestTools_AutoMemoryMode_WithAutoMemoryExposedTools(t *testing.T) {
 	assert.True(t, toolNames[memory.AddToolName], "Add should be exposed when explicitly requested")
 }
 
+func TestTools_AutoMemoryMode_WithCustomToolPreservesExplicitEnablement(t *testing.T) {
+	ext := &mockExtractor{}
+
+	service := NewMemoryService(
+		WithExtractor(ext),
+		WithCustomTool(memory.LoadToolName, func() tool.Tool {
+			return &mockTool{name: memory.LoadToolName}
+		}),
+	)
+	defer service.Close()
+
+	toolNames := make(map[string]bool)
+	for _, memoryTool := range service.Tools() {
+		toolNames[memoryTool.Declaration().Name] = true
+	}
+
+	assert.True(t, toolNames[memory.SearchToolName], "Search should remain exposed by default")
+	assert.True(t, toolNames[memory.LoadToolName], "Custom load tool should stay enabled in auto mode")
+
+	service2 := NewMemoryService(
+		WithExtractor(ext),
+		WithCustomTool(memory.ClearToolName, func() tool.Tool {
+			return &mockTool{name: memory.ClearToolName}
+		}),
+		WithAutoMemoryExposedTools(memory.ClearToolName),
+	)
+	defer service2.Close()
+
+	toolNames = make(map[string]bool)
+	for _, memoryTool := range service2.Tools() {
+		toolNames[memoryTool.Declaration().Name] = true
+	}
+
+	assert.True(t, toolNames[memory.ClearToolName], "Custom clear tool should stay enabled when explicitly exposed")
+}
+
 func TestOptions_WithToolEnabledAndToolExposed(t *testing.T) {
 	opts := defaultOptions.clone()
 
@@ -964,6 +1000,23 @@ func TestOptions_WithToolEnabledAndToolExposed(t *testing.T) {
 	WithAutoMemoryExposedTools("invalid_tool_name")(&opts)
 	_, ok = opts.toolExposed["invalid_tool_name"]
 	require.False(t, ok)
+
+	service := NewMemoryService(
+		WithExtractor(&mockExtractor{}),
+		WithAutoMemoryExposedTools(memory.AddToolName),
+		WithToolExposed(memory.AddToolName, false),
+		WithAutoMemoryExposedTools("invalid_tool_name"),
+	)
+	defer service.Close()
+
+	toolNames := make(map[string]bool)
+	for _, memoryTool := range service.Tools() {
+		toolNames[memoryTool.Declaration().Name] = true
+	}
+
+	assert.True(t, toolNames[memory.SearchToolName], "Search should remain exposed by default")
+	assert.False(t, toolNames[memory.AddToolName], "Add should be hidden after WithToolExposed(false)")
+	assert.False(t, toolNames["invalid_tool_name"], "Invalid tool names should never appear in Tools()")
 }
 
 func TestTools_AutoMemoryMode_OptionOrder(t *testing.T) {

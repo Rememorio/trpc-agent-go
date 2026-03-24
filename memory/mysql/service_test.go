@@ -305,6 +305,8 @@ func TestWithCustomTool(t *testing.T) {
 	assert.Contains(t, opts.toolCreators, memory.AddToolName)
 	_, hasAdd := opts.enabledTools[memory.AddToolName]
 	assert.True(t, hasAdd)
+	_, explicitlySet := opts.userExplicitlySet[memory.AddToolName]
+	assert.True(t, explicitlySet)
 
 	// Test with invalid tool name (should do nothing).
 	WithCustomTool("invalid_tool_name", customCreator)(&opts)

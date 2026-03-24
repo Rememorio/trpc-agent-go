@@ -470,8 +470,9 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey,
 }
 
 // Tools returns the list of available memory tools.
-// In auto memory mode (extractor is set), only front-end tools are returned.
-// By default, only Search is enabled; Load can be enabled explicitly.
+// In auto memory mode (extractor is set), memory_search is exposed by default,
+// memory_load is exposed once enabled, and other enabled tools remain hidden
+// unless explicitly exposed.
 // In agentic mode, all enabled tools are returned.
 // The tools list is pre-computed at service creation time.
 func (s *Service) Tools() []tool.Tool {

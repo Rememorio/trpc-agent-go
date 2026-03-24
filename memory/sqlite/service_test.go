@@ -420,6 +420,8 @@ func TestOptionsAndClose_Coverage(t *testing.T) {
 	WithCustomTool(memory.LoadToolName, func() tool.Tool { return nil })(&opts)
 	_, ok := opts.toolCreators[memory.LoadToolName]
 	require.True(t, ok)
+	_, ok = opts.userExplicitlySet[memory.LoadToolName]
+	require.True(t, ok)
 
 	WithCustomTool("bad_tool", func() tool.Tool { return nil })(&opts)
 	WithCustomTool(memory.LoadToolName, nil)(&opts)
