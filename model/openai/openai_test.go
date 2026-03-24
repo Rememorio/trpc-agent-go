@@ -1107,10 +1107,12 @@ func TestModel_Callbacks(t *testing.T) {
 
 		// Consume all responses and ensure the callback runs before
 		// the final response becomes visible to the caller.
+		sawDone := false
 		for response := range responseChan {
 			if !response.Done {
 				continue
 			}
+			sawDone = true
 			select {
 			case <-callbackCalled:
 				// Success.
@@ -1120,6 +1122,8 @@ func TestModel_Callbacks(t *testing.T) {
 			}
 			break
 		}
+		require.True(t, sawDone,
+			"expected terminal Done response to be emitted")
 
 		select {
 		case <-callbackCalled:
