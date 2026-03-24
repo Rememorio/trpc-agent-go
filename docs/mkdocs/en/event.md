@@ -70,6 +70,10 @@ type EventActions struct {
 }
 ```
 
+`SkipSummarization` is a flow-control hint. It does not mean the current
+`tool.response` is a final assistant response. If you need the true terminal
+event for the run, continue consuming until `runner.completion`.
+
 #### FilterKey (hierarchical scope key)
 
 `FilterKey` is an optional string field on each event. Think of it as a

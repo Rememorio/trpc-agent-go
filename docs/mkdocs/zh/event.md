@@ -69,6 +69,10 @@ type EventActions struct {
 }
 ```
 
+`SkipSummarization` 是一个流程控制提示，不表示当前这条
+`tool.response` 已经变成 assistant final response。若你需要整次运行真正的
+终止事件，仍应持续消费直到 `runner.completion`。
+
 #### FilterKey（层级作用域 key）
 
 `FilterKey` 是每条事件上的可选字段。你可以把它理解成“像路径一样的标签”，主要用在：
