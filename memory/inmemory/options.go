@@ -143,6 +143,9 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 		if !imemory.IsValidToolName(toolName) {
 			return
 		}
+		if opts.enabledTools == nil {
+			opts.enabledTools = make(map[string]struct{})
+		}
 		if opts.userExplicitlySet == nil {
 			opts.userExplicitlySet = make(map[string]struct{})
 		}

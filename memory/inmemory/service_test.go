@@ -1019,6 +1019,19 @@ func TestOptions_WithToolEnabledAndToolExposed(t *testing.T) {
 	assert.False(t, toolNames["invalid_tool_name"], "Invalid tool names should never appear in Tools()")
 }
 
+func TestOptions_WithToolEnabled_ZeroValueOpts(t *testing.T) {
+	var opts serviceOpts
+
+	require.NotPanics(t, func() {
+		WithToolEnabled(memory.LoadToolName, true)(&opts)
+	})
+
+	_, ok := opts.enabledTools[memory.LoadToolName]
+	require.True(t, ok)
+	_, ok = opts.userExplicitlySet[memory.LoadToolName]
+	require.True(t, ok)
+}
+
 func TestTools_AutoMemoryMode_OptionOrder(t *testing.T) {
 	ext := &mockExtractor{}
 

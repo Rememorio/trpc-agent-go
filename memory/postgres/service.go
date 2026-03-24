@@ -473,7 +473,7 @@ func (s *Service) SearchMemories(ctx context.Context, userKey memory.UserKey,
 // In auto memory mode (extractor is set), memory_search is exposed by default,
 // memory_load is exposed once enabled, and other enabled tools remain hidden
 // unless explicitly exposed.
-// In agentic mode, all enabled tools are returned.
+// Without an extractor, enabled tools are exposed directly.
 // The tools list is pre-computed at service creation time.
 func (s *Service) Tools() []tool.Tool {
 	return slices.Clone(s.precomputedTools)
