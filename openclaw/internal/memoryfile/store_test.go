@@ -204,6 +204,19 @@ func TestEnsureMemory_CanceledContextReturnsError(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestWriteFileAtomic_EmptyPathReturnsError(t *testing.T) {
+	t.Parallel()
+
+	err := writeFileAtomic(" ", []byte("demo"))
+	require.Error(t, err)
+}
+
+func TestFileExists_EmptyPathIsFalse(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, fileExists(" "))
+}
+
 func TestSanitizePathPart_WhitespaceOnlyIsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -223,4 +236,10 @@ func TestBuildContextText_EmptyReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	require.Empty(t, BuildContextText(" \n "))
+}
+
+func TestContextErr_NilContextReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, contextErr(nil))
 }

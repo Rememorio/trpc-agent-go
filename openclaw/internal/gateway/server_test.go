@@ -654,6 +654,27 @@ func TestServerInjectedContextMessages_EmptyAppNameSkipsMemoryFiles(t *testing.T
 	require.Empty(t, msgs)
 }
 
+func TestServerInjectedContextMessages_EmptyUserIDSkipsMemoryFiles(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	memoryStore, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	srv := &Server{
+		appName:         "demo-app",
+		memoryFileStore: memoryStore,
+	}
+
+	msgs := srv.injectedContextMessages(
+		context.Background(),
+		" ",
+		"telegram:dm:u1",
+	)
+	require.Empty(t, msgs)
+}
+
 func TestDefaultSessionID_MissingFromForDM(t *testing.T) {
 	t.Parallel()
 	_, err := DefaultSessionID(InboundMessage{

@@ -46,6 +46,30 @@ func TestResolveAgentPrompts_UsesCurrentWorkingDirectory(t *testing.T) {
 	require.Equal(t, "root doc\n\ninline", prompts.Instruction)
 }
 
+func TestResolveAgentPrompts_GetwdError(t *testing.T) {
+	root := t.TempDir()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	require.NoError(t, os.RemoveAll(root))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chdir(cwd))
+	})
+
+	_, err = resolveAgentPrompts(runOptions{})
+	require.Error(t, err)
+}
+
+func TestResolveAgentPromptsForDir_ProjectDocsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveAgentPromptsForDir(runOptions{
+		AgentInstruction: "inline",
+	}, " ")
+	require.Error(t, err)
+}
+
 func TestResolveAgentPrompts_MergesInlineFilesAndDir(t *testing.T) {
 	t.Parallel()
 

@@ -2936,6 +2936,28 @@ func TestInProcGatewayClient_SetMemoryFileStore_NilReceiverIsNoop(t *testing.T) 
 	client.SetMemoryFileStore(nil)
 }
 
+func TestInProcGatewayClient_ForgetUser_DeleteMemoryFilesError(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(srv, appName, nil, nil, "")
+	c.SetMemoryFileStore(store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = c.ForgetUser(ctx, "telegram", "u1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: delete user memory files")
+}
+
 func TestInProcGatewayClient_ScheduledJobs(t *testing.T) {
 	t.Parallel()
 

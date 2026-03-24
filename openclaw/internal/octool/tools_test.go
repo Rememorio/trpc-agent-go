@@ -130,6 +130,43 @@ func TestExecTool_UsesMemoryFileEnvFromContext(t *testing.T) {
 	require.FileExists(t, path)
 }
 
+func TestMemoryFileEnvFromContext_EmptyScopeReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(
+			sessionpkg.NewSession("", "u1", "telegram:dm:u1:s1"),
+		),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	require.Nil(t, memoryFileEnvFromContext(ctx, store))
+}
+
+func TestMemoryFileEnvFromContext_EnsureMemoryErrorReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	rootFile := filepath.Join(t.TempDir(), "memory-root")
+	require.NoError(t, os.WriteFile(rootFile, []byte("x"), 0o600))
+
+	root, err := memoryfile.NewStore(rootFile)
+	require.NoError(t, err)
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(
+			sessionpkg.NewSession("app", "u1", "telegram:dm:u1:s1"),
+		),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	require.Nil(t, memoryFileEnvFromContext(ctx, root))
+}
+
 func TestAnnotateExecResult_ParsesMediaMarkers(t *testing.T) {
 	t.Parallel()
 

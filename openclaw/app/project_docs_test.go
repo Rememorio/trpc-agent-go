@@ -12,6 +12,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -82,6 +83,13 @@ func TestResolveProjectDocs_NoDocsReturnsEmpty(t *testing.T) {
 	require.Empty(t, text)
 }
 
+func TestResolveProjectDocs_EmptyCwdReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveProjectDocs(" ")
+	require.Error(t, err)
+}
+
 func TestReadTrimmedTextFile_HonorsLimit(t *testing.T) {
 	t.Parallel()
 
@@ -91,4 +99,34 @@ func TestReadTrimmedTextFile_HonorsLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "abcd", text)
 	require.Equal(t, 4, n)
+}
+
+func TestReadTrimmedTextFile_MissingFileReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := readTrimmedTextFile("/no/such/agents.md", projectDocMaxBytes)
+	require.Error(t, err)
+}
+
+func TestDiscoverProjectDocPaths_SkipsDirectories(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o700))
+
+	cwd := filepath.Join(root, "pkg")
+	require.NoError(t, os.MkdirAll(cwd, 0o700))
+	require.NoError(
+		t,
+		os.MkdirAll(filepath.Join(root, projectDocFileName), 0o700),
+	)
+	writeTempPromptFile(t, cwd, projectDocOverrideName, "override")
+
+	paths, err := discoverProjectDocPaths(cwd)
+	require.NoError(t, err)
+	require.Len(t, paths, 1)
+	require.True(
+		t,
+		strings.HasSuffix(paths[0], filepath.Join("pkg", projectDocOverrideName)),
+	)
 }
