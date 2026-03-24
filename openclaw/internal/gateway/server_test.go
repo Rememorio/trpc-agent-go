@@ -479,6 +479,8 @@ func TestServerInjectedContextMessages_IncludePersonaAndUploads(t *testing.T) {
 func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 	t.Parallel()
 
+	const appName = "demo-app"
+
 	stateDir := t.TempDir()
 	uploadStore, err := uploads.NewStore(stateDir)
 	require.NoError(t, err)
@@ -516,7 +518,7 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 
 	path, err := memoryStore.EnsureMemory(
 		context.Background(),
-		"telegram",
+		appName,
 		"u1",
 	)
 	require.NoError(t, err)
@@ -530,6 +532,7 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 	)
 
 	srv := &Server{
+		appName:         appName,
 		uploads:         uploadStore,
 		personaStore:    personaStore,
 		memoryFileStore: memoryStore,
@@ -3291,12 +3294,14 @@ func TestNewOptions_ExplicitStreamAndStores(t *testing.T) {
 	transcriber := &stubAudioTranscriber{}
 
 	o := newOptions(
+		WithAppName(" demo-app "),
 		WithMessagesStreamPath(" /custom/stream "),
 		WithPersonaStore(store),
 		WithMemoryFileStore(memoryStore),
 		WithAudioTranscriber(transcriber),
 	)
 
+	require.Equal(t, "demo-app", o.appName)
 	require.Equal(t, " /custom/stream ", o.streamPath)
 	require.Same(t, store, o.personaStore)
 	require.Same(t, memoryStore, o.memoryFileStore)

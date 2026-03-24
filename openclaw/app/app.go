@@ -676,6 +676,7 @@ func NewRuntime(
 		opts.RequireMention,
 		mentionPatterns,
 	)
+	gwOpts = append(gwOpts, gateway.WithAppName(opts.AppName))
 	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
 	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
 	gwOpts = append(gwOpts, gateway.WithMemoryFileStore(stores.memoryFiles))
@@ -1018,6 +1019,7 @@ func run(ctx context.Context, args []string) error {
 		opts.RequireMention,
 		mentionPatterns,
 	)
+	gwOpts = append(gwOpts, gateway.WithAppName(opts.AppName))
 	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
 	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
 	gwOpts = append(gwOpts, gateway.WithMemoryFileStore(stores.memoryFiles))

@@ -136,6 +136,7 @@ type Server struct {
 	runner  runner.Runner
 	managed runner.ManagedRunner
 
+	appName       string
 	sessionIDFunc SessionIDFunc
 
 	allowUsers      map[string]struct{}
@@ -225,6 +226,7 @@ func New(r runner.Runner, opts ...Option) (*Server, error) {
 		partFetcher:      fetcher,
 		runner:           r,
 		managed:          managed,
+		appName:          strings.TrimSpace(options.appName),
 		sessionIDFunc:    sessionIDFunc,
 		allowUsers:       options.allowUsers,
 		requireMention:   options.requireMention,

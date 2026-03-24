@@ -31,7 +31,7 @@ func (s *Server) injectedContextMessages(
 	); msg != nil {
 		out = append(out, *msg)
 	}
-	out = append(out, s.memoryFileContextMessages(userID, sessionID)...)
+	out = append(out, s.memoryFileContextMessages(userID)...)
 	out = append(out, s.uploadContextMessages(userID, sessionID)...)
 	return out
 }
@@ -75,18 +75,18 @@ func buildPersonaContextText(preset persona.Preset) string {
 	return strings.Join(lines, "\n")
 }
 
-func (s *Server) memoryFileContextMessages(
-	userID string,
-	sessionID string,
-) []model.Message {
+func (s *Server) memoryFileContextMessages(userID string) []model.Message {
 	if s == nil || s.memoryFileStore == nil {
 		return nil
 	}
 
-	channel := channelFromSessionID(sessionID)
+	appName := strings.TrimSpace(s.appName)
+	if appName == "" {
+		return nil
+	}
 	path, err := s.memoryFileStore.EnsureMemory(
 		context.Background(),
-		channel,
+		appName,
 		userID,
 	)
 	if err != nil {

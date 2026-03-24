@@ -39,6 +39,7 @@ type options struct {
 	allowPrivatePartURLs bool
 	allowedPartPatterns  []string
 	audioTranscriber     audioTranscriber
+	appName              string
 
 	sessionIDFunc SessionIDFunc
 
@@ -216,6 +217,13 @@ func WithPersonaStore(store *persona.Store) Option {
 func WithMemoryFileStore(store *memoryfile.Store) Option {
 	return func(o *options) {
 		o.memoryFileStore = store
+	}
+}
+
+// WithAppName sets the app name used by file-based memory injection.
+func WithAppName(appName string) Option {
+	return func(o *options) {
+		o.appName = strings.TrimSpace(appName)
 	}
 }
 

@@ -124,7 +124,7 @@ func TestExecTool_UsesMemoryFileEnvFromContext(t *testing.T) {
 	res := out.(execResult)
 	require.Equal(t, "exited", res.Status)
 
-	path, err := store.MemoryPath("telegram", "u1")
+	path, err := store.MemoryPath("app", "u1")
 	require.NoError(t, err)
 	require.Contains(t, res.Output, path)
 	require.FileExists(t, path)

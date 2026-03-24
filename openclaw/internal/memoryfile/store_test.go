@@ -30,6 +30,8 @@ func TestDefaultRootUsesMemoryDir(t *testing.T) {
 func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	t.Parallel()
 
+	const appName = "demo-app"
+
 	root, err := DefaultRoot(t.TempDir())
 	require.NoError(t, err)
 
@@ -38,7 +40,7 @@ func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 
 	path, err := store.EnsureMemory(
 		context.Background(),
-		"telegram",
+		appName,
 		"u1",
 	)
 	require.NoError(t, err)
@@ -52,7 +54,7 @@ func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	require.Contains(t, text, "## Preferences")
 	require.Equal(
 		t,
-		filepath.Join(root, "telegram", "u1", memoryFileName),
+		filepath.Join(root, appName, "u1", memoryFileName),
 		path,
 	)
 }
@@ -60,13 +62,15 @@ func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 func TestStoreReadFileHonorsLimit(t *testing.T) {
 	t.Parallel()
 
+	const appName = "demo-app"
+
 	root, err := DefaultRoot(t.TempDir())
 	require.NoError(t, err)
 
 	store, err := NewStore(root)
 	require.NoError(t, err)
 
-	path, err := store.MemoryPath("telegram", "u1")
+	path, err := store.MemoryPath(appName, "u1")
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), dirPerm))
 	require.NoError(
@@ -82,6 +86,8 @@ func TestStoreReadFileHonorsLimit(t *testing.T) {
 func TestStoreDeleteUser(t *testing.T) {
 	t.Parallel()
 
+	const appName = "demo-app"
+
 	root, err := DefaultRoot(t.TempDir())
 	require.NoError(t, err)
 
@@ -90,14 +96,14 @@ func TestStoreDeleteUser(t *testing.T) {
 
 	path, err := store.EnsureMemory(
 		context.Background(),
-		"telegram",
+		appName,
 		"u1",
 	)
 	require.NoError(t, err)
 
 	require.NoError(
 		t,
-		store.DeleteUser(context.Background(), "telegram", "u1"),
+		store.DeleteUser(context.Background(), appName, "u1"),
 	)
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)

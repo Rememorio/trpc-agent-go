@@ -2398,7 +2398,7 @@ func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
 	require.NoError(t, err)
 	memoryPath, err := memoryStore.EnsureMemory(
 		ctx,
-		channelName,
+		appName,
 		userID,
 	)
 	require.NoError(t, err)

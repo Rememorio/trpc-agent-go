@@ -712,15 +712,15 @@ func memoryFileEnvFromContext(
 		return nil
 	}
 
-	channel := uploadChannelFromSessionID(inv.Session.ID)
+	appName := strings.TrimSpace(inv.Session.AppName)
 	userID := strings.TrimSpace(inv.Session.UserID)
-	if channel == "" || userID == "" {
+	if appName == "" || userID == "" {
 		return nil
 	}
 
 	path, err := store.EnsureMemory(
 		context.Background(),
-		channel,
+		appName,
 		userID,
 	)
 	if err != nil || strings.TrimSpace(path) == "" {

@@ -50,20 +50,20 @@ func NewStore(root string) (*Store, error) {
 	return &Store{root: filepath.Clean(root)}, nil
 }
 
-func (s *Store) MemoryDir(channel string, userID string) (string, error) {
+func (s *Store) MemoryDir(appName string, userID string) (string, error) {
 	if s == nil {
 		return "", errors.New("memoryfile: nil store")
 	}
-	channel = sanitizePathPart(channel)
+	app := sanitizePathPart(appName)
 	key := sanitizePathPart(userID)
-	if channel == "" || key == "" {
-		return "", errors.New("memoryfile: empty user scope")
+	if app == "" || key == "" {
+		return "", errors.New("memoryfile: empty app/user scope")
 	}
-	return filepath.Join(s.root, channel, key), nil
+	return filepath.Join(s.root, app, key), nil
 }
 
-func (s *Store) MemoryPath(channel string, userID string) (string, error) {
-	dir, err := s.MemoryDir(channel, userID)
+func (s *Store) MemoryPath(appName string, userID string) (string, error) {
+	dir, err := s.MemoryDir(appName, userID)
 	if err != nil {
 		return "", err
 	}
@@ -72,13 +72,13 @@ func (s *Store) MemoryPath(channel string, userID string) (string, error) {
 
 func (s *Store) EnsureMemory(
 	ctx context.Context,
-	channel string,
+	appName string,
 	userID string,
 ) (string, error) {
 	if err := contextErr(ctx); err != nil {
 		return "", err
 	}
-	path, err := s.MemoryPath(channel, userID)
+	path, err := s.MemoryPath(appName, userID)
 	if err != nil {
 		return "", err
 	}
@@ -117,7 +117,7 @@ func (s *Store) ReadFile(path string, maxBytes int) (string, error) {
 
 func (s *Store) DeleteUser(
 	ctx context.Context,
-	channel string,
+	appName string,
 	userID string,
 ) error {
 	if err := contextErr(ctx); err != nil {
@@ -126,7 +126,7 @@ func (s *Store) DeleteUser(
 	if s == nil {
 		return nil
 	}
-	dir, err := s.MemoryDir(channel, userID)
+	dir, err := s.MemoryDir(appName, userID)
 	if err != nil {
 		return err
 	}
