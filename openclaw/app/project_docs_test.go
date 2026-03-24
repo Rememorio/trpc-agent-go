@@ -67,3 +67,28 @@ func TestResolveAgentPromptsForDir_PrependsProjectDocs(t *testing.T) {
 		prompts.Instruction,
 	)
 }
+
+func TestResolveProjectDocs_NoDocsReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o700))
+
+	cwd := filepath.Join(root, "pkg")
+	require.NoError(t, os.MkdirAll(cwd, 0o700))
+
+	text, err := resolveProjectDocs(cwd)
+	require.NoError(t, err)
+	require.Empty(t, text)
+}
+
+func TestReadTrimmedTextFile_HonorsLimit(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempPromptFile(t, t.TempDir(), projectDocFileName, "abcdef")
+
+	text, n, err := readTrimmedTextFile(path, 4)
+	require.NoError(t, err)
+	require.Equal(t, "abcd", text)
+	require.Equal(t, 4, n)
+}

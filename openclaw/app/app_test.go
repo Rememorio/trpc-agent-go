@@ -248,6 +248,40 @@ func TestBuildOpenClawTools_ExposesMemoryFileEnvForFileBackend(t *testing.T) {
 	require.Contains(t, decl.Description, "OPENCLAW_MEMORY_FILE")
 }
 
+func TestNewRuntimeStores_CreatesAllStores(t *testing.T) {
+	t.Parallel()
+
+	stores, err := newRuntimeStores(t.TempDir())
+	require.NoError(t, err)
+	require.NotNil(t, stores.uploads)
+	require.NotNil(t, stores.personas)
+	require.NotNil(t, stores.memoryFiles)
+}
+
+func TestNewRuntimeStores_EmptyStateDirReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := newRuntimeStores(" ")
+	require.Error(t, err)
+}
+
+func TestRun_HTTPListenErrorPath_WithFileMemoryBackend(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+
+	err := run(ctx, []string{
+		"-http-addr", "127.0.0.1:-1",
+		"-mode", modeMock,
+		"-state-dir", t.TempDir(),
+		"-skills-root", t.TempDir(),
+		"-memory-backend", memoryBackendFile,
+		"-enable-openclaw-tools",
+	})
+	require.NoError(t, err)
+}
+
 func TestNewRuntime_A2AConfigErrorExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -2893,6 +2927,13 @@ func TestInProcGatewayClient_ForgetUser_ValidationErrors(t *testing.T) {
 
 	c4 := newInProcGatewayClient(srv, appName, nil, nil, debugFile)
 	require.NoError(t, c4.ForgetUser(ctx, "telegram", "u1"))
+}
+
+func TestInProcGatewayClient_SetMemoryFileStore_NilReceiverIsNoop(t *testing.T) {
+	t.Parallel()
+
+	var client *inProcGatewayClient
+	client.SetMemoryFileStore(nil)
 }
 
 func TestInProcGatewayClient_ScheduledJobs(t *testing.T) {

@@ -27,6 +27,25 @@ func TestResolveAgentPrompts_DefaultInstruction(t *testing.T) {
 	require.Empty(t, prompts.SystemPrompt)
 }
 
+func TestResolveAgentPrompts_UsesCurrentWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o700))
+	writeTempPromptFile(t, root, projectDocFileName, "root doc")
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chdir(cwd))
+	})
+
+	prompts, err := resolveAgentPrompts(runOptions{
+		AgentInstruction: "inline",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "root doc\n\ninline", prompts.Instruction)
+}
+
 func TestResolveAgentPrompts_MergesInlineFilesAndDir(t *testing.T) {
 	t.Parallel()
 

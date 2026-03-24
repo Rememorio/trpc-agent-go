@@ -196,6 +196,17 @@ func TestNewMemoryService_FileDisablesStructuredMemory(t *testing.T) {
 	require.Nil(t, svc)
 }
 
+func TestNewDisabledMemoryBackend_ReturnsNilService(t *testing.T) {
+	t.Parallel()
+
+	svc, err := newDisabledMemoryBackend(
+		registry.MemoryDeps{},
+		registry.MemoryBackendSpec{},
+	)
+	require.NoError(t, err)
+	require.Nil(t, svc)
+}
+
 func TestNewMemoryService_OffIsUnsupported(t *testing.T) {
 	t.Parallel()
 

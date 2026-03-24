@@ -28,6 +28,20 @@ func TestDefaultRootUsesMemoryDir(t *testing.T) {
 	require.Equal(t, filepath.Join(stateDir, rootDirName), root)
 }
 
+func TestDefaultRoot_EmptyStateDirReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := DefaultRoot(" ")
+	require.Error(t, err)
+}
+
+func TestNewStore_EmptyRootReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewStore(" ")
+	require.Error(t, err)
+}
+
 func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	t.Parallel()
 
@@ -89,6 +103,14 @@ func TestStoreReadFileHonorsLimit(t *testing.T) {
 	require.Equal(t, "0123", text)
 }
 
+func TestStoreReadFile_NilStoreReturnsError(t *testing.T) {
+	t.Parallel()
+
+	var store *Store
+	_, err := store.ReadFile("/tmp/memory.md", 0)
+	require.Error(t, err)
+}
+
 func TestStoreDeleteUser(t *testing.T) {
 	t.Parallel()
 
@@ -113,6 +135,16 @@ func TestStoreDeleteUser(t *testing.T) {
 	)
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestStoreDeleteUser_NilStoreIsNoop(t *testing.T) {
+	t.Parallel()
+
+	var store *Store
+	require.NoError(
+		t,
+		store.DeleteUser(context.Background(), "demo-app", "u1"),
+	)
 }
 
 func TestMemoryPathUsesLosslessScopeEncoding(t *testing.T) {
@@ -142,6 +174,36 @@ func TestMemoryPathUsesLosslessScopeEncoding(t *testing.T) {
 	)
 }
 
+func TestMemoryDir_EmptyScopeReturnsError(t *testing.T) {
+	t.Parallel()
+
+	root, err := DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := NewStore(root)
+	require.NoError(t, err)
+
+	_, err = store.MemoryDir(" ", "u1")
+	require.Error(t, err)
+
+	_, err = store.MemoryDir("demo-app", " ")
+	require.Error(t, err)
+}
+
+func TestEnsureMemory_CanceledContextReturnsError(t *testing.T) {
+	t.Parallel()
+
+	root, err := DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := NewStore(root)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = store.EnsureMemory(ctx, "demo-app", "u1")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestSanitizePathPart_WhitespaceOnlyIsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -155,4 +217,10 @@ func TestBuildContextText(t *testing.T) {
 	require.Contains(t, text, "user-owned file MEMORY.md")
 	require.Contains(t, text, "not hidden internal state")
 	require.Contains(t, text, "prefers concise replies")
+}
+
+func TestBuildContextText_EmptyReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, BuildContextText(" \n "))
 }
