@@ -21,6 +21,7 @@ import (
 const personaContextHeader = "Active preset persona for this chat:"
 
 func (s *Server) injectedContextMessages(
+	ctx context.Context,
 	userID string,
 	sessionID string,
 ) []model.Message {
@@ -31,7 +32,7 @@ func (s *Server) injectedContextMessages(
 	); msg != nil {
 		out = append(out, *msg)
 	}
-	out = append(out, s.memoryFileContextMessages(userID)...)
+	out = append(out, s.memoryFileContextMessages(ctx, userID)...)
 	out = append(out, s.uploadContextMessages(userID, sessionID)...)
 	return out
 }
@@ -75,7 +76,10 @@ func buildPersonaContextText(preset persona.Preset) string {
 	return strings.Join(lines, "\n")
 }
 
-func (s *Server) memoryFileContextMessages(userID string) []model.Message {
+func (s *Server) memoryFileContextMessages(
+	ctx context.Context,
+	userID string,
+) []model.Message {
 	if s == nil || s.memoryFileStore == nil {
 		return nil
 	}
@@ -85,7 +89,7 @@ func (s *Server) memoryFileContextMessages(userID string) []model.Message {
 		return nil
 	}
 	path, err := s.memoryFileStore.EnsureMemory(
-		context.Background(),
+		ctx,
 		appName,
 		userID,
 	)

@@ -593,11 +593,15 @@ func NewRuntime(
 		}
 	}
 
+	fileMemoryStore := fileMemoryStoreForBackend(
+		opts.MemoryBackend,
+		stores.memoryFiles,
+	)
 	openClawTools := buildOpenClawTools(
 		opts.EnableOpenClawTools,
 		resolvedStateDir,
 		stores.uploads,
-		stores.memoryFiles,
+		fileMemoryStore,
 	)
 	extraTools := memoryServiceTools(memSvc)
 	extraTools = append(extraTools, openClawTools.tools...)
@@ -692,7 +696,12 @@ func NewRuntime(
 	gwOpts = append(gwOpts, gateway.WithAppName(opts.AppName))
 	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
 	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
-	gwOpts = append(gwOpts, gateway.WithMemoryFileStore(stores.memoryFiles))
+	if fileMemoryStore != nil {
+		gwOpts = append(
+			gwOpts,
+			gateway.WithMemoryFileStore(fileMemoryStore),
+		)
+	}
 	if debugRec != nil {
 		gwOpts = append(gwOpts, gateway.WithDebugRecorder(debugRec))
 	}
@@ -739,7 +748,7 @@ func NewRuntime(
 		stores.uploads,
 	)
 	gw.SetPersonaStore(stores.personas)
-	gw.SetMemoryFileStore(stores.memoryFiles)
+	gw.SetMemoryFileStore(fileMemoryStore)
 
 	if len(opts.Channels) > 0 {
 		extra, err := channelsFromRegistry(
@@ -973,11 +982,15 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 
+	fileMemoryStore := fileMemoryStoreForBackend(
+		opts.MemoryBackend,
+		stores.memoryFiles,
+	)
 	openClawTools := buildOpenClawTools(
 		opts.EnableOpenClawTools,
 		resolvedStateDir,
 		stores.uploads,
-		stores.memoryFiles,
+		fileMemoryStore,
 	)
 	extraTools := memoryServiceTools(memSvc)
 	extraTools = append(extraTools, openClawTools.tools...)
@@ -1071,7 +1084,12 @@ func run(ctx context.Context, args []string) error {
 	gwOpts = append(gwOpts, gateway.WithAppName(opts.AppName))
 	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
 	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
-	gwOpts = append(gwOpts, gateway.WithMemoryFileStore(stores.memoryFiles))
+	if fileMemoryStore != nil {
+		gwOpts = append(
+			gwOpts,
+			gateway.WithMemoryFileStore(fileMemoryStore),
+		)
+	}
 	if debugRec != nil {
 		gwOpts = append(gwOpts, gateway.WithDebugRecorder(debugRec))
 	}
@@ -1104,7 +1122,7 @@ func run(ctx context.Context, args []string) error {
 		stores.uploads,
 	)
 	gw.SetPersonaStore(stores.personas)
-	gw.SetMemoryFileStore(stores.memoryFiles)
+	gw.SetMemoryFileStore(fileMemoryStore)
 
 	a2aSurface, err := newA2ASurface(ag, r, opts)
 	if err != nil {
@@ -1341,6 +1359,16 @@ func memoryServiceTools(svc memory.Service) []tool.Tool {
 		return nil
 	}
 	return append([]tool.Tool(nil), svc.Tools()...)
+}
+
+func fileMemoryStoreForBackend(
+	backend string,
+	store *memoryfile.Store,
+) *memoryfile.Store {
+	if resolveMemoryBackendType(backend) != memoryBackendFile {
+		return nil
+	}
+	return store
 }
 
 func appendMemoryServiceRunnerOption(
@@ -2077,14 +2105,18 @@ func buildOpenClawTools(
 		}
 	}
 
-	tools := []tool.Tool{
-		octool.NewReadDocumentTool(uploadStore),
-		octool.NewReadSpreadsheetTool(uploadStore),
-		octool.NewExecCommandToolWithMemoryFileStore(
+	execTool := octool.NewExecCommandTool(mgr, uploadStore)
+	if memoryFileStore != nil {
+		execTool = octool.NewExecCommandToolWithMemoryFileStore(
 			mgr,
 			uploadStore,
 			memoryFileStore,
-		),
+		)
+	}
+	tools := []tool.Tool{
+		octool.NewReadDocumentTool(uploadStore),
+		octool.NewReadSpreadsheetTool(uploadStore),
+		execTool,
 		octool.NewWriteStdinTool(mgr),
 		octool.NewKillSessionTool(mgr),
 		outbound.NewTool(router),

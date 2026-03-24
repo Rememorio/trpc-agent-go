@@ -11,6 +11,7 @@ package memoryfile
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,7 +55,12 @@ func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	require.Contains(t, text, "## Preferences")
 	require.Equal(
 		t,
-		filepath.Join(root, appName, "u1", memoryFileName),
+		filepath.Join(
+			root,
+			base64.RawURLEncoding.EncodeToString([]byte(appName)),
+			base64.RawURLEncoding.EncodeToString([]byte("u1")),
+			memoryFileName,
+		),
 		path,
 	)
 }
@@ -107,6 +113,33 @@ func TestStoreDeleteUser(t *testing.T) {
 	)
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestMemoryPathUsesLosslessScopeEncoding(t *testing.T) {
+	t.Parallel()
+
+	root, err := DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+
+	store, err := NewStore(root)
+	require.NoError(t, err)
+
+	pathOne, err := store.MemoryPath("Demo", "User_A")
+	require.NoError(t, err)
+	pathTwo, err := store.MemoryPath("demo", "user-a")
+	require.NoError(t, err)
+	require.NotEqual(t, pathOne, pathTwo)
+
+	require.Contains(
+		t,
+		pathOne,
+		base64.RawURLEncoding.EncodeToString([]byte("Demo")),
+	)
+	require.Contains(
+		t,
+		pathOne,
+		base64.RawURLEncoding.EncodeToString([]byte("User_A")),
+	)
 }
 
 func TestBuildContextText(t *testing.T) {

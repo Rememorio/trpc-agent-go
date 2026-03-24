@@ -534,6 +534,7 @@ func (s *Server) resolveRunOptions(
 	run preparedMessageRun,
 ) (context.Context, []agent.RunOption) {
 	runOpts := s.runOptions(
+		ctx,
 		run.userID,
 		run.sessionID,
 		run.requestID,
@@ -564,6 +565,7 @@ func (s *Server) resolveRunOptions(
 }
 
 func (s *Server) runOptions(
+	ctx context.Context,
 	userID string,
 	sessionID string,
 	requestID string,
@@ -573,6 +575,7 @@ func (s *Server) runOptions(
 		runOpts = append(runOpts, agent.WithRequestID(requestID))
 	}
 	if messages := s.injectedContextMessages(
+		ctx,
 		userID,
 		sessionID,
 	); len(messages) > 0 {

@@ -129,37 +129,9 @@ func NewExecCommandToolWithMemoryFileStore(
 func (t *execTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{
 		Name: toolExecCommand,
-		Description: "Execute a host shell command. Use this for " +
-			"general local shell work. Interactive commands can " +
-			"continue with write_stdin. When a chat upload is " +
-			"available, OPENCLAW_LAST_UPLOAD_PATH, " +
-			"OPENCLAW_LAST_UPLOAD_HOST_REF, " +
-			"OPENCLAW_LAST_UPLOAD_NAME, OPENCLAW_LAST_UPLOAD_MIME, " +
-			"kind-specific OPENCLAW_LAST_*_PATH vars, " +
-			"OPENCLAW_MEMORY_FILE, " +
-			"OPENCLAW_SESSION_UPLOADS_DIR, and " +
-			"OPENCLAW_RECENT_UPLOADS_JSON point to stable " +
-			"attachment metadata, memory-file paths, host refs, " +
-			"and host paths. " +
-			"Do not use this just to inspect a PDF or spreadsheet " +
-			"already in chat; prefer read_document or " +
-			"read_spreadsheet for that. " +
-			"OPENCLAW_MEMORY_FILE is a user-owned file, not " +
-			"hidden internal state. If the user asks what you " +
-			"remember or asks to inspect that file, read it and " +
-			"quote or summarize the relevant lines. If the user " +
-			"explicitly says 'remember this' or asks you to " +
-			"remember a durable fact, preference, or workflow " +
-			"rule, update OPENCLAW_MEMORY_FILE with a short " +
-			"bullet. Use OPENCLAW_MEMORY_FILE only for stable, " +
-			"cross-session facts, preferences, and working " +
-			"style. Write derived " +
-			"outputs under OPENCLAW_SESSION_UPLOADS_DIR when " +
-			"you plan to send them back to the user. " +
-			"If the command prints lines like " +
-			"`MEDIA: /path/to/file` or " +
-			"`MEDIA_DIR: /path/to/dir`, those paths are " +
-			"returned in structured media_files/media_dirs fields.",
+		Description: execToolDescription(
+			t != nil && t.memoryStore != nil,
+		),
 		InputSchema: &tool.Schema{
 			Type:     "object",
 			Required: []string{"command"},
@@ -214,6 +186,51 @@ func (t *execTool) Declaration() *tool.Declaration {
 			},
 		},
 	}
+}
+
+func execToolDescription(hasMemoryFile bool) string {
+	parts := []string{
+		"Execute a host shell command. Use this for general local shell work.",
+		"Interactive commands can continue with write_stdin.",
+		"When a chat upload is available, OPENCLAW_LAST_UPLOAD_PATH, " +
+			"OPENCLAW_LAST_UPLOAD_HOST_REF, OPENCLAW_LAST_UPLOAD_NAME, " +
+			"OPENCLAW_LAST_UPLOAD_MIME, kind-specific " +
+			"OPENCLAW_LAST_*_PATH vars, OPENCLAW_SESSION_UPLOADS_DIR, " +
+			"and OPENCLAW_RECENT_UPLOADS_JSON point to stable " +
+			"attachment metadata, host refs, and host paths.",
+		"Do not use this just to inspect a PDF or spreadsheet already " +
+			"in chat; prefer read_document or read_spreadsheet for that.",
+	}
+	if hasMemoryFile {
+		parts[2] = "When a chat upload is available, " +
+			"OPENCLAW_LAST_UPLOAD_PATH, OPENCLAW_LAST_UPLOAD_HOST_REF, " +
+			"OPENCLAW_LAST_UPLOAD_NAME, OPENCLAW_LAST_UPLOAD_MIME, " +
+			"kind-specific OPENCLAW_LAST_*_PATH vars, " +
+			"OPENCLAW_MEMORY_FILE, OPENCLAW_SESSION_UPLOADS_DIR, and " +
+			"OPENCLAW_RECENT_UPLOADS_JSON point to stable attachment " +
+			"metadata, memory-file paths, host refs, and host paths."
+		parts = append(
+			parts,
+			"OPENCLAW_MEMORY_FILE is a user-owned file, not hidden "+
+				"internal state. If the user asks what you remember or "+
+				"asks to inspect that file, read it and quote or "+
+				"summarize the relevant lines.",
+			"If the user explicitly says 'remember this' or asks you to "+
+				"remember a durable fact, preference, or workflow rule, "+
+				"update OPENCLAW_MEMORY_FILE with a short bullet.",
+			"Use OPENCLAW_MEMORY_FILE only for stable, cross-session "+
+				"facts, preferences, and working style.",
+		)
+	}
+	parts = append(
+		parts,
+		"Write derived outputs under OPENCLAW_SESSION_UPLOADS_DIR when "+
+			"you plan to send them back to the user.",
+		"If the command prints lines like `MEDIA: /path/to/file` or "+
+			"`MEDIA_DIR: /path/to/dir`, those paths are returned in "+
+			"structured media_files/media_dirs fields.",
+	)
+	return strings.Join(parts, " ")
 }
 
 type execInput struct {

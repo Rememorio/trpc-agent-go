@@ -521,7 +521,7 @@ func TestServerInjectedContextMessages_IncludePersonaAndUploads(t *testing.T) {
 		uploads:      uploadStore,
 		personaStore: personaStore,
 	}
-	msgs := srv.injectedContextMessages("u1", sessionID)
+	msgs := srv.injectedContextMessages(context.Background(), "u1", sessionID)
 	require.Len(t, msgs, 2)
 	require.Contains(t, msgs[0].Content, personaContextHeader)
 	require.Contains(t, msgs[0].Content, persona.PresetGirlfriend)
@@ -583,6 +583,20 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 			0o600,
 		),
 	)
+	otherPath, err := memoryStore.EnsureMemory(
+		context.Background(),
+		"other-app",
+		"u1",
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		os.WriteFile(
+			otherPath,
+			[]byte("## Preferences\n\n- Use another app memory."),
+			0o600,
+		),
+	)
 
 	srv := &Server{
 		appName:         appName,
@@ -590,13 +604,33 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 		personaStore:    personaStore,
 		memoryFileStore: memoryStore,
 	}
-	msgs := srv.injectedContextMessages("u1", sessionID)
+	msgs := srv.injectedContextMessages(context.Background(), "u1", sessionID)
 	require.Len(t, msgs, 3)
 	require.Contains(t, msgs[0].Content, personaContextHeader)
 	require.Contains(t, msgs[1].Content, "user-owned file MEMORY.md")
 	require.Contains(t, msgs[1].Content, "not hidden internal state")
 	require.Contains(t, msgs[1].Content, "Keep replies concise")
+	require.NotContains(t, msgs[1].Content, "Use another app memory")
 	require.Contains(t, msgs[2].Content, recentUploadContextHeader)
+}
+
+func TestServerInjectedContextMessages_CanceledContextSkipsMemoryFiles(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	memoryStore, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	srv := &Server{
+		appName:         "demo-app",
+		memoryFileStore: memoryStore,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	msgs := srv.injectedContextMessages(ctx, "u1", "telegram:dm:u1")
+	require.Empty(t, msgs)
 }
 
 func TestDefaultSessionID_MissingFromForDM(t *testing.T) {

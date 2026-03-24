@@ -140,6 +140,20 @@ func joinSystemMessages(req *model.Request) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func findToolDeclaration(
+	tools []tool.Tool,
+	name string,
+) *tool.Declaration {
+	for _, item := range tools {
+		decl := item.Declaration()
+		if decl == nil || decl.Name != name {
+			continue
+		}
+		return decl
+	}
+	return nil
+}
+
 func TestRun_ParseErrorExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -190,6 +204,48 @@ func TestNewRuntime_MemoryBackendFile_DisablesStructuredMemory(
 	})
 	require.Nil(t, rt.memorySvc)
 	require.Nil(t, memoryServiceTools(nil))
+}
+
+func TestFileMemoryStoreForBackend_FileOnly(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	require.Same(
+		t,
+		store,
+		fileMemoryStoreForBackend(memoryBackendFile, store),
+	)
+	require.Nil(
+		t,
+		fileMemoryStoreForBackend(memoryBackendInMemory, store),
+	)
+}
+
+func TestBuildOpenClawTools_HidesMemoryFileEnvWithoutFileBackend(t *testing.T) {
+	t.Parallel()
+
+	bundle := buildOpenClawTools(true, t.TempDir(), nil, nil)
+	decl := findToolDeclaration(bundle.tools, "exec_command")
+	require.NotNil(t, decl)
+	require.NotContains(t, decl.Description, "OPENCLAW_MEMORY_FILE")
+}
+
+func TestBuildOpenClawTools_ExposesMemoryFileEnvForFileBackend(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	bundle := buildOpenClawTools(true, t.TempDir(), nil, store)
+	decl := findToolDeclaration(bundle.tools, "exec_command")
+	require.NotNil(t, decl)
+	require.Contains(t, decl.Description, "OPENCLAW_MEMORY_FILE")
 }
 
 func TestNewRuntime_A2AConfigErrorExitCode(t *testing.T) {

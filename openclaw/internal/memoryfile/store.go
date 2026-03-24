@@ -11,6 +11,7 @@ package memoryfile
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -155,31 +156,10 @@ func (s *Store) removeScopedDir(ctx context.Context, dir string) error {
 }
 
 func sanitizePathPart(raw string) string {
-	raw = strings.ToLower(strings.TrimSpace(raw))
-	if raw == "" {
+	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-
-	var b strings.Builder
-	lastDash := false
-	for _, r := range raw {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-			lastDash = false
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastDash = false
-		default:
-			if b.Len() == 0 || lastDash {
-				continue
-			}
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-
-	return strings.Trim(b.String(), "-")
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
 }
 
 func writeFileAtomic(path string, data []byte) error {
