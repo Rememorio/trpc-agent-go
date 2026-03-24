@@ -139,9 +139,10 @@ type Server struct {
 	appName       string
 	sessionIDFunc SessionIDFunc
 
-	allowUsers      map[string]struct{}
-	requireMention  bool
-	mentionPatterns []string
+	allowUsers        map[string]struct{}
+	requireMention    bool
+	mentionPatterns   []string
+	runOptionResolver RunOptionResolver
 
 	lanes *laneLocker
 
@@ -215,29 +216,30 @@ func New(r runner.Runner, opts ...Option) (*Server, error) {
 	}
 
 	s := &Server{
-		basePath:         options.basePath,
-		messagesPath:     messagesPath,
-		streamPath:       streamPath,
-		statusPath:       statusPath,
-		cancelPath:       cancelPath,
-		healthPath:       options.healthPath,
-		maxBodyBytes:     options.maxBodyBytes,
-		maxPartBytes:     options.maxPartBytes,
-		partFetcher:      fetcher,
-		runner:           r,
-		managed:          managed,
-		appName:          strings.TrimSpace(options.appName),
-		sessionIDFunc:    sessionIDFunc,
-		allowUsers:       options.allowUsers,
-		requireMention:   options.requireMention,
-		mentionPatterns:  options.mentionPatterns,
-		lanes:            newLaneLocker(),
-		canceled:         newCancelTracker(),
-		recorder:         options.recorder,
-		uploads:          options.uploads,
-		audioTranscriber: audioTranscriber,
-		personaStore:     options.personaStore,
-		memoryFileStore:  options.memoryFileStore,
+		basePath:          options.basePath,
+		messagesPath:      messagesPath,
+		streamPath:        streamPath,
+		statusPath:        statusPath,
+		cancelPath:        cancelPath,
+		healthPath:        options.healthPath,
+		maxBodyBytes:      options.maxBodyBytes,
+		maxPartBytes:      options.maxPartBytes,
+		partFetcher:       fetcher,
+		runner:            r,
+		managed:           managed,
+		appName:           strings.TrimSpace(options.appName),
+		sessionIDFunc:     sessionIDFunc,
+		allowUsers:        options.allowUsers,
+		requireMention:    options.requireMention,
+		mentionPatterns:   options.mentionPatterns,
+		runOptionResolver: options.runOptionResolver,
+		lanes:             newLaneLocker(),
+		canceled:          newCancelTracker(),
+		recorder:          options.recorder,
+		uploads:           options.uploads,
+		audioTranscriber:  audioTranscriber,
+		personaStore:      options.personaStore,
+		memoryFileStore:   options.memoryFileStore,
 	}
 
 	mux := http.NewServeMux()
@@ -456,23 +458,17 @@ func (s *Server) writeError(
 
 func (s *Server) run(
 	ctx context.Context,
-	userID string,
-	sessionID string,
-	requestID string,
-	msg model.Message,
+	run preparedMessageRun,
 ) (string, string, error) {
 	var (
 		reply    string
 		resolved string
 		runErr   error
 	)
-	s.lanes.withLock(sessionID, func() {
+	s.lanes.withLock(run.sessionID, func() {
 		reply, resolved, runErr = s.runLocked(
 			ctx,
-			userID,
-			sessionID,
-			requestID,
-			msg,
+			run,
 		)
 	})
 	return reply, resolved, runErr
@@ -480,10 +476,7 @@ func (s *Server) run(
 
 func (s *Server) runLocked(
 	ctx context.Context,
-	userID string,
-	sessionID string,
-	requestID string,
-	msg model.Message,
+	run preparedMessageRun,
 ) (string, string, error) {
 	trace := debugrecorder.TraceFromContext(ctx)
 
@@ -491,19 +484,20 @@ func (s *Server) runLocked(
 		_ = trace.Record(
 			debugrecorder.KindGatewayRun,
 			map[string]any{
-				"user_id":    userID,
-				"session_id": sessionID,
-				"request_id": requestID,
+				"user_id":    run.userID,
+				"session_id": run.sessionID,
+				"request_id": run.requestID,
 			},
 		)
 	}
 
+	ctx, runOpts := s.resolveRunOptions(ctx, run)
 	events, err := s.runner.Run(
 		ctx,
-		userID,
-		sessionID,
-		msg,
-		s.runOptions(userID, sessionID, requestID)...,
+		run.userID,
+		run.sessionID,
+		run.userMsg,
+		runOpts...,
 	)
 	if err != nil {
 		if trace != nil {
@@ -533,6 +527,40 @@ func (s *Server) runLocked(
 		return "", result.RequestID, errEmptyReplyValue
 	}
 	return result.Text, result.RequestID, nil
+}
+
+func (s *Server) resolveRunOptions(
+	ctx context.Context,
+	run preparedMessageRun,
+) (context.Context, []agent.RunOption) {
+	runOpts := s.runOptions(
+		run.userID,
+		run.sessionID,
+		run.requestID,
+	)
+	if s == nil || s.runOptionResolver == nil {
+		return ctx, runOpts
+	}
+
+	resolvedCtx, extra := s.runOptionResolver(
+		ctx,
+		RunOptionInput{
+			Inbound:   run.inbound,
+			UserID:    run.userID,
+			SessionID: run.sessionID,
+			RequestID: run.requestID,
+			Message:   run.userMsg,
+			Trace:     debugrecorder.TraceFromContext(ctx),
+		},
+	)
+	if resolvedCtx != nil {
+		ctx = resolvedCtx
+	}
+	if len(extra) == 0 {
+		return ctx, runOpts
+	}
+	runOpts = append(runOpts, extra...)
+	return ctx, runOpts
 }
 
 func (s *Server) runOptions(
