@@ -330,7 +330,10 @@ func (m *Model) handleStreamingResponse(
 	chatRequest api.ChatRequest,
 	responseChan chan<- *model.Response,
 ) {
-	var streamErr error
+	var (
+		streamErr     error
+		finalResponse *model.Response
+	)
 
 	err := m.client.Chat(ctx, &chatRequest, func(chunk api.ChatResponse) error {
 		if m.chatChunkCallback != nil {
@@ -340,6 +343,10 @@ func (m *Model) handleStreamingResponse(
 		response, err := convertChatResponse(chunk)
 		if err != nil {
 			return err
+		}
+		if response.Done {
+			finalResponse = response
+			return nil
 		}
 
 		// Emit partial response.
@@ -354,12 +361,23 @@ func (m *Model) handleStreamingResponse(
 
 	if err != nil {
 		streamErr = err
-		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, err)
 	}
 
-	// Call the stream complete callback.
+	// Call the stream complete callback before surfacing the terminal result.
 	if m.chatStreamCompleteCallback != nil {
 		m.chatStreamCompleteCallback(ctx, &chatRequest, streamErr)
+	}
+
+	if streamErr != nil {
+		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, streamErr)
+		return
+	}
+	if finalResponse == nil {
+		return
+	}
+	select {
+	case responseChan <- finalResponse:
+	case <-ctx.Done():
 	}
 }
 

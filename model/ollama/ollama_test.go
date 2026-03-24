@@ -587,14 +587,15 @@ func Test_HandleStreamingResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var chunkCalled, streamCompleteCalled bool
+	var chunkCalled bool
+	streamCompleteCalled := make(chan struct{})
 	m := New("gpt-oss:20b",
 		WithHost(srv.URL),
 		WithChatChunkCallback(func(ctx context.Context, req *api.ChatRequest, chunk *api.ChatResponse) {
 			chunkCalled = true
 		}),
 		WithChatStreamCompleteCallback(func(ctx context.Context, req *api.ChatRequest, err error) {
-			streamCompleteCalled = true
+			close(streamCompleteCalled)
 		}),
 	)
 
@@ -616,7 +617,12 @@ func Test_HandleStreamingResponse(t *testing.T) {
 	for resp := range ch {
 		if resp.Done {
 			final = resp
-			time.Sleep(time.Second)
+			select {
+			case <-streamCompleteCalled:
+				// Success.
+			default:
+				t.Fatal("stream complete callback must run before final response is emitted")
+			}
 			break
 		}
 		if resp.IsPartial {
@@ -628,7 +634,11 @@ func Test_HandleStreamingResponse(t *testing.T) {
 	assert.NotNil(t, final)
 	assert.True(t, final.Done)
 	assert.True(t, chunkCalled)
-	assert.True(t, streamCompleteCalled)
+	select {
+	case <-streamCompleteCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
 }
 
 // Test_HandleErrorResponse tests error response handling.

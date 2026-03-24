@@ -1105,17 +1105,24 @@ func TestModel_Callbacks(t *testing.T) {
 		responseChan, err := m.GenerateContent(ctx, request)
 		require.NoError(t, err, "failed to generate content: %v", err)
 
-		// Consume all responses
+		// Consume all responses and ensure the callback runs before
+		// the final response becomes visible to the caller.
 		for response := range responseChan {
-			if response.Done {
-				break
+			if !response.Done {
+				continue
 			}
+			select {
+			case <-callbackCalled:
+				// Success.
+			default:
+				require.Fail(t,
+					"stream complete callback must run before final response is emitted")
+			}
+			break
 		}
 
-		// Wait for callback with timeout
 		select {
 		case <-callbackCalled:
-			// Success - callback was called
 		case <-time.After(3 * time.Second):
 			require.Fail(t, "timeout waiting for stream complete callback")
 		}

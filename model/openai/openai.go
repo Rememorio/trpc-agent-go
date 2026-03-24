@@ -1271,10 +1271,10 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		}
 	}
 
-	m.emitStreamingFinalResponse(ctx, stream, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), emit)
-
-	// Call the stream complete callback after final response is emitted.
+	// Call the stream complete callback before the final response is emitted.
 	m.handleStreamCompleteCallback(ctx, chatRequest, acc, stream.Err())
+
+	m.emitStreamingFinalResponse(ctx, stream, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), emit)
 }
 
 // sanitizeChunkForAccumulator returns a defensive copy of the given chunk that

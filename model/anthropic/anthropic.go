@@ -478,9 +478,17 @@ func (m *Model) handleStreamingResponse(
 			return
 		}
 	}
+	streamErr := stream.Err()
+	if m.chatStreamCompleteCallback != nil {
+		var callbackAcc *anthropic.Message
+		if streamErr == nil {
+			callbackAcc = &acc
+		}
+		m.chatStreamCompleteCallback(ctx, &chatRequest, callbackAcc, streamErr)
+	}
 	// Propagate stream error.
-	if err := stream.Err(); err != nil {
-		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, err)
+	if streamErr != nil {
+		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, streamErr)
 		return
 	}
 	// Emit final response built from the accumulator.
@@ -488,14 +496,6 @@ func (m *Model) handleStreamingResponse(
 	select {
 	case responseChan <- finalResponse:
 	case <-ctx.Done():
-	}
-	// Call the stream complete callback after final response is sent.
-	if m.chatStreamCompleteCallback != nil {
-		var callbackAcc *anthropic.Message
-		if stream.Err() == nil {
-			callbackAcc = &acc
-		}
-		m.chatStreamCompleteCallback(ctx, &chatRequest, callbackAcc, stream.Err())
 	}
 }
 

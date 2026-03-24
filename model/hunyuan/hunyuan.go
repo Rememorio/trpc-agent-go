@@ -340,7 +340,10 @@ func (m *Model) handleStreamingResponse(
 	chatRequest *hunyuan.ChatCompletionNewParams,
 	responseChan chan<- *model.Response,
 ) {
-	var streamErr error
+	var (
+		streamErr     error
+		finalResponse *model.Response
+	)
 
 	err := m.client.ChatCompletionStream(ctx, chatRequest, func(chunk *hunyuan.ChatCompletionResponse) error {
 		if m.chatChunkCallback != nil {
@@ -352,6 +355,10 @@ func (m *Model) handleStreamingResponse(
 			return err
 		}
 		response.Model = m.name
+		if response.Done {
+			finalResponse = response
+			return nil
+		}
 
 		// Emit partial response.
 		select {
@@ -365,12 +372,23 @@ func (m *Model) handleStreamingResponse(
 
 	if err != nil {
 		streamErr = err
-		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, err)
 	}
 
-	// Call the stream complete callback.
+	// Call the stream complete callback before surfacing the terminal result.
 	if m.chatStreamCompleteCallback != nil {
 		m.chatStreamCompleteCallback(ctx, chatRequest, streamErr)
+	}
+
+	if streamErr != nil {
+		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, streamErr)
+		return
+	}
+	if finalResponse == nil {
+		return
+	}
+	select {
+	case responseChan <- finalResponse:
+	case <-ctx.Done():
 	}
 }
 

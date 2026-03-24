@@ -828,7 +828,8 @@ func Test_HandleStreamingResponse_EndToEnd_NoNetwork(t *testing.T) {
 		})}
 	}
 
-	var chunkCalled, streamCompleteCalled bool
+	var chunkCalled bool
+	streamCompleteCalled := make(chan struct{})
 	m := New(
 		"claude-test",
 		WithHTTPClientOptions(),
@@ -838,7 +839,7 @@ func Test_HandleStreamingResponse_EndToEnd_NoNetwork(t *testing.T) {
 		}),
 		WithChatStreamCompleteCallback(func(_ context.Context, _ *anthropic.MessageNewParams,
 			_ *anthropic.Message, _ error) {
-			streamCompleteCalled = true
+			close(streamCompleteCalled)
 		}),
 	)
 	req := &model.Request{
@@ -856,6 +857,12 @@ func Test_HandleStreamingResponse_EndToEnd_NoNetwork(t *testing.T) {
 	for resp := range ch {
 		if resp.Done {
 			final = resp
+			select {
+			case <-streamCompleteCalled:
+				// Success.
+			default:
+				t.Fatal("stream complete callback must run before final response is emitted")
+			}
 			break
 		}
 		if resp.IsPartial {
@@ -866,7 +873,11 @@ func Test_HandleStreamingResponse_EndToEnd_NoNetwork(t *testing.T) {
 	assert.NotNil(t, final)
 	assert.True(t, final.Done)
 	assert.True(t, chunkCalled)
-	assert.True(t, streamCompleteCalled)
+	select {
+	case <-streamCompleteCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
 }
 
 func Test_HTTPClientOptions_AndAnthropicClientOptions(t *testing.T) {

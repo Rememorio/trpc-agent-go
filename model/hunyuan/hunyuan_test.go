@@ -328,6 +328,104 @@ func TestGenerateContentStreamWithMockServer(t *testing.T) {
 	}
 }
 
+func TestChatStreamCompleteCallbackBeforeFinalResponse(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		require.True(t, ok)
+
+		chunks := []hunyuan.ChatCompletionResponse{
+			{
+				Id:      "stream-id-1",
+				Created: time.Now().Unix(),
+				Choices: []*hunyuan.ChatCompletionResponseChoice{
+					{
+						Index: 0,
+						Delta: &hunyuan.ChatCompletionResponseDelta{
+							Role:    "assistant",
+							Content: "Hello",
+						},
+					},
+				},
+			},
+			{
+				Id:      "stream-id-2",
+				Created: time.Now().Unix(),
+				Choices: []*hunyuan.ChatCompletionResponseChoice{
+					{
+						Index: 0,
+						Delta: &hunyuan.ChatCompletionResponseDelta{
+							Content: " world",
+						},
+						FinishReason: "stop",
+					},
+				},
+			},
+		}
+
+		for _, chunk := range chunks {
+			data, err := json.Marshal(chunk)
+			require.NoError(t, err)
+			_, err = fmt.Fprintf(w, "data: %s\n\n", string(data))
+			require.NoError(t, err)
+			flusher.Flush()
+		}
+
+		_, err := fmt.Fprint(w, "data: [DONE]\n\n")
+		require.NoError(t, err)
+		flusher.Flush()
+	}))
+	defer mockServer.Close()
+
+	streamCompleteCalled := make(chan struct{})
+	m := New("hunyuan-lite",
+		WithSecretId("test-secret-id"),
+		WithSecretKey("test-secret-key"),
+		WithBaseUrl(mockServer.URL),
+		WithHost("test-host"),
+		WithChatStreamCompleteCallback(func(ctx context.Context,
+			chatRequest *hunyuan.ChatCompletionNewParams, streamErr error) {
+			close(streamCompleteCalled)
+		}),
+	)
+
+	ctx := context.Background()
+	request := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("Hello"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(ctx, request)
+	require.NoError(t, err)
+
+	var sawFinal bool
+	for resp := range responseChan {
+		if !resp.Done {
+			continue
+		}
+		sawFinal = true
+		select {
+		case <-streamCompleteCalled:
+			// Success.
+		default:
+			t.Fatal("stream complete callback must run before final response is emitted")
+		}
+		break
+	}
+	assert.True(t, sawFinal)
+	select {
+	case <-streamCompleteCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
+}
+
 func TestConvertMessage(t *testing.T) {
 	msg := model.Message{
 		Role:    model.RoleUser,
