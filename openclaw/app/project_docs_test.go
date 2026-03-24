@@ -83,6 +83,44 @@ func TestResolveProjectDocs_NoDocsReturnsEmpty(t *testing.T) {
 	require.Empty(t, text)
 }
 
+func TestResolveProjectDocs_SkipsEmptyDocs(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o700))
+
+	cwd := filepath.Join(root, "pkg")
+	require.NoError(t, os.MkdirAll(cwd, 0o700))
+	writeTempPromptFile(t, root, projectDocFileName, " \n ")
+	writeTempPromptFile(t, cwd, projectDocOverrideName, "override")
+
+	text, err := resolveProjectDocs(cwd)
+	require.NoError(t, err)
+	require.Equal(t, "override", text)
+}
+
+func TestResolveProjectDocs_StopsAtMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o700))
+
+	cwd := filepath.Join(root, "pkg")
+	require.NoError(t, os.MkdirAll(cwd, 0o700))
+	writeTempPromptFile(
+		t,
+		root,
+		projectDocFileName,
+		strings.Repeat("a", projectDocMaxBytes),
+	)
+	writeTempPromptFile(t, cwd, projectDocOverrideName, "override")
+
+	text, err := resolveProjectDocs(cwd)
+	require.NoError(t, err)
+	require.Len(t, text, projectDocMaxBytes)
+	require.NotContains(t, text, "override")
+}
+
 func TestResolveProjectDocs_EmptyCwdReturnsError(t *testing.T) {
 	t.Parallel()
 

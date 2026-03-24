@@ -106,7 +106,11 @@ func (s *Store) ReadFile(path string, maxBytes int) (string, error) {
 	if s == nil {
 		return "", errors.New("memoryfile: nil store")
 	}
-	raw, err := os.ReadFile(strings.TrimSpace(path))
+	path, err := s.resolveFilePath(path)
+	if err != nil {
+		return "", err
+	}
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
@@ -114,6 +118,30 @@ func (s *Store) ReadFile(path string, maxBytes int) (string, error) {
 		raw = raw[:maxBytes]
 	}
 	return strings.TrimSpace(string(raw)), nil
+}
+
+func (s *Store) resolveFilePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("memoryfile: empty file path")
+	}
+	rootAbs, err := filepath.Abs(s.root)
+	if err != nil {
+		return "", fmt.Errorf("memoryfile: resolve root: %w", err)
+	}
+	pathAbs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("memoryfile: resolve file path: %w", err)
+	}
+	rel, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil {
+		return "", fmt.Errorf("memoryfile: relativize file path: %w", err)
+	}
+	parentPrefix := ".." + string(filepath.Separator)
+	if rel == ".." || strings.HasPrefix(rel, parentPrefix) {
+		return "", errors.New("memoryfile: path outside store root")
+	}
+	return pathAbs, nil
 }
 
 func (s *Store) DeleteUser(
