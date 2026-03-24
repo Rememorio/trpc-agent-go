@@ -7,13 +7,23 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package memorydocs
+package memoryfile
 
 import "strings"
 
-func DefaultMemoryTemplate() string {
+func DefaultTemplate() string {
 	return strings.Join([]string{
 		"# Memory",
+		"",
+		"This is a user-owned file for durable memory.",
+		"It is user-visible, not hidden internal state.",
+		"If the user asks what is remembered here or asks to " +
+			"inspect this file, the agent may quote or summarize " +
+			"the relevant parts.",
+		"If the user explicitly says \"remember this\" or asks " +
+			"the agent to remember a durable preference, fact, " +
+			"or workflow rule, update this file with a short " +
+			"bullet.",
 		"",
 		"This file stores stable, low-volume memory about the user.",
 		"",
@@ -30,9 +40,17 @@ func DefaultMemoryTemplate() string {
 		"",
 		"## Long-term facts",
 		"",
+		"Use for stable facts such as the user's name or role.",
+		"",
 		"## Preferences",
 		"",
+		"Use for durable tone, nickname, format, or persona " +
+			"preferences.",
+		"",
 		"## Repeated working style",
+		"",
+		"Use for recurring workflow rules such as git, PR, or " +
+			"review habits.",
 		"",
 	}, "\n")
 }

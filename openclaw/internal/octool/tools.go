@@ -23,7 +23,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 )
 
@@ -92,9 +92,9 @@ type execUploadMeta struct {
 }
 
 type execTool struct {
-	mgr        *Manager
-	uploads    *uploads.Store
-	memoryDocs *memorydocs.Store
+	mgr         *Manager
+	uploads     *uploads.Store
+	memoryStore *memoryfile.Store
 }
 
 // NewExecCommandTool creates the canonical host command tool.
@@ -112,17 +112,17 @@ func NewExecCommandTool(
 	}
 }
 
-// NewExecCommandToolWithMemoryDocs creates the canonical host command tool
-// with file-based memory-doc environment injection.
-func NewExecCommandToolWithMemoryDocs(
+// NewExecCommandToolWithMemoryFileStore creates the canonical host command
+// tool with file-based memory environment injection.
+func NewExecCommandToolWithMemoryFileStore(
 	mgr *Manager,
 	uploadStore *uploads.Store,
-	memoryDocStore *memorydocs.Store,
+	memoryStore *memoryfile.Store,
 ) tool.Tool {
 	return &execTool{
-		mgr:        mgr,
-		uploads:    uploadStore,
-		memoryDocs: memoryDocStore,
+		mgr:         mgr,
+		uploads:     uploadStore,
+		memoryStore: memoryStore,
 	}
 }
 
@@ -139,14 +139,21 @@ func (t *execTool) Declaration() *tool.Declaration {
 			"OPENCLAW_MEMORY_FILE, " +
 			"OPENCLAW_SESSION_UPLOADS_DIR, and " +
 			"OPENCLAW_RECENT_UPLOADS_JSON point to stable " +
-			"attachment metadata, memory-doc paths, host refs, " +
+			"attachment metadata, memory-file paths, host refs, " +
 			"and host paths. " +
 			"Do not use this just to inspect a PDF or spreadsheet " +
 			"already in chat; prefer read_document or " +
 			"read_spreadsheet for that. " +
-			"Use OPENCLAW_MEMORY_FILE only for stable, " +
-			"cross-session facts, preferences, and working style. " +
-			"Write derived " +
+			"OPENCLAW_MEMORY_FILE is a user-owned file, not " +
+			"hidden internal state. If the user asks what you " +
+			"remember or asks to inspect that file, read it and " +
+			"quote or summarize the relevant lines. If the user " +
+			"explicitly says 'remember this' or asks you to " +
+			"remember a durable fact, preference, or workflow " +
+			"rule, update OPENCLAW_MEMORY_FILE with a short " +
+			"bullet. Use OPENCLAW_MEMORY_FILE only for stable, " +
+			"cross-session facts, preferences, and working " +
+			"style. Write derived " +
 			"outputs under OPENCLAW_SESSION_UPLOADS_DIR when " +
 			"you plan to send them back to the user. " +
 			"If the command prints lines like " +
@@ -247,7 +254,7 @@ func (t *execTool) Call(ctx context.Context, args []byte) (any, error) {
 		in.Env,
 		mergeExecEnv(
 			uploadEnvFromContext(ctx, t.uploads),
-			memoryDocsEnvFromContext(ctx, t.memoryDocs),
+			memoryFileEnvFromContext(ctx, t.memoryStore),
 		),
 	)
 
@@ -696,9 +703,9 @@ func uploadEnvFromContext(
 	return env
 }
 
-func memoryDocsEnvFromContext(
+func memoryFileEnvFromContext(
 	ctx context.Context,
-	store *memorydocs.Store,
+	store *memoryfile.Store,
 ) map[string]string {
 	inv, ok := agent.InvocationFromContext(ctx)
 	if !ok || inv == nil || inv.Session == nil || store == nil {

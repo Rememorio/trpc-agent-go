@@ -45,7 +45,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	tgapi "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/telegram"
@@ -169,6 +169,26 @@ func TestNewRuntime_BuildsGatewayHandler(t *testing.T) {
 	require.NotEmpty(t, rt.Gateway.StatusPath)
 	require.NotEmpty(t, rt.Gateway.CancelPath)
 	require.Empty(t, rt.Channels)
+}
+
+func TestNewRuntime_MemoryBackendFile_DisablesStructuredMemory(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	rt, err := NewRuntime(context.Background(), []string{
+		"-mode", modeMock,
+		"-state-dir", t.TempDir(),
+		"-skills-root", t.TempDir(),
+		"-memory-backend", memoryBackendFile,
+		"-memory-auto",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = rt.Close()
+	})
+	require.Nil(t, rt.memorySvc)
+	require.Nil(t, memoryServiceTools(nil))
 }
 
 func TestNewRuntime_A2AConfigErrorExitCode(t *testing.T) {
@@ -2372,9 +2392,9 @@ func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	memoryRoot, err := memorydocs.DefaultRoot(debugDir)
+	memoryRoot, err := memoryfile.DefaultRoot(debugDir)
 	require.NoError(t, err)
-	memoryStore, err := memorydocs.NewStore(memoryRoot)
+	memoryStore, err := memoryfile.NewStore(memoryRoot)
 	require.NoError(t, err)
 	memoryPath, err := memoryStore.EnsureMemory(
 		ctx,
@@ -2395,7 +2415,7 @@ func TestInProcGatewayClient_ForgetUser_DeletesState(t *testing.T) {
 		uploadStore,
 	)
 	c.SetPersonaStore(personaStore)
-	c.SetMemoryDocStore(memoryStore)
+	c.SetMemoryFileStore(memoryStore)
 
 	require.NoError(t, c.ForgetUser(ctx, channelName, userID))
 

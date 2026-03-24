@@ -7,7 +7,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package memorydocs
+package memoryfile
 
 import (
 	"context"
@@ -20,8 +20,7 @@ import (
 )
 
 const (
-	rootDirName    = "memory-docs"
-	usersDirName   = "users"
+	rootDirName    = "memory"
 	memoryFileName = "MEMORY.md"
 
 	dirPerm           = 0o700
@@ -38,7 +37,7 @@ type Store struct {
 func DefaultRoot(stateDir string) (string, error) {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
-		return "", errors.New("memorydocs: empty state dir")
+		return "", errors.New("memoryfile: empty state dir")
 	}
 	return filepath.Join(stateDir, rootDirName), nil
 }
@@ -46,42 +45,24 @@ func DefaultRoot(stateDir string) (string, error) {
 func NewStore(root string) (*Store, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return nil, errors.New("memorydocs: empty root")
+		return nil, errors.New("memoryfile: empty root")
 	}
 	return &Store{root: filepath.Clean(root)}, nil
 }
 
-func (s *Store) Root() string {
+func (s *Store) MemoryDir(channel string, userID string) (string, error) {
 	if s == nil {
-		return ""
-	}
-	return s.root
-}
-
-func (s *Store) MemoryDir(
-	channel string,
-	userID string,
-) (string, error) {
-	if s == nil {
-		return "", errors.New("memorydocs: nil store")
+		return "", errors.New("memoryfile: nil store")
 	}
 	channel = sanitizePathPart(channel)
 	key := sanitizePathPart(userID)
 	if channel == "" || key == "" {
-		return "", errors.New("memorydocs: empty user scope")
+		return "", errors.New("memoryfile: empty user scope")
 	}
-	return filepath.Join(
-		s.root,
-		usersDirName,
-		channel,
-		key,
-	), nil
+	return filepath.Join(s.root, channel, key), nil
 }
 
-func (s *Store) MemoryPath(
-	channel string,
-	userID string,
-) (string, error) {
+func (s *Store) MemoryPath(channel string, userID string) (string, error) {
 	dir, err := s.MemoryDir(channel, userID)
 	if err != nil {
 		return "", err
@@ -114,10 +95,7 @@ func (s *Store) EnsureMemory(
 	if err := contextErr(ctx); err != nil {
 		return "", err
 	}
-	if err := writeFileAtomic(
-		path,
-		[]byte(DefaultMemoryTemplate()),
-	); err != nil {
+	if err := writeFileAtomic(path, []byte(DefaultTemplate())); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -125,7 +103,7 @@ func (s *Store) EnsureMemory(
 
 func (s *Store) ReadFile(path string, maxBytes int) (string, error) {
 	if s == nil {
-		return "", errors.New("memorydocs: nil store")
+		return "", errors.New("memoryfile: nil store")
 	}
 	raw, err := os.ReadFile(strings.TrimSpace(path))
 	if err != nil {
@@ -171,7 +149,7 @@ func (s *Store) removeScopedDir(ctx context.Context, dir string) error {
 		return err
 	}
 	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("memorydocs: remove dir: %w", err)
+		return fmt.Errorf("memoryfile: remove dir: %w", err)
 	}
 	return nil
 }
@@ -207,11 +185,11 @@ func sanitizePathPart(raw string) string {
 func writeFileAtomic(path string, data []byte) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return errors.New("memorydocs: empty file path")
+		return errors.New("memoryfile: empty file path")
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return fmt.Errorf("memorydocs: create dir: %w", err)
+		return fmt.Errorf("memoryfile: create dir: %w", err)
 	}
 
 	file, err := os.CreateTemp(
@@ -219,7 +197,7 @@ func writeFileAtomic(path string, data []byte) error {
 		filepath.Base(path)+tempPatternSuffix,
 	)
 	if err != nil {
-		return fmt.Errorf("memorydocs: create temp file: %w", err)
+		return fmt.Errorf("memoryfile: create temp file: %w", err)
 	}
 	tmpPath := file.Name()
 	removeTemp := true
@@ -231,16 +209,16 @@ func writeFileAtomic(path string, data []byte) error {
 	}()
 
 	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("memorydocs: write temp file: %w", err)
+		return fmt.Errorf("memoryfile: write temp file: %w", err)
 	}
 	if err := file.Chmod(filePerm); err != nil {
-		return fmt.Errorf("memorydocs: chmod temp file: %w", err)
+		return fmt.Errorf("memoryfile: chmod temp file: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("memorydocs: close temp file: %w", err)
+		return fmt.Errorf("memoryfile: close temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("memorydocs: replace file: %w", err)
+		return fmt.Errorf("memoryfile: replace file: %w", err)
 	}
 	removeTemp = false
 	return nil

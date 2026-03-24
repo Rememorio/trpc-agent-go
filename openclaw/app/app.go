@@ -49,7 +49,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/deps"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/octool"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
@@ -164,10 +164,17 @@ const (
 		"OPENCLAW_SESSION_UPLOADS_DIR. Prefer writing derived " +
 		"files under " +
 		"OPENCLAW_SESSION_UPLOADS_DIR when you will send them " +
-		"back to the user. Use OPENCLAW_MEMORY_FILE only " +
-		"for stable cross-session facts, preferences, or " +
-		"working style. Do not store secrets or large transcripts " +
-		"in that file. " +
+		"back to the user. OPENCLAW_MEMORY_FILE is a " +
+		"user-owned file, not hidden internal state. If the " +
+		"user asks what you remember or asks to inspect that " +
+		"file, read it and quote or summarize the relevant " +
+		"lines. If the user explicitly says 'remember this' " +
+		"or asks you to remember a durable fact, preference, " +
+		"or workflow rule, update OPENCLAW_MEMORY_FILE with a " +
+		"short bullet in the same turn. Use " +
+		"OPENCLAW_MEMORY_FILE only for stable cross-session " +
+		"facts, preferences, or working style. Do not store " +
+		"secrets or large transcripts in that file. " +
 		"If a memory file does not exist yet, you may create it " +
 		"at that exact path. Prefer already installed local tools " +
 		"for OCR, PDF, audio, image, and video work before " +
@@ -319,7 +326,7 @@ func runtimeStartupLines(
 		{text: fmt.Sprintf(
 			"Storage: session=%s memory=%s",
 			strings.TrimSpace(opts.SessionBackend),
-			strings.TrimSpace(opts.MemoryBackend),
+			resolveMemoryBackendType(opts.MemoryBackend),
 		)},
 	}
 }
@@ -577,9 +584,9 @@ func NewRuntime(
 		opts.EnableOpenClawTools,
 		resolvedStateDir,
 		stores.uploads,
-		stores.memoryDocs,
+		stores.memoryFiles,
 	)
-	extraTools := append([]tool.Tool(nil), memSvc.Tools()...)
+	extraTools := memoryServiceTools(memSvc)
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
@@ -645,8 +652,8 @@ func NewRuntime(
 
 	runnerOpts := []runner.Option{
 		runner.WithSessionService(sessionSvc),
-		runner.WithMemoryService(memSvc),
 	}
+	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
 	rlCfg, err := ralphLoopConfigFromRunOptions(opts)
 	if err != nil {
 		return nil, &exitError{
@@ -671,7 +678,7 @@ func NewRuntime(
 	)
 	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
 	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
-	gwOpts = append(gwOpts, gateway.WithMemoryDocStore(stores.memoryDocs))
+	gwOpts = append(gwOpts, gateway.WithMemoryFileStore(stores.memoryFiles))
 	if debugRec != nil {
 		gwOpts = append(gwOpts, gateway.WithDebugRecorder(debugRec))
 	}
@@ -710,7 +717,7 @@ func NewRuntime(
 		stores.uploads,
 	)
 	gw.SetPersonaStore(stores.personas)
-	gw.SetMemoryDocStore(stores.memoryDocs)
+	gw.SetMemoryFileStore(stores.memoryFiles)
 
 	if len(opts.Channels) > 0 {
 		extra, err := channelsFromRegistry(
@@ -920,9 +927,9 @@ func run(ctx context.Context, args []string) error {
 		opts.EnableOpenClawTools,
 		resolvedStateDir,
 		stores.uploads,
-		stores.memoryDocs,
+		stores.memoryFiles,
 	)
-	extraTools := append([]tool.Tool(nil), memSvc.Tools()...)
+	extraTools := memoryServiceTools(memSvc)
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
@@ -989,8 +996,8 @@ func run(ctx context.Context, args []string) error {
 
 	runnerOpts := []runner.Option{
 		runner.WithSessionService(sessionSvc),
-		runner.WithMemoryService(memSvc),
 	}
+	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
 	rlCfg, err := ralphLoopConfigFromRunOptions(opts)
 	if err != nil {
 		return &exitError{
@@ -1013,7 +1020,7 @@ func run(ctx context.Context, args []string) error {
 	)
 	gwOpts = append(gwOpts, gateway.WithUploadStore(stores.uploads))
 	gwOpts = append(gwOpts, gateway.WithPersonaStore(stores.personas))
-	gwOpts = append(gwOpts, gateway.WithMemoryDocStore(stores.memoryDocs))
+	gwOpts = append(gwOpts, gateway.WithMemoryFileStore(stores.memoryFiles))
 	if debugRec != nil {
 		gwOpts = append(gwOpts, gateway.WithDebugRecorder(debugRec))
 	}
@@ -1038,7 +1045,7 @@ func run(ctx context.Context, args []string) error {
 		stores.uploads,
 	)
 	gw.SetPersonaStore(stores.personas)
-	gw.SetMemoryDocStore(stores.memoryDocs)
+	gw.SetMemoryFileStore(stores.memoryFiles)
 
 	a2aSurface, err := newA2ASurface(ag, r, opts)
 	if err != nil {
@@ -1262,6 +1269,23 @@ func closeMemoryService(svc closeFunc) {
 	}
 }
 
+func memoryServiceTools(svc memory.Service) []tool.Tool {
+	if svc == nil {
+		return nil
+	}
+	return append([]tool.Tool(nil), svc.Tools()...)
+}
+
+func appendMemoryServiceRunnerOption(
+	opts []runner.Option,
+	svc memory.Service,
+) []runner.Option {
+	if svc == nil {
+		return opts
+	}
+	return append(opts, runner.WithMemoryService(svc))
+}
+
 func closeToolSets(sets []tool.ToolSet) {
 	for _, ts := range sets {
 		if ts == nil {
@@ -1283,8 +1307,8 @@ func newCronRunner(
 		runner.WithSessionService(
 			sessioninmemory.NewSessionService(),
 		),
-		runner.WithMemoryService(memSvc),
 	}
+	opts = appendMemoryServiceRunnerOption(opts, memSvc)
 	if rlCfg != nil {
 		opts = append(opts, runner.WithRalphLoop(*rlCfg))
 	}
@@ -1890,9 +1914,9 @@ type openClawToolsBundle struct {
 }
 
 type runtimeStores struct {
-	uploads    *uploads.Store
-	personas   *persona.Store
-	memoryDocs *memorydocs.Store
+	uploads     *uploads.Store
+	personas    *persona.Store
+	memoryFiles *memoryfile.Store
 }
 
 func newRuntimeStores(stateDir string) (runtimeStores, error) {
@@ -1913,25 +1937,25 @@ func newRuntimeStores(stateDir string) (runtimeStores, error) {
 		return runtimeStores{}, fmt.Errorf("create persona store: %w", err)
 	}
 
-	memoryDocsRoot, err := memorydocs.DefaultRoot(stateDir)
+	memoryRoot, err := memoryfile.DefaultRoot(stateDir)
 	if err != nil {
 		return runtimeStores{}, fmt.Errorf(
-			"create memory-doc root: %w",
+			"create memory root: %w",
 			err,
 		)
 	}
-	memoryDocStore, err := memorydocs.NewStore(memoryDocsRoot)
+	memoryStore, err := memoryfile.NewStore(memoryRoot)
 	if err != nil {
 		return runtimeStores{}, fmt.Errorf(
-			"create memory-doc store: %w",
+			"create memory store: %w",
 			err,
 		)
 	}
 
 	return runtimeStores{
-		uploads:    uploadStore,
-		personas:   personaStore,
-		memoryDocs: memoryDocStore,
+		uploads:     uploadStore,
+		personas:    personaStore,
+		memoryFiles: memoryStore,
 	}, nil
 }
 
@@ -1939,7 +1963,7 @@ func buildOpenClawTools(
 	enabled bool,
 	stateDir string,
 	uploadStore *uploads.Store,
-	memoryDocStore *memorydocs.Store,
+	memoryFileStore *memoryfile.Store,
 ) openClawToolsBundle {
 	if !enabled {
 		return openClawToolsBundle{}
@@ -1962,10 +1986,10 @@ func buildOpenClawTools(
 	tools := []tool.Tool{
 		octool.NewReadDocumentTool(uploadStore),
 		octool.NewReadSpreadsheetTool(uploadStore),
-		octool.NewExecCommandToolWithMemoryDocs(
+		octool.NewExecCommandToolWithMemoryFileStore(
 			mgr,
 			uploadStore,
-			memoryDocStore,
+			memoryFileStore,
 		),
 		octool.NewWriteStdinTool(mgr),
 		octool.NewKillSessionTool(mgr),

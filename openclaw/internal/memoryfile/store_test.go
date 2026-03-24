@@ -7,7 +7,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package memorydocs
+package memoryfile
 
 import (
 	"context"
@@ -17,6 +17,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestDefaultRootUsesMemoryDir(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	root, err := DefaultRoot(stateDir)
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(stateDir, rootDirName), root)
+}
 
 func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	t.Parallel()
@@ -38,10 +47,12 @@ func TestStoreEnsureMemoryCreatesTemplate(t *testing.T) {
 	text, err := store.ReadFile(path, 0)
 	require.NoError(t, err)
 	require.Contains(t, text, "# Memory")
+	require.Contains(t, text, "user-owned file")
+	require.Contains(t, text, "remember this")
 	require.Contains(t, text, "## Preferences")
 	require.Equal(
 		t,
-		filepath.Join(root, usersDirName, "telegram", "u1", memoryFileName),
+		filepath.Join(root, "telegram", "u1", memoryFileName),
 		path,
 	)
 }
@@ -92,10 +103,11 @@ func TestStoreDeleteUser(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestBuildMemoryContextText(t *testing.T) {
+func TestBuildContextText(t *testing.T) {
 	t.Parallel()
 
-	text := BuildMemoryContextText("- prefers concise replies")
-	require.Contains(t, text, "Persistent memory")
+	text := BuildContextText("- prefers concise replies")
+	require.Contains(t, text, "user-owned file MEMORY.md")
+	require.Contains(t, text, "not hidden internal state")
 	require.Contains(t, text, "prefers concise replies")
 }

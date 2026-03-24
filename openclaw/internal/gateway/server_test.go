@@ -33,7 +33,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -476,7 +476,7 @@ func TestServerInjectedContextMessages_IncludePersonaAndUploads(t *testing.T) {
 	require.Contains(t, msgs[1].Content, "clip.mp4 [video]")
 }
 
-func TestServerInjectedContextMessages_IncludeMemoryDocs(t *testing.T) {
+func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 	t.Parallel()
 
 	stateDir := t.TempDir()
@@ -488,9 +488,9 @@ func TestServerInjectedContextMessages_IncludeMemoryDocs(t *testing.T) {
 	personaStore, err := persona.NewStore(personaPath)
 	require.NoError(t, err)
 
-	memoryRoot, err := memorydocs.DefaultRoot(stateDir)
+	memoryRoot, err := memoryfile.DefaultRoot(stateDir)
 	require.NoError(t, err)
-	memoryStore, err := memorydocs.NewStore(memoryRoot)
+	memoryStore, err := memoryfile.NewStore(memoryRoot)
 	require.NoError(t, err)
 
 	sessionID := "telegram:dm:u1:rotated"
@@ -530,14 +530,15 @@ func TestServerInjectedContextMessages_IncludeMemoryDocs(t *testing.T) {
 	)
 
 	srv := &Server{
-		uploads:        uploadStore,
-		personaStore:   personaStore,
-		memoryDocStore: memoryStore,
+		uploads:         uploadStore,
+		personaStore:    personaStore,
+		memoryFileStore: memoryStore,
 	}
 	msgs := srv.injectedContextMessages("u1", sessionID)
 	require.Len(t, msgs, 3)
 	require.Contains(t, msgs[0].Content, personaContextHeader)
-	require.Contains(t, msgs[1].Content, "Persistent memory")
+	require.Contains(t, msgs[1].Content, "user-owned file MEMORY.md")
+	require.Contains(t, msgs[1].Content, "not hidden internal state")
 	require.Contains(t, msgs[1].Content, "Keep replies concise")
 	require.Contains(t, msgs[2].Content, recentUploadContextHeader)
 }
@@ -3286,19 +3287,19 @@ func TestNewOptions_ExplicitStreamAndStores(t *testing.T) {
 	t.Parallel()
 
 	store := &persona.Store{}
-	memoryStore := &memorydocs.Store{}
+	memoryStore := &memoryfile.Store{}
 	transcriber := &stubAudioTranscriber{}
 
 	o := newOptions(
 		WithMessagesStreamPath(" /custom/stream "),
 		WithPersonaStore(store),
-		WithMemoryDocStore(memoryStore),
+		WithMemoryFileStore(memoryStore),
 		WithAudioTranscriber(transcriber),
 	)
 
 	require.Equal(t, " /custom/stream ", o.streamPath)
 	require.Same(t, store, o.personaStore)
-	require.Same(t, memoryStore, o.memoryDocStore)
+	require.Same(t, memoryStore, o.memoryFileStore)
 	require.Same(t, transcriber, o.audioTranscriber)
 }
 

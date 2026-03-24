@@ -32,6 +32,6 @@ session:
     enabled: false
 
 memory:
-  backend: "inmemory"
+  backend: "file"
   auto:
     enabled: false

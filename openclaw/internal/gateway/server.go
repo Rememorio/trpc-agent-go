@@ -35,7 +35,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
@@ -152,7 +152,7 @@ type Server struct {
 	uploads          *uploads.Store
 	audioTranscriber audioTranscriber
 	personaStore     *persona.Store
-	memoryDocStore   *memorydocs.Store
+	memoryFileStore  *memoryfile.Store
 }
 
 // New creates a gateway server with the provided runner.
@@ -235,7 +235,7 @@ func New(r runner.Runner, opts ...Option) (*Server, error) {
 		uploads:          options.uploads,
 		audioTranscriber: audioTranscriber,
 		personaStore:     options.personaStore,
-		memoryDocStore:   options.memoryDocStore,
+		memoryFileStore:  options.memoryFileStore,
 	}
 
 	mux := http.NewServeMux()

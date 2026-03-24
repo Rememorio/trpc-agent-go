@@ -15,7 +15,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 )
@@ -49,8 +49,8 @@ type options struct {
 	recorder *debugrecorder.Recorder
 	uploads  *uploads.Store
 
-	personaStore   *persona.Store
-	memoryDocStore *memorydocs.Store
+	personaStore    *persona.Store
+	memoryFileStore *memoryfile.Store
 }
 
 // Option is a function that configures a gateway server.
@@ -211,11 +211,11 @@ func WithPersonaStore(store *persona.Store) Option {
 	}
 }
 
-// WithMemoryDocStore sets the file-based memory-doc store used for per-run
+// WithMemoryFileStore sets the file-based memory store used for per-run
 // context injection.
-func WithMemoryDocStore(store *memorydocs.Store) Option {
+func WithMemoryFileStore(store *memoryfile.Store) Option {
 	return func(o *options) {
-		o.memoryDocStore = store
+		o.memoryFileStore = store
 	}
 }
 

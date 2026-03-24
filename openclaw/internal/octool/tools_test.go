@@ -27,7 +27,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memorydocs"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 	sessionpkg "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -88,19 +88,19 @@ func TestExecTool_UsesManagerBaseEnv(t *testing.T) {
 	require.Contains(t, strings.TrimSpace(res.Output), "ok")
 }
 
-func TestExecTool_UsesMemoryDocEnvFromContext(t *testing.T) {
+func TestExecTool_UsesMemoryFileEnvFromContext(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is not available")
 	}
 
 	stateDir := t.TempDir()
-	root, err := memorydocs.DefaultRoot(stateDir)
+	root, err := memoryfile.DefaultRoot(stateDir)
 	require.NoError(t, err)
-	store, err := memorydocs.NewStore(root)
+	store, err := memoryfile.NewStore(root)
 	require.NoError(t, err)
 
 	mgr := NewManager()
-	execTool := NewExecCommandToolWithMemoryDocs(
+	execTool := NewExecCommandToolWithMemoryFileStore(
 		mgr,
 		nil,
 		store,
