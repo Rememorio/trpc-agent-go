@@ -511,6 +511,31 @@ func TestTools_Declaration(t *testing.T) {
 	require.Equal(t, toolKillSession, killTool.Declaration().Name)
 }
 
+func TestExecToolDeclaration_HidesMemoryFileGuidanceWithoutStore(t *testing.T) {
+	t.Parallel()
+
+	decl := newExecCommandTool(NewManager()).Declaration()
+	require.NotNil(t, decl)
+	require.NotContains(t, decl.Description, envMemoryFile)
+}
+
+func TestExecToolDeclaration_ExposesMemoryFileGuidanceWithStore(t *testing.T) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	decl := NewExecCommandToolWithMemoryFileStore(
+		NewManager(),
+		nil,
+		store,
+	).Declaration()
+	require.NotNil(t, decl)
+	require.Contains(t, decl.Description, envMemoryFile)
+}
+
 func TestManager_ListIncludesExitedSession(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is not available")

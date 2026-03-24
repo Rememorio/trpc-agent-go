@@ -142,6 +142,12 @@ func TestMemoryPathUsesLosslessScopeEncoding(t *testing.T) {
 	)
 }
 
+func TestSanitizePathPart_WhitespaceOnlyIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, sanitizePathPart(" \t\n "))
+}
+
 func TestBuildContextText(t *testing.T) {
 	t.Parallel()
 
