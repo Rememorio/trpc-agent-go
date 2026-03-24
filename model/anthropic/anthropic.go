@@ -452,12 +452,18 @@ func (m *Model) handleStreamingResponse(
 	defer stream.Close()
 	// Accumulator to build final response.
 	acc := anthropic.Message{}
+	var (
+		finalResponse *model.Response
+		streamErr     error
+	)
+
+loop:
 	for stream.Next() {
 		chunk := stream.Current()
 		// Accumulate into accumulator.
 		if err := acc.Accumulate(chunk); err != nil {
-			m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, err)
-			return
+			streamErr = err
+			break
 		}
 		if m.chatChunkCallback != nil {
 			m.chatChunkCallback(ctx, &chatRequest, &chunk)
@@ -465,8 +471,8 @@ func (m *Model) handleStreamingResponse(
 		// Build partial response.
 		response, err := buildStreamingPartialResponse(acc, chunk)
 		if err != nil {
-			m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, err)
-			return
+			streamErr = err
+			break
 		}
 		if response == nil {
 			continue
@@ -475,10 +481,16 @@ func (m *Model) handleStreamingResponse(
 		select {
 		case responseChan <- response:
 		case <-ctx.Done():
-			return
+			streamErr = ctx.Err()
+			break loop
 		}
 	}
-	streamErr := stream.Err()
+	if streamErr == nil {
+		streamErr = stream.Err()
+	}
+	if streamErr == nil {
+		finalResponse = buildStreamingFinalResponse(acc)
+	}
 	if m.chatStreamCompleteCallback != nil {
 		var callbackAcc *anthropic.Message
 		if streamErr == nil {
@@ -491,8 +503,6 @@ func (m *Model) handleStreamingResponse(
 		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, streamErr)
 		return
 	}
-	// Emit final response built from the accumulator.
-	finalResponse := buildStreamingFinalResponse(acc)
 	select {
 	case responseChan <- finalResponse:
 	case <-ctx.Done():

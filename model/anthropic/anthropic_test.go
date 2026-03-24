@@ -935,9 +935,75 @@ func Test_HandleStreamingResponse_StreamErrorUsesNilAccumulator(t *testing.T) {
 	select {
 	case <-callbackCalled:
 		assert.Nil(t, callbackAcc)
-		assert.Error(t, callbackErr)
+		assert.ErrorIs(t, callbackErr, streamErr)
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for stream complete callback")
+	}
+}
+
+func Test_HandleStreamingResponse_ContextCancelStillCallsCallback(t *testing.T) {
+	sse := strings.Join([]string{
+		"event: message_start",
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sse_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-sonnet\",\"content\":[]}}",
+		"",
+		"event: content_block_start",
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+		"",
+		"event: content_block_delta",
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}",
+		"",
+		"",
+	}, "\n")
+
+	orig := model.DefaultNewHTTPClient
+	t.Cleanup(func() { model.DefaultNewHTTPClient = orig })
+	model.DefaultNewHTTPClient = func(_ ...HTTPClientOption) model.HTTPClient {
+		return &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+			h := make(http.Header)
+			h.Set("Content-Type", "text/event-stream")
+			return &http.Response{
+				StatusCode: 200,
+				Header:     h,
+				Body:       io.NopCloser(strings.NewReader(sse)),
+			}, nil
+		})}
+	}
+
+	callbackCalled := make(chan struct{})
+	var callbackAcc *anthropic.Message
+	var callbackErr error
+	m := New(
+		"claude-test",
+		WithHTTPClientOptions(),
+		WithChatStreamCompleteCallback(func(_ context.Context,
+			_ *anthropic.MessageNewParams, acc *anthropic.Message, err error) {
+			callbackAcc = acc
+			callbackErr = err
+			close(callbackCalled)
+		}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	responseChan := make(chan *model.Response)
+	m.handleStreamingResponse(ctx, anthropic.MessageNewParams{}, responseChan)
+
+	select {
+	case <-callbackCalled:
+		assert.Nil(t, callbackAcc)
+		require.ErrorIs(t, callbackErr, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
+	select {
+	case resp := <-responseChan:
+		t.Fatalf("unexpected response: %#v", resp)
+	default:
 	}
 }
 

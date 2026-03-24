@@ -427,12 +427,26 @@ func TestChatStreamCompleteCallbackBeforeFinalResponse(t *testing.T) {
 }
 
 func TestHandleStreamingResponseWithoutFinalChunk(t *testing.T) {
+	handlerErrCh := make(chan error, 1)
+	reportHandlerErr := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case handlerErrCh <- err:
+		default:
+		}
+	}
+
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 
 		flusher, ok := w.(http.Flusher)
-		require.True(t, ok)
+		if !ok {
+			reportHandlerErr(fmt.Errorf("response writer is not a flusher"))
+			return
+		}
 
 		chunk := hunyuan.ChatCompletionResponse{
 			Id:      "stream-id-1",
@@ -448,12 +462,19 @@ func TestHandleStreamingResponseWithoutFinalChunk(t *testing.T) {
 			},
 		}
 		data, err := json.Marshal(chunk)
-		require.NoError(t, err)
-		_, err = fmt.Fprintf(w, "data: %s\n\n", string(data))
-		require.NoError(t, err)
+		if err != nil {
+			reportHandlerErr(err)
+			return
+		}
+		if _, err = fmt.Fprintf(w, "data: %s\n\n", string(data)); err != nil {
+			reportHandlerErr(err)
+			return
+		}
 		flusher.Flush()
-		_, err = fmt.Fprint(w, "data: [DONE]\n\n")
-		require.NoError(t, err)
+		if _, err = fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
+			reportHandlerErr(err)
+			return
+		}
 		flusher.Flush()
 	}))
 	defer mockServer.Close()
@@ -489,15 +510,34 @@ func TestHandleStreamingResponseWithoutFinalChunk(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for stream complete callback")
 	}
+	select {
+	case err := <-handlerErrCh:
+		require.NoError(t, err)
+	default:
+	}
 }
 
 func TestHandleStreamingResponseCallbackOnContextCancel(t *testing.T) {
+	handlerErrCh := make(chan error, 1)
+	reportHandlerErr := func(err error) {
+		if err == nil {
+			return
+		}
+		select {
+		case handlerErrCh <- err:
+		default:
+		}
+	}
+
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 
 		flusher, ok := w.(http.Flusher)
-		require.True(t, ok)
+		if !ok {
+			reportHandlerErr(fmt.Errorf("response writer is not a flusher"))
+			return
+		}
 
 		chunk := hunyuan.ChatCompletionResponse{
 			Id:      "stream-id-1",
@@ -513,9 +553,14 @@ func TestHandleStreamingResponseCallbackOnContextCancel(t *testing.T) {
 			},
 		}
 		data, err := json.Marshal(chunk)
-		require.NoError(t, err)
-		_, err = fmt.Fprintf(w, "data: %s\n\n", string(data))
-		require.NoError(t, err)
+		if err != nil {
+			reportHandlerErr(err)
+			return
+		}
+		if _, err = fmt.Fprintf(w, "data: %s\n\n", string(data)); err != nil {
+			reportHandlerErr(err)
+			return
+		}
 		flusher.Flush()
 	}))
 	defer mockServer.Close()
@@ -551,6 +596,11 @@ func TestHandleStreamingResponseCallbackOnContextCancel(t *testing.T) {
 	select {
 	case resp := <-responseChan:
 		t.Fatalf("unexpected response: %#v", resp)
+	default:
+	}
+	select {
+	case err := <-handlerErrCh:
+		require.NoError(t, err)
 	default:
 	}
 }
