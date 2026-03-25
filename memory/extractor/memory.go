@@ -158,10 +158,12 @@ func (e *memoryExtractor) Extract(
 		if len(rsp.Choices) == 0 {
 			continue
 		}
-		for _, call := range rsp.Choices[0].Message.ToolCalls {
-			op := e.parseToolCall(ctx, call)
-			if op != nil {
-				ops = append(ops, op)
+		for _, choice := range rsp.Choices {
+			for _, call := range choice.Message.ToolCalls {
+				op := e.parseToolCall(ctx, call)
+				if op != nil {
+					ops = append(ops, op)
+				}
 			}
 		}
 	}
