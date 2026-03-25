@@ -413,7 +413,7 @@ func TestExtractor_Extract_MultipleOperations(t *testing.T) {
 	assert.Equal(t, OperationUpdate, ops[1].Type)
 }
 
-func TestExtractor_Extract_CollectsToolCallsFromAllChoices(t *testing.T) {
+func TestExtractor_Extract_UsesOnlyFirstChoiceToolCalls(t *testing.T) {
 	addArgs, _ := json.Marshal(map[string]any{
 		"memory": "User likes coffee.",
 	})
@@ -450,10 +450,8 @@ func TestExtractor_Extract_CollectsToolCallsFromAllChoices(t *testing.T) {
 	}, nil)
 
 	require.NoError(t, err)
-	require.Len(t, ops, 2)
+	require.Len(t, ops, 1)
 	assert.Equal(t, OperationAdd, ops[0].Type)
-	assert.Equal(t, OperationDelete, ops[1].Type)
-	assert.Equal(t, "mem-1", ops[1].MemoryID)
 }
 
 func TestExtractor_Extract_EmptyChoices(t *testing.T) {
