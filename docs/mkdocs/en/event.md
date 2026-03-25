@@ -286,6 +286,24 @@ if e.IsRunnerCompletion() {
 }
 ```
 
+Do not confuse `event.IsFinalResponse()` with
+`event.IsRunnerCompletion()`:
+
+- `event.IsFinalResponse()` reuses the embedded `Response` semantics. It only
+  says the current response payload has finished: it is not partial, not a
+  tool-call response, and `Response.Done == true`. This can be an assistant
+  message, a `tool.response`, or a terminal error response.
+- `event.IsRunnerCompletion()` asks whether Runner has emitted the terminal
+  `runner.completion` event. Only this signal means the entire `Runner.Run`
+  has finished and no more runtime events should be expected.
+
+Rule of thumb:
+
+- Use `IsFinalResponse()` when you only care whether the current payload is
+  complete.
+- Use `IsRunnerCompletion()` when deciding to stop consuming the event stream,
+  read final state, or treat the whole run as finished.
+
 ### Event Creation
 
 When developing custom Agent types or Processors, you need to create Events.
@@ -518,8 +536,8 @@ func (c *multiTurnChat) processResponse(eventChan <-chan *event.Event) error {
         if err := c.handleEvent(event, &toolCallsDetected, &assistantStarted, &fullContent); err != nil {
             return err
         }
-        // Check if it's the final event.
-        if event.IsFinalResponse() {
+        // Check if the run-completion event has arrived.
+        if event.IsRunnerCompletion() {
             fmt.Printf("\n")
             break
         }
