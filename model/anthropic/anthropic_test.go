@@ -927,6 +927,15 @@ func Test_HandleStreamingResponse_StreamErrorUsesNilAccumulator(t *testing.T) {
 	var responses []*model.Response
 	for resp := range ch {
 		responses = append(responses, resp)
+		if resp.Done && resp.Error != nil {
+			select {
+			case <-callbackCalled:
+				assert.Nil(t, callbackAcc)
+				assert.ErrorIs(t, callbackErr, streamErr)
+			default:
+				t.Fatal("stream complete callback must run before terminal error response is emitted")
+			}
+		}
 	}
 
 	require.Len(t, responses, 1)
