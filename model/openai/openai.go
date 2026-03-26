@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -366,6 +367,53 @@ func (m *Model) Info() model.Info {
 	}
 }
 
+func recoverOpenAICallbackPanic(ctx context.Context, stage string) {
+	if recovered := recover(); recovered != nil {
+		log.ErrorfContext(
+			ctx,
+			"%s panic: %v\n%s",
+			stage,
+			recovered,
+			string(debug.Stack()),
+		)
+	}
+}
+
+func (m *Model) runChatRequestCallback(
+	ctx context.Context,
+	chatRequest *openai.ChatCompletionNewParams,
+) {
+	if m.chatRequestCallback == nil {
+		return
+	}
+	defer recoverOpenAICallbackPanic(ctx, "chat request callback")
+	m.chatRequestCallback(ctx, chatRequest)
+}
+
+func (m *Model) runChatResponseCallback(
+	ctx context.Context,
+	chatRequest *openai.ChatCompletionNewParams,
+	chatResponse *openai.ChatCompletion,
+) {
+	if m.chatResponseCallback == nil {
+		return
+	}
+	defer recoverOpenAICallbackPanic(ctx, "chat response callback")
+	m.chatResponseCallback(ctx, chatRequest, chatResponse)
+}
+
+func (m *Model) runChatChunkCallback(
+	ctx context.Context,
+	chatRequest *openai.ChatCompletionNewParams,
+	chatChunk *openai.ChatCompletionChunk,
+) {
+	if m.chatChunkCallback == nil {
+		return
+	}
+	defer recoverOpenAICallbackPanic(ctx, "chat chunk callback")
+	m.chatChunkCallback(ctx, chatRequest, chatChunk)
+}
+
 // prepareChatRequest validates and mutates the request in-place before sending it to the provider.
 func (m *Model) prepareChatRequest(
 	ctx context.Context,
@@ -396,9 +444,7 @@ func (m *Model) GenerateContent(
 	// Execute callback synchronously before starting the goroutine
 	// to avoid a race where the runner and HTTP handler finish
 	// (closing the SSE writer) while the callback is still running.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, chatRequest)
-	}
+	m.runChatRequestCallback(ctx, chatRequest)
 	responseChan := make(chan *model.Response, m.channelBufferSize)
 	go func() {
 		defer close(responseChan)
@@ -421,9 +467,7 @@ func (m *Model) GenerateContentIter(
 		return nil, err
 	}
 	return func(yield func(*model.Response) bool) {
-		if m.chatRequestCallback != nil {
-			m.chatRequestCallback(ctx, chatRequest)
-		}
+		m.runChatRequestCallback(ctx, chatRequest)
 		emit := func(resp *model.Response) bool {
 			if ctx.Err() != nil {
 				return false
@@ -1268,9 +1312,7 @@ func (m *Model) handleStreamingResponseWithEmitter(
 			}
 		}
 
-		if m.chatChunkCallback != nil {
-			m.chatChunkCallback(ctx, &chatRequest, &chunk)
-		}
+		m.runChatChunkCallback(ctx, &chatRequest, &chunk)
 
 		if !emit(m.createPartialResponse(chunk)) {
 			return
@@ -1591,6 +1633,7 @@ func (m *Model) handleStreamCompleteCallback(
 	if streamErr == nil {
 		callbackAcc = &acc
 	}
+	defer recoverOpenAICallbackPanic(ctx, "chat stream complete callback")
 	m.chatStreamCompleteCallback(ctx, &chatRequest, callbackAcc, streamErr)
 }
 
@@ -2003,9 +2046,7 @@ func (m *Model) handleNonStreamingResponseWithEmitter(
 		return
 	}
 	// Call response callback on successful completion.
-	if m.chatResponseCallback != nil {
-		m.chatResponseCallback(ctx, &chatRequest, chatCompletion)
-	}
+	m.runChatResponseCallback(ctx, &chatRequest, chatCompletion)
 	emit(m.createResponseFromCompletion(chatCompletion))
 }
 

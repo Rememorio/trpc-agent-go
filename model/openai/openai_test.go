@@ -1508,6 +1508,98 @@ func TestModel_CallbackAssignment(t *testing.T) {
 	})
 }
 
+func TestModel_CallbackPanicsAreRecovered(t *testing.T) {
+	t.Run("request callback", func(t *testing.T) {
+		callbackCalled := false
+		m := New("test-model",
+			WithAPIKey("test-key"),
+			WithChatRequestCallback(func(ctx context.Context, req *openaigo.ChatCompletionNewParams) {
+				callbackCalled = true
+				panic("boom")
+			}),
+		)
+
+		require.NotPanics(t, func() {
+			m.runChatRequestCallback(context.Background(), &openaigo.ChatCompletionNewParams{})
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("response callback", func(t *testing.T) {
+		callbackCalled := false
+		m := New("test-model",
+			WithAPIKey("test-key"),
+			WithChatResponseCallback(func(
+				ctx context.Context,
+				req *openaigo.ChatCompletionNewParams,
+				resp *openaigo.ChatCompletion,
+			) {
+				callbackCalled = true
+				panic("boom")
+			}),
+		)
+
+		require.NotPanics(t, func() {
+			m.runChatResponseCallback(
+				context.Background(),
+				&openaigo.ChatCompletionNewParams{},
+				&openaigo.ChatCompletion{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("chunk callback", func(t *testing.T) {
+		callbackCalled := false
+		m := New("test-model",
+			WithAPIKey("test-key"),
+			WithChatChunkCallback(func(
+				ctx context.Context,
+				req *openaigo.ChatCompletionNewParams,
+				chunk *openaigo.ChatCompletionChunk,
+			) {
+				callbackCalled = true
+				panic("boom")
+			}),
+		)
+
+		require.NotPanics(t, func() {
+			m.runChatChunkCallback(
+				context.Background(),
+				&openaigo.ChatCompletionNewParams{},
+				&openaigo.ChatCompletionChunk{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("stream complete callback", func(t *testing.T) {
+		callbackCalled := false
+		m := New("test-model",
+			WithAPIKey("test-key"),
+			WithChatStreamCompleteCallback(func(
+				ctx context.Context,
+				req *openaigo.ChatCompletionNewParams,
+				acc *openaigo.ChatCompletionAccumulator,
+				streamErr error,
+			) {
+				callbackCalled = true
+				panic("boom")
+			}),
+		)
+
+		require.NotPanics(t, func() {
+			m.handleStreamCompleteCallback(
+				context.Background(),
+				openaigo.ChatCompletionNewParams{},
+				openaigo.ChatCompletionAccumulator{},
+				nil,
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+}
+
 // testStubCounter implements model.TokenCounter for unit tests.
 type testStubCounter struct{}
 
@@ -5033,6 +5125,86 @@ func TestStreamingCallbackIntegration(t *testing.T) {
 		assert.NotNil(t, capturedRequest, "expected request to be captured in callback")
 	})
 
+	t.Run("streaming continues when chat stream complete callback panics", func(t *testing.T) {
+		callbackCalled := make(chan struct{})
+		callback := func(
+			ctx context.Context,
+			req *openai.ChatCompletionNewParams,
+			acc *openai.ChatCompletionAccumulator,
+			err error,
+		) {
+			close(callbackCalled)
+			panic("boom")
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+
+			chunks := []string{
+				`data: {"id":"test","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}`,
+				`data: {"id":"test","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}`,
+				`data: {"id":"test","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				`data: [DONE]`,
+			}
+
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "%s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}))
+		defer server.Close()
+
+		m := New("gpt-3.5-turbo",
+			WithBaseURL(server.URL),
+			WithAPIKey("test-key"),
+			WithChatStreamCompleteCallback(callback),
+		)
+
+		req := &model.Request{
+			Messages: []model.Message{
+				model.NewUserMessage("Hello"),
+			},
+			GenerationConfig: model.GenerationConfig{
+				Stream: true,
+			},
+		}
+
+		responseChan, err := m.GenerateContent(context.Background(), req)
+		require.NoError(t, err)
+
+		var responses []*model.Response
+		timeout := time.After(2 * time.Second)
+	loop:
+		for {
+			select {
+			case resp, ok := <-responseChan:
+				if !ok {
+					break loop
+				}
+				responses = append(responses, resp)
+			case <-timeout:
+				t.Fatal("timed out waiting for streaming responses")
+			}
+		}
+
+		select {
+		case <-callbackCalled:
+		default:
+			t.Fatal("expected chat stream complete callback to be called")
+		}
+
+		require.NotEmpty(t, responses)
+		finalResp := responses[len(responses)-1]
+		require.True(t, finalResp.Done)
+		require.Len(t, finalResp.Choices, 1)
+		assert.Equal(t, "Hello world", finalResp.Choices[0].Message.Content)
+	})
+
 	t.Run("streaming with reasoning content handling", func(t *testing.T) {
 		// Create mock server with reasoning content
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6639,6 +6811,23 @@ func TestModel_handleStreamCompleteCallback(t *testing.T) {
 		assert.Nil(t, capturedAcc)
 		assert.Error(t, capturedErr)
 		assert.Equal(t, "stream error", capturedErr.Error())
+	})
+
+	t.Run("callback panic is recovered", func(t *testing.T) {
+		callbackCalled := false
+		callback := func(ctx context.Context, req *openai.ChatCompletionNewParams, acc *openai.ChatCompletionAccumulator, streamErr error) {
+			callbackCalled = true
+			panic("boom")
+		}
+
+		m := New("test-model", WithAPIKey("test-key"), WithChatStreamCompleteCallback(callback))
+		chatRequest := openai.ChatCompletionNewParams{}
+		acc := openai.ChatCompletionAccumulator{}
+
+		require.NotPanics(t, func() {
+			m.handleStreamCompleteCallback(context.Background(), chatRequest, acc, nil)
+		})
+		assert.True(t, callbackCalled)
 	})
 }
 
