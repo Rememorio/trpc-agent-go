@@ -1366,7 +1366,8 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 	})
 
 	t.Run("error_with_callbacks", func(t *testing.T) {
-		// Test that chunk callback is not called when error occurs immediately
+		// Test that an immediate streaming error skips chunk callbacks but still
+		// invokes the stream-complete callback before the error becomes visible.
 		streamErr := errors.New("callback test error")
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
@@ -1379,7 +1380,8 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 			Return(seqWithImmediateError[*genai.GenerateContentResponse](streamErr)).AnyTimes()
 
 		chunkCallbackCalled := false
-		completeCallbackCalled := false
+		completeCallbackCalled := make(chan struct{})
+		var completeCallbackResp *model.Response
 
 		m := &Model{
 			client: mockClient,
@@ -1389,7 +1391,8 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 			},
 			chatStreamCompleteCallback: func(ctx context.Context, chatRequest []*genai.Content,
 				generateConfig *genai.GenerateContentConfig, chatResponse *model.Response) {
-				completeCallbackCalled = true
+				completeCallbackResp = chatResponse
+				close(completeCallbackCalled)
 			},
 		}
 		respChan, err := m.GenerateContent(context.Background(), req)
@@ -1398,14 +1401,21 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 		// Read response (error)
 		resp := <-respChan
 		assert.NotNil(t, resp.Error)
+		select {
+		case <-completeCallbackCalled:
+		default:
+			t.Fatal("stream-complete callback must run before error response is emitted")
+		}
 
 		// Wait for channel to close
 		for range respChan {
 		}
 
-		// Callbacks should not be called when error occurs immediately
+		// Chunk callbacks should still not run on immediate errors.
 		assert.False(t, chunkCallbackCalled, "chunk callback should not be called on immediate error")
-		assert.False(t, completeCallbackCalled, "complete callback should not be called on error")
+		require.NotNil(t, completeCallbackResp)
+		require.NotNil(t, completeCallbackResp.Error)
+		assert.Equal(t, "callback test error", completeCallbackResp.Error.Message)
 	})
 
 	t.Run("mid_stream_error_with_chunk_callback", func(t *testing.T) {
@@ -1430,11 +1440,18 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 			Return(seqFromSliceWithError([]*genai.GenerateContentResponse{successChunk}, streamErr))
 
 		var chunkCallbackRaw []*genai.GenerateContentResponse
+		completeCallbackCalled := make(chan struct{})
+		var completeCallbackResp *model.Response
 		m := &Model{
 			client: mockClient,
 			chatChunkCallback: func(_ context.Context, _ []*genai.Content,
 				_ *genai.GenerateContentConfig, r *genai.GenerateContentResponse) {
 				chunkCallbackRaw = append(chunkCallbackRaw, r)
+			},
+			chatStreamCompleteCallback: func(_ context.Context, _ []*genai.Content,
+				_ *genai.GenerateContentConfig, r *model.Response) {
+				completeCallbackResp = r
+				close(completeCallbackCalled)
 			},
 		}
 		respChan, err := m.GenerateContent(context.Background(), req)
@@ -1451,9 +1468,17 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 		require.Equal(t, "partial", responses[0].Choices[0].Delta.Content)
 		require.NotNil(t, responses[1].Error)
 		require.Equal(t, "mid-stream interruption", responses[1].Error.Message)
+		select {
+		case <-completeCallbackCalled:
+		default:
+			t.Fatal("stream-complete callback must run before error response is emitted")
+		}
 		// chatChunkCallback must have been called once (for the flushed chunk).
 		require.Len(t, chunkCallbackRaw, 1)
 		require.Equal(t, successChunk, chunkCallbackRaw[0])
+		require.NotNil(t, completeCallbackResp)
+		require.NotNil(t, completeCallbackResp.Error)
+		require.Equal(t, "mid-stream interruption", completeCallbackResp.Error.Message)
 	})
 }
 

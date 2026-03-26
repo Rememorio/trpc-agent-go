@@ -1302,6 +1302,9 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		m.runChatChunkCallback(ctx, &chatRequest, &chunk)
 
 		if !emit(m.createPartialResponse(chunk)) {
+			if err := ctx.Err(); err != nil {
+				m.handleStreamCompleteCallback(ctx, chatRequest, acc, err)
+			}
 			return
 		}
 	}

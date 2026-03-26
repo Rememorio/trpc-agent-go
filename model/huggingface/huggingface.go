@@ -235,70 +235,73 @@ func (m *Model) handleStreamingRequest(
 	defer close(responseChan)
 
 	var streamErr error
-	defer func() {
-		m.runChatStreamCompleteCallback(ctx, hfRequest, streamErr)
-	}()
+	var terminalResponse *model.Response
 
 	// Make streaming HTTP request.
 	hfRequest.Stream = true
 	resp, err := m.makeStreamingRequest(ctx, hfRequest)
 	if err != nil {
 		streamErr = err
-		responseChan <- &model.Response{
+		terminalResponse = &model.Response{
 			Error: &model.ResponseError{
 				Message: fmt.Sprintf("failed to make streaming request: %v", err),
 			},
 		}
-		return
-	}
-	defer resp.Body.Close()
+	} else {
+		defer resp.Body.Close()
 
-	// Read and process streaming response.
-	// Use bufio.Reader instead of Scanner to avoid 64KB line limit.
-	reader := bufio.NewReader(resp.Body)
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
+		// Read and process streaming response.
+		// Use bufio.Reader instead of Scanner to avoid 64KB line limit.
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				streamErr = err
+				terminalResponse = &model.Response{
+					Error: &model.ResponseError{
+						Message: fmt.Sprintf("error reading stream: %v", err),
+					},
+				}
 				break
 			}
-			streamErr = err
-			responseChan <- &model.Response{
-				Error: &model.ResponseError{
-					Message: fmt.Sprintf("error reading stream: %v", err),
-				},
+
+			line = strings.TrimSpace(line)
+
+			// Skip empty lines and comments.
+			if line == "" || !strings.HasPrefix(line, "data: ") {
+				continue
 			}
-			break
+
+			// Remove "data: " prefix.
+			data := strings.TrimPrefix(line, "data: ")
+
+			// Check for stream end.
+			if data == "[DONE]" {
+				break
+			}
+
+			// Parse chunk.
+			var chunk ChatCompletionChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				log.Warnf("failed to parse chunk: %v, data: %s", err, data)
+				continue
+			}
+
+			// Call chunk callback if provided.
+			m.runChatChunkCallback(ctx, hfRequest, &chunk)
+
+			// Convert chunk to model.Response.
+			response := m.convertChunk(&chunk)
+			responseChan <- response
 		}
+	}
 
-		line = strings.TrimSpace(line)
-
-		// Skip empty lines and comments.
-		if line == "" || !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		// Remove "data: " prefix.
-		data := strings.TrimPrefix(line, "data: ")
-
-		// Check for stream end.
-		if data == "[DONE]" {
-			break
-		}
-
-		// Parse chunk.
-		var chunk ChatCompletionChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			log.Warnf("failed to parse chunk: %v, data: %s", err, data)
-			continue
-		}
-
-		// Call chunk callback if provided.
-		m.runChatChunkCallback(ctx, hfRequest, &chunk)
-
-		// Convert chunk to model.Response.
-		response := m.convertChunk(&chunk)
-		responseChan <- response
+	m.runChatStreamCompleteCallback(ctx, hfRequest, streamErr)
+	if terminalResponse != nil {
+		responseChan <- terminalResponse
 	}
 }
 

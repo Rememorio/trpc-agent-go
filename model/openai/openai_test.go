@@ -532,6 +532,76 @@ func TestModel_GenerateContentIter_Streaming(t *testing.T) {
 	require.True(t, sawHello)
 }
 
+func TestModel_GenerateContentIter_StreamingContextCancellationRunsCallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		chunks := []string{
+			`data: {"id":"iter-stream-cancel","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}`,
+			`data: {"id":"iter-stream-cancel","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":" world"},"finish_reason":null}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			fmt.Fprintf(w, "%s\n\n", chunk)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+	}))
+	defer server.Close()
+
+	callbackCalled := make(chan error, 1)
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackCalled <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	seq, err := m.GenerateContentIter(ctx, req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	seq(func(resp *model.Response) bool {
+		responses = append(responses, resp)
+		cancel()
+		return true
+	})
+
+	require.Len(t, responses, 1)
+	require.False(t, responses[0].Done)
+
+	select {
+	case streamErr := <-callbackCalled:
+		require.ErrorIs(t, streamErr, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for stream complete callback")
+	}
+}
+
 func TestOptions_Validation(t *testing.T) {
 	tests := []struct {
 		name string

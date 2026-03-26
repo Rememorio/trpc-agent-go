@@ -841,7 +841,8 @@ func Test_HandleStreamingResponseCallbackOnContextCancel(t *testing.T) {
 	select {
 	case resp := <-responseChan:
 		t.Fatalf("unexpected response: %#v", resp)
-	default:
+	case <-time.After(100 * time.Millisecond):
+		// no response after cancellation, as expected
 	}
 }
 

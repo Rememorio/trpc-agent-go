@@ -327,6 +327,13 @@ func (m *Model) handleStreamingResponse(
 	chatCompletion := m.client.Models().GenerateContentStream(
 		ctx, m.name, chatRequest, generateConfig)
 	acc := &Accumulator{}
+	sendTerminalResponse := func(resp *model.Response) {
+		m.runChatStreamCompleteCallback(ctx, chatRequest, generateConfig, resp)
+		select {
+		case responseChan <- resp:
+		case <-ctx.Done():
+		}
+	}
 	var chunks []*model.Response
 	var rawChunks []*genai.GenerateContentResponse
 	for chunk, err := range chatCompletion {
@@ -341,17 +348,14 @@ func (m *Model) handleStreamingResponse(
 					return
 				}
 			}
-			select {
-			case responseChan <- &model.Response{
+			sendTerminalResponse(&model.Response{
 				Error: &model.ResponseError{
 					Message: err.Error(),
 					Type:    model.ErrorTypeAPIError,
 				},
 				Timestamp: time.Now(),
 				Done:      true,
-			}:
-			case <-ctx.Done():
-			}
+			})
 			return
 		}
 		response := m.buildChunkResponse(chunk)
@@ -380,39 +384,29 @@ func (m *Model) handleStreamingResponse(
 			}
 		}
 		if retryErr != nil {
-			select {
-			case responseChan <- &model.Response{
+			sendTerminalResponse(&model.Response{
 				Error: &model.ResponseError{
 					Message: retryErr.Error(),
 					Type:    model.ErrorTypeAPIError,
 				},
 				Timestamp: time.Now(),
 				Done:      true,
-			}:
-			case <-ctx.Done():
-			}
+			})
 			return
 		}
 		if isMalformedFunctionCall(retryRaw) {
-			select {
-			case responseChan <- &model.Response{
+			sendTerminalResponse(&model.Response{
 				Error: &model.ResponseError{
 					Message: "gemini: MALFORMED_FUNCTION_CALL persists after retries",
 					Type:    model.ErrorTypeAPIError,
 				},
 				Timestamp: time.Now(),
 				Done:      true,
-			}:
-			case <-ctx.Done():
-			}
+			})
 			return
 		}
 		finalResponse = m.buildFinalResponse(retryRaw)
-		m.runChatStreamCompleteCallback(ctx, chatRequest, generateConfig, finalResponse)
-		select {
-		case responseChan <- finalResponse:
-		case <-ctx.Done():
-		}
+		sendTerminalResponse(finalResponse)
 		return
 	}
 
@@ -425,12 +419,7 @@ func (m *Model) handleStreamingResponse(
 			return
 		}
 	}
-	m.runChatStreamCompleteCallback(ctx, chatRequest, generateConfig, finalResponse)
-	select {
-	case responseChan <- finalResponse:
-	case <-ctx.Done():
-		return
-	}
+	sendTerminalResponse(finalResponse)
 }
 
 // convertContentBlock builds a single assistant message from Gemini Candidate.
