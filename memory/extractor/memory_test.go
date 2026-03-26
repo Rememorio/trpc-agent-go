@@ -537,6 +537,10 @@ func TestExtractor_BuildSystemPrompt_WithExistingMemories(t *testing.T) {
 		"[mem-1] User likes coffee.")
 	assert.Contains(t, prompt,
 		"[mem-2] User is 30 years old.")
+	assert.Contains(t, prompt,
+		"do NOT call memory_add again")
+	assert.Contains(t, prompt,
+		"NOT adding a duplicate")
 	assert.Contains(t, prompt, "</existing_memories>")
 }
 
