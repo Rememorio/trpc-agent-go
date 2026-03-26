@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -367,18 +366,6 @@ func (m *Model) Info() model.Info {
 	}
 }
 
-func recoverOpenAICallbackPanic(ctx context.Context, stage string) {
-	if recovered := recover(); recovered != nil {
-		log.ErrorfContext(
-			ctx,
-			"%s panic: %v\n%s",
-			stage,
-			recovered,
-			string(debug.Stack()),
-		)
-	}
-}
-
 func (m *Model) runChatRequestCallback(
 	ctx context.Context,
 	chatRequest *openai.ChatCompletionNewParams,
@@ -386,7 +373,7 @@ func (m *Model) runChatRequestCallback(
 	if m.chatRequestCallback == nil {
 		return
 	}
-	defer recoverOpenAICallbackPanic(ctx, "chat request callback")
+	defer imodel.RecoverCallbackPanic(ctx, "chat request callback")
 	m.chatRequestCallback(ctx, chatRequest)
 }
 
@@ -398,7 +385,7 @@ func (m *Model) runChatResponseCallback(
 	if m.chatResponseCallback == nil {
 		return
 	}
-	defer recoverOpenAICallbackPanic(ctx, "chat response callback")
+	defer imodel.RecoverCallbackPanic(ctx, "chat response callback")
 	m.chatResponseCallback(ctx, chatRequest, chatResponse)
 }
 
@@ -410,7 +397,7 @@ func (m *Model) runChatChunkCallback(
 	if m.chatChunkCallback == nil {
 		return
 	}
-	defer recoverOpenAICallbackPanic(ctx, "chat chunk callback")
+	defer imodel.RecoverCallbackPanic(ctx, "chat chunk callback")
 	m.chatChunkCallback(ctx, chatRequest, chatChunk)
 }
 
@@ -1633,7 +1620,7 @@ func (m *Model) handleStreamCompleteCallback(
 	if streamErr == nil {
 		callbackAcc = &acc
 	}
-	defer recoverOpenAICallbackPanic(ctx, "chat stream complete callback")
+	defer imodel.RecoverCallbackPanic(ctx, "chat stream complete callback")
 	m.chatStreamCompleteCallback(ctx, &chatRequest, callbackAcc, streamErr)
 }
 

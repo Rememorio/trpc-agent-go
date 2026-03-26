@@ -78,6 +78,76 @@ func (testErrorCounter) CountTokensRange(ctx context.Context, messages []model.M
 	return 0, fmt.Errorf("count tokens range error")
 }
 
+func TestModel_CallbackPanicsAreRecovered(t *testing.T) {
+	t.Run("request callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatRequestCallback: func(ctx context.Context, req *hunyuan.ChatCompletionNewParams) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatRequestCallback(context.Background(), &hunyuan.ChatCompletionNewParams{})
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("response callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatResponseCallback: func(ctx context.Context, req *hunyuan.ChatCompletionNewParams, resp *hunyuan.ChatCompletionResponse) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatResponseCallback(
+				context.Background(),
+				&hunyuan.ChatCompletionNewParams{},
+				&hunyuan.ChatCompletionResponse{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("chunk callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatChunkCallback: func(ctx context.Context, req *hunyuan.ChatCompletionNewParams, chunk *hunyuan.ChatCompletionResponse) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatChunkCallback(
+				context.Background(),
+				&hunyuan.ChatCompletionNewParams{},
+				&hunyuan.ChatCompletionResponse{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("stream complete callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatStreamCompleteCallback: func(ctx context.Context, req *hunyuan.ChatCompletionNewParams, err error) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatStreamCompleteCallback(context.Background(), &hunyuan.ChatCompletionNewParams{}, nil)
+		})
+		assert.True(t, callbackCalled)
+	})
+}
+
 func TestNew(t *testing.T) {
 	m := New("hunyuan-lite",
 		WithSecretId("test-secret-id"),

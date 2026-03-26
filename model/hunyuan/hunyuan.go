@@ -182,6 +182,53 @@ func (m *Model) Info() model.Info {
 	}
 }
 
+func (m *Model) runChatRequestCallback(
+	ctx context.Context,
+	chatRequest *hunyuan.ChatCompletionNewParams,
+) {
+	if m.chatRequestCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat request callback")
+	m.chatRequestCallback(ctx, chatRequest)
+}
+
+func (m *Model) runChatResponseCallback(
+	ctx context.Context,
+	chatRequest *hunyuan.ChatCompletionNewParams,
+	chatResponse *hunyuan.ChatCompletionResponse,
+) {
+	if m.chatResponseCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat response callback")
+	m.chatResponseCallback(ctx, chatRequest, chatResponse)
+}
+
+func (m *Model) runChatChunkCallback(
+	ctx context.Context,
+	chatRequest *hunyuan.ChatCompletionNewParams,
+	chatChunk *hunyuan.ChatCompletionResponse,
+) {
+	if m.chatChunkCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat chunk callback")
+	m.chatChunkCallback(ctx, chatRequest, chatChunk)
+}
+
+func (m *Model) runChatStreamCompleteCallback(
+	ctx context.Context,
+	chatRequest *hunyuan.ChatCompletionNewParams,
+	streamErr error,
+) {
+	if m.chatStreamCompleteCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat stream complete callback")
+	m.chatStreamCompleteCallback(ctx, chatRequest, streamErr)
+}
+
 // GenerateContent generates content from the model.
 func (m *Model) GenerateContent(
 	ctx context.Context,
@@ -202,9 +249,7 @@ func (m *Model) GenerateContent(
 	// Execute callback synchronously before starting the goroutine
 	// to avoid a race where the runner and HTTP handler finish
 	// (closing the SSE writer) while the callback is still running.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, chatRequest)
-	}
+	m.runChatRequestCallback(ctx, chatRequest)
 	// Send chat request and handle response.
 	responseChan := make(chan *model.Response, m.channelBufferSize)
 	go func() {
@@ -316,9 +361,7 @@ func (m *Model) handleNonStreamingResponse(
 		return
 	}
 
-	if m.chatResponseCallback != nil {
-		m.chatResponseCallback(ctx, chatRequest, chatResponse)
-	}
+	m.runChatResponseCallback(ctx, chatRequest, chatResponse)
 
 	response, err := convertChatResponse(chatResponse)
 	if err != nil {
@@ -346,9 +389,7 @@ func (m *Model) handleStreamingResponse(
 	)
 
 	err := m.client.ChatCompletionStream(ctx, chatRequest, func(chunk *hunyuan.ChatCompletionResponse) error {
-		if m.chatChunkCallback != nil {
-			m.chatChunkCallback(ctx, chatRequest, chunk)
-		}
+		m.runChatChunkCallback(ctx, chatRequest, chunk)
 
 		response, err := convertChatResponse(chunk)
 		if err != nil {
@@ -375,9 +416,7 @@ func (m *Model) handleStreamingResponse(
 	}
 
 	// Call the stream complete callback before surfacing the terminal result.
-	if m.chatStreamCompleteCallback != nil {
-		m.chatStreamCompleteCallback(ctx, chatRequest, streamErr)
-	}
+	m.runChatStreamCompleteCallback(ctx, chatRequest, streamErr)
 
 	if streamErr != nil {
 		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeStreamError, streamErr)

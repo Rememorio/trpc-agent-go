@@ -64,6 +64,79 @@ func Test_Model_Info(t *testing.T) {
 	assert.Equal(t, "claude-3-5-sonnet-latest", info.Name)
 }
 
+func TestModel_CallbackPanicsAreRecovered(t *testing.T) {
+	t.Run("request callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatRequestCallback: func(ctx context.Context, req *anthropic.MessageNewParams) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatRequestCallback(context.Background(), &anthropic.MessageNewParams{})
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("response callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatResponseCallback: func(ctx context.Context, req *anthropic.MessageNewParams, resp *anthropic.Message) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatResponseCallback(context.Background(), &anthropic.MessageNewParams{}, &anthropic.Message{})
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("chunk callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatChunkCallback: func(ctx context.Context, req *anthropic.MessageNewParams, chunk *anthropic.MessageStreamEventUnion) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			chunk := anthropic.MessageStreamEventUnion{}
+			m.runChatChunkCallback(context.Background(), &anthropic.MessageNewParams{}, &chunk)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("stream complete callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatStreamCompleteCallback: func(
+				ctx context.Context,
+				req *anthropic.MessageNewParams,
+				resp *anthropic.Message,
+				err error,
+			) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatStreamCompleteCallback(
+				context.Background(),
+				&anthropic.MessageNewParams{},
+				&anthropic.Message{},
+				nil,
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+}
+
 func TestWithHeaders_AppendsOptions(t *testing.T) {
 	o := &options{}
 	headers := map[string]string{

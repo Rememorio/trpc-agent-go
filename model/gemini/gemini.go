@@ -95,6 +95,56 @@ func (m *Model) Info() model.Info {
 	}
 }
 
+func (m *Model) runChatRequestCallback(
+	ctx context.Context,
+	chatRequest []*genai.Content,
+) {
+	if m.chatRequestCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat request callback")
+	m.chatRequestCallback(ctx, chatRequest)
+}
+
+func (m *Model) runChatResponseCallback(
+	ctx context.Context,
+	chatRequest []*genai.Content,
+	generateConfig *genai.GenerateContentConfig,
+	chatResponse *genai.GenerateContentResponse,
+) {
+	if m.chatResponseCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat response callback")
+	m.chatResponseCallback(ctx, chatRequest, generateConfig, chatResponse)
+}
+
+func (m *Model) runChatChunkCallback(
+	ctx context.Context,
+	chatRequest []*genai.Content,
+	generateConfig *genai.GenerateContentConfig,
+	chatResponse *genai.GenerateContentResponse,
+) {
+	if m.chatChunkCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat chunk callback")
+	m.chatChunkCallback(ctx, chatRequest, generateConfig, chatResponse)
+}
+
+func (m *Model) runChatStreamCompleteCallback(
+	ctx context.Context,
+	chatRequest []*genai.Content,
+	generateConfig *genai.GenerateContentConfig,
+	chatResponse *model.Response,
+) {
+	if m.chatStreamCompleteCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat stream complete callback")
+	m.chatStreamCompleteCallback(ctx, chatRequest, generateConfig, chatResponse)
+}
+
 // GenerateContent implements the model.Model interface.
 func (m *Model) GenerateContent(
 	ctx context.Context,
@@ -110,9 +160,7 @@ func (m *Model) GenerateContent(
 	// Execute callback synchronously before starting the goroutine
 	// to avoid a race where the runner and HTTP handler finish
 	// (closing the SSE writer) while the callback is still running.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, chatRequest)
-	}
+	m.runChatRequestCallback(ctx, chatRequest)
 	responseChan := make(chan *model.Response, m.channelBufferSize)
 	go func() {
 		defer close(responseChan)
@@ -254,9 +302,7 @@ func (m *Model) handleNonStreamingResponse(
 	}
 
 	// Call response callback on successful completion.
-	if m.chatResponseCallback != nil {
-		m.chatResponseCallback(ctx, chatRequest, generateConfig, chatCompletion)
-	}
+	m.runChatResponseCallback(ctx, chatRequest, generateConfig, chatCompletion)
 	response := m.buildFinalResponse(chatCompletion)
 	select {
 	case responseChan <- response:
@@ -288,9 +334,7 @@ func (m *Model) handleStreamingResponse(
 			// Flush already-buffered chunks so the caller sees partial data
 			// before the error (e.g. network interruption mid-stream).
 			for i, c := range chunks {
-				if m.chatChunkCallback != nil {
-					m.chatChunkCallback(ctx, chatRequest, generateConfig, rawChunks[i])
-				}
+				m.runChatChunkCallback(ctx, chatRequest, generateConfig, rawChunks[i])
 				select {
 				case responseChan <- c:
 				case <-ctx.Done():
@@ -364,9 +408,7 @@ func (m *Model) handleStreamingResponse(
 			return
 		}
 		finalResponse = m.buildFinalResponse(retryRaw)
-		if m.chatStreamCompleteCallback != nil {
-			m.chatStreamCompleteCallback(ctx, chatRequest, generateConfig, finalResponse)
-		}
+		m.runChatStreamCompleteCallback(ctx, chatRequest, generateConfig, finalResponse)
 		select {
 		case responseChan <- finalResponse:
 		case <-ctx.Done():
@@ -376,18 +418,14 @@ func (m *Model) handleStreamingResponse(
 
 	// Normal path: flush buffered chunks then the final Done=true response.
 	for i, chunk := range chunks {
-		if m.chatChunkCallback != nil {
-			m.chatChunkCallback(ctx, chatRequest, generateConfig, rawChunks[i])
-		}
+		m.runChatChunkCallback(ctx, chatRequest, generateConfig, rawChunks[i])
 		select {
 		case responseChan <- chunk:
 		case <-ctx.Done():
 			return
 		}
 	}
-	if m.chatStreamCompleteCallback != nil {
-		m.chatStreamCompleteCallback(ctx, chatRequest, generateConfig, finalResponse)
-	}
+	m.runChatStreamCompleteCallback(ctx, chatRequest, generateConfig, finalResponse)
 	select {
 	case responseChan <- finalResponse:
 	case <-ctx.Done():

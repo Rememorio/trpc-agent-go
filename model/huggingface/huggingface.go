@@ -128,9 +128,7 @@ func (m *Model) GenerateContent(ctx context.Context, request *model.Request) (<-
 	// Execute callback synchronously before starting the goroutine
 	// to avoid a race where the runner and HTTP handler finish
 	// (closing the SSE writer) while the callback is still running.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, hfRequest)
-	}
+	m.runChatRequestCallback(ctx, hfRequest)
 
 	// Create response channel.
 	responseChan := make(chan *model.Response, m.channelBufferSize)
@@ -143,6 +141,53 @@ func (m *Model) GenerateContent(ctx context.Context, request *model.Request) (<-
 	}
 
 	return responseChan, nil
+}
+
+func (m *Model) runChatRequestCallback(
+	ctx context.Context,
+	hfRequest *ChatCompletionRequest,
+) {
+	if m.chatRequestCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat request callback")
+	m.chatRequestCallback(ctx, hfRequest)
+}
+
+func (m *Model) runChatResponseCallback(
+	ctx context.Context,
+	hfRequest *ChatCompletionRequest,
+	hfResponse *ChatCompletionResponse,
+) {
+	if m.chatResponseCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat response callback")
+	m.chatResponseCallback(ctx, hfRequest, hfResponse)
+}
+
+func (m *Model) runChatChunkCallback(
+	ctx context.Context,
+	hfRequest *ChatCompletionRequest,
+	chunk *ChatCompletionChunk,
+) {
+	if m.chatChunkCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat chunk callback")
+	m.chatChunkCallback(ctx, hfRequest, chunk)
+}
+
+func (m *Model) runChatStreamCompleteCallback(
+	ctx context.Context,
+	hfRequest *ChatCompletionRequest,
+	streamErr error,
+) {
+	if m.chatStreamCompleteCallback == nil {
+		return
+	}
+	defer imodel.RecoverCallbackPanic(ctx, "chat stream complete callback")
+	m.chatStreamCompleteCallback(ctx, hfRequest, streamErr)
 }
 
 // Info returns basic information about the model.
@@ -173,9 +218,7 @@ func (m *Model) handleNonStreamingRequest(
 	}
 
 	// Call response callback if provided.
-	if m.chatResponseCallback != nil {
-		m.chatResponseCallback(ctx, hfRequest, hfResponse)
-	}
+	m.runChatResponseCallback(ctx, hfRequest, hfResponse)
 
 	// Convert HuggingFace response to model.Response.
 	response := m.convertResponse(hfResponse)
@@ -193,9 +236,7 @@ func (m *Model) handleStreamingRequest(
 
 	var streamErr error
 	defer func() {
-		if m.chatStreamCompleteCallback != nil {
-			m.chatStreamCompleteCallback(ctx, hfRequest, streamErr)
-		}
+		m.runChatStreamCompleteCallback(ctx, hfRequest, streamErr)
 	}()
 
 	// Make streaming HTTP request.
@@ -253,9 +294,7 @@ func (m *Model) handleStreamingRequest(
 		}
 
 		// Call chunk callback if provided.
-		if m.chatChunkCallback != nil {
-			m.chatChunkCallback(ctx, hfRequest, &chunk)
-		}
+		m.runChatChunkCallback(ctx, hfRequest, &chunk)
 
 		// Convert chunk to model.Response.
 		response := m.convertChunk(&chunk)

@@ -27,6 +27,98 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
+func TestModel_CallbackPanicsAreRecovered(t *testing.T) {
+	t.Run("request callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatRequestCallback: func(ctx context.Context, chatRequest []*genai.Content) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatRequestCallback(context.Background(), nil)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("response callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatResponseCallback: func(
+				ctx context.Context,
+				chatRequest []*genai.Content,
+				generateConfig *genai.GenerateContentConfig,
+				chatResponse *genai.GenerateContentResponse,
+			) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatResponseCallback(
+				context.Background(),
+				nil,
+				&genai.GenerateContentConfig{},
+				&genai.GenerateContentResponse{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("chunk callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatChunkCallback: func(
+				ctx context.Context,
+				chatRequest []*genai.Content,
+				generateConfig *genai.GenerateContentConfig,
+				chatResponse *genai.GenerateContentResponse,
+			) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatChunkCallback(
+				context.Background(),
+				nil,
+				&genai.GenerateContentConfig{},
+				&genai.GenerateContentResponse{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+
+	t.Run("stream complete callback", func(t *testing.T) {
+		callbackCalled := false
+		m := &Model{
+			chatStreamCompleteCallback: func(
+				ctx context.Context,
+				chatRequest []*genai.Content,
+				generateConfig *genai.GenerateContentConfig,
+				chatResponse *model.Response,
+			) {
+				callbackCalled = true
+				panic("boom")
+			},
+		}
+
+		require.NotPanics(t, func() {
+			m.runChatStreamCompleteCallback(
+				context.Background(),
+				nil,
+				&genai.GenerateContentConfig{},
+				&model.Response{},
+			)
+		})
+		assert.True(t, callbackCalled)
+	})
+}
+
 func TestModel_convertMessages(t *testing.T) {
 	var (
 		text      = "Text"
