@@ -273,14 +273,14 @@ func (d *personaDemo) handleCommand(
 	case lowerInput == commandPersona:
 		fmt.Println(setPersonaUsage)
 		return true, false, nil
-	case strings.HasPrefix(lowerInput, commandNew):
-		targetSessionID := strings.TrimSpace(userInput[len(commandNew):])
+	case lowerInput == commandNew || hasCommandPrefix(lowerInput, commandNew):
+		targetSessionID := commandArgument(userInput)
 		if targetSessionID == "" {
 			targetSessionID = newSessionID()
 		}
 		return true, false, d.switchSession(ctx, targetSessionID, true)
 	case hasCommandPrefix(lowerInput, commandUse):
-		targetSessionID := strings.TrimSpace(userInput[len(commandUse):])
+		targetSessionID := commandArgument(userInput)
 		if targetSessionID == "" {
 			fmt.Println("Usage: /use <session-id>")
 			return true, false, nil
@@ -473,8 +473,18 @@ func (d *personaDemo) switchSession(
 		d.showPersona(ctx)
 		return nil
 	}
-	if err := d.ensureSession(ctx, targetSessionID); err != nil {
-		return err
+	if announceNew {
+		if err := d.ensureSession(ctx, targetSessionID); err != nil {
+			return err
+		}
+	} else {
+		sess, err := d.loadSession(ctx, targetSessionID)
+		if err != nil {
+			return err
+		}
+		if sess == nil {
+			return fmt.Errorf("session %s does not exist", targetSessionID)
+		}
 	}
 
 	previousSessionID := d.sessionID

@@ -31,6 +31,7 @@ The agent instance itself is not mutated permanently.
 ```bash
 cd examples/session/persona
 export OPENAI_API_KEY="your-key"
+export MODEL_NAME="gpt-4.1-mini"
 export OPENAI_BASE_URL="https://api.openai.com/v1"
 
 go run . -session=inmemory
@@ -63,7 +64,7 @@ go run . -session=clickhouse
 | `/persona <text>` | Set the current session persona |
 | `/show-persona` | Show the active session persona |
 | `/new [id]` | Start a new session with the default persona |
-| `/use <id>` | Switch to an existing session |
+| `/use <id>` | Switch to an existing session, or return an error if it does not exist |
 | `/sessions` | List sessions and persona previews |
 | `/exit` | End the demo |
 
