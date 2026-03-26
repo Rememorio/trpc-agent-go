@@ -133,6 +133,33 @@ func getModelName() string {
 	return defaultModelName
 }
 
+func validateSessionType(value string) (util.SessionType, error) {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	supportedTypes := map[string]util.SessionType{
+		string(util.SessionInMemory):   util.SessionInMemory,
+		string(util.SessionSQLite):     util.SessionSQLite,
+		string(util.SessionRedis):      util.SessionRedis,
+		string(util.SessionPostgres):   util.SessionPostgres,
+		string(util.SessionMySQL):      util.SessionMySQL,
+		string(util.SessionClickHouse): util.SessionClickHouse,
+	}
+	sessionType, ok := supportedTypes[normalized]
+	if ok {
+		return sessionType, nil
+	}
+
+	allowedTypes := make([]string, 0, len(supportedTypes))
+	for name := range supportedTypes {
+		allowedTypes = append(allowedTypes, name)
+	}
+	sort.Strings(allowedTypes)
+	return "", fmt.Errorf(
+		"unsupported session backend %q, expected one of: %s",
+		value,
+		strings.Join(allowedTypes, ", "),
+	)
+}
+
 func (d *personaDemo) run() error {
 	ctx := context.Background()
 	if err := d.setup(ctx); err != nil {
@@ -145,8 +172,14 @@ func (d *personaDemo) run() error {
 }
 
 func (d *personaDemo) setup(ctx context.Context) error {
+	validatedSessionType, err := validateSessionType(d.sessionType)
+	if err != nil {
+		return err
+	}
+	d.sessionType = string(validatedSessionType)
+
 	sessionService, err := util.NewSessionServiceByType(
-		util.SessionType(d.sessionType),
+		validatedSessionType,
 		util.SessionServiceConfig{
 			EventLimit: d.eventLimit,
 			TTL:        d.sessionTTL,
