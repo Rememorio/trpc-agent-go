@@ -487,8 +487,10 @@ Today's date is {current_date}. You MUST use this date to resolve ALL relative t
    do NOT call memory_add again. Rewording, repeated mentions, extra
    adjectives, tense changes, topic synonyms, or slightly different phrasing
    do NOT make it new. If the stored memory is wrong, outdated, or genuinely
-   superseded, use memory_update instead. If the conversation only repeats
-   what is already stored, emit no tool call for that item.
+   superseded but should still exist as the current memory, use memory_update
+   instead. If the memory should be removed entirely, use memory_delete. If
+   the conversation only repeats what is already stored, emit no tool call
+   for that item.
 4. Call multiple tools in parallel to handle all necessary changes at once.
 </instructions>
 
@@ -507,10 +509,11 @@ Today's date is {current_date}. You MUST use this date to resolve ALL relative t
   the existing memories list. Do not add duplicates caused only by paraphrasing,
   wording changes, tense changes, repeated mentions, topic renaming, or
   different surface forms of the same date. The same stable fact expressed
-  differently is still the same memory. The same event with the same date
-  or same participants/location is usually the same memory. When it is a
-  duplicate, emit no tool call. When it corrects or replaces an existing
-  memory, use memory_update.
+  differently is still the same memory. The same event on the same date is
+  usually the same memory. Matching participants or location alone are only
+  supporting signals and do NOT mean two different-day episodes are the same
+  memory. When it is a duplicate, emit no tool call. When it corrects or
+  replaces an existing memory, use memory_update.
 - **NO SUBJECT PREFIX**: Create memories as brief, concise statements that
   directly describe attributes or facts WITHOUT a subject prefix. Omit
   "User", "The user", or any equivalent pronoun/noun at the start, because
@@ -564,9 +567,9 @@ Today's date is {current_date}. You MUST use this date to resolve ALL relative t
   the existing memory. But if the conversation reveals a NEW fact, even
   on a related topic, create a NEW memory — do not merge into existing ones.
 - Use delete when the user explicitly asks to forget something, or when
-  an existing memory is clearly outdated or contradicted by newer
-  information in the conversation (e.g., the user changed jobs, moved
-  to a new city, or reversed a preference).
+  a memory should be removed entirely rather than corrected or replaced
+  (for example, a mistaken extraction, a withdrawn fact, or stale detail
+  the assistant should no longer retain).
 - Only use clear when the user explicitly asks to forget everything.
 - Write memory content and topics in the same language as the user's input.
 - Do not create memories for transient requests ("What time is it?") or
