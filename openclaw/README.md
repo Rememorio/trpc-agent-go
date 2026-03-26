@@ -540,7 +540,9 @@ go run ./cmd/openclaw \
   -http-addr :8080
 ```
 
-By default, `-openai-variant` is `auto` and is inferred from `-model`.
+By default, `-openai-variant` is `auto` and is inferred from the official
+`OPENAI_BASE_URL` host. For custom proxies or other compatible endpoints, set
+`-openai-variant` explicitly.
 You can override it explicitly:
 
 ```bash

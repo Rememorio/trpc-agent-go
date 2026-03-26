@@ -521,8 +521,10 @@ go run ./cmd/openclaw \
   -http-addr :8080
 ```
 
-默认情况下，`-openai-variant` 为 `auto`，会从 `-model` 推断。
-你可以显式覆盖：
+默认情况下，`-openai-variant` 为 `auto`，会根据官方
+`OPENAI_BASE_URL` 的 host 自动推断。对于自定义代理或其他兼容端点，
+请显式设置 `-openai-variant`。
+你也可以显式覆盖：
 
 ```bash
 export OPENAI_API_KEY="your-api-key"
