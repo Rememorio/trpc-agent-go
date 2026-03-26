@@ -8,10 +8,12 @@
 //
 //
 
-// Package main demonstrates the recommended way to keep a different
-// session-level system prompt for each session. Instead of appending a system
-// event to session history, this example stores the prompt in session state and
-// injects it into LLMAgent global instruction through a placeholder.
+// Package main demonstrates a simple per-session persona example.
+//
+// Each session stores its own persona in session state. Before every
+// runner.Run call, the demo loads that persona and passes it through
+// agent.WithGlobalInstruction(...), so the active system prompt is decided
+// dynamically for that run.
 package main
 
 import (
@@ -25,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -36,41 +39,34 @@ import (
 )
 
 const (
-	appName               = "session-prompt-demo"
-	agentName             = "prompt-assistant"
-	defaultUserID         = "user"
-	sessionStateKeyPrompt = "session_system_prompt"
-	defaultModelName      = "deepseek-chat"
-	defaultSessionType    = "inmemory"
-	defaultEventLimit     = 1000
-	defaultSessionTTL     = 24 * time.Hour
-	bannerWidth           = 72
-	promptPreviewMaxLen   = 96
-	escapedNewline        = `\n`
-	actualNewline         = "\n"
+	appName              = "session-persona-demo"
+	agentName            = "persona-assistant"
+	defaultUserID        = "user"
+	personaStateKey      = "assistant_persona"
+	defaultModelName     = "deepseek-chat"
+	defaultSessionType   = "inmemory"
+	defaultEventLimit    = 1000
+	defaultBannerWidth   = 72
+	defaultPreviewMax    = 96
+	escapedNewline       = "\\n"
+	actualNewline        = "\n"
+	personaSessionPrefix = "persona-session"
 
 	commandExit        = "/exit"
-	commandPrompt      = "/prompt"
-	commandPlan        = "/plan"
 	commandPersona     = "/persona"
-	commandShowPrompt  = "/show-prompt"
-	commandShowPlan    = "/show-plan"
 	commandShowPersona = "/show-persona"
 	commandSessions    = "/sessions"
 	commandNew         = "/new"
 	commandUse         = "/use"
 
-	defaultPrompt = "You are a practical Go mentor for this session. " +
+	defaultSessionTTL = 24 * time.Hour
+
+	defaultPersona = "You are a practical Go mentor for this session. " +
 		"Prefer concise answers, explain trade-offs, and keep examples " +
 		"compact."
-	systemPromptTemplate = "You are the assistant for the current session. " +
-		"The session-specific system prompt below is authoritative. Adapt " +
-		"tone, expertise, and answer style to it.\n" +
-		"Session system prompt:\n{session_system_prompt?}"
-	instructionText = "Answer the latest user request directly. If the active " +
-		"session prompt contains an execution plan, continue the " +
-		"conversation according to that plan."
-	setPromptUsage = "Usage: /prompt <text>, /plan <text>, or /persona <text>"
+	instructionText = "Answer the latest user request directly. Follow the " +
+		"active session persona for tone, expertise, and response style."
+	setPersonaUsage = "Usage: /persona <text>"
 )
 
 var (
@@ -103,7 +99,7 @@ var (
 	)
 )
 
-type sessionPromptDemo struct {
+type personaDemo struct {
 	modelName      string
 	sessionType    string
 	eventLimit     int
@@ -118,7 +114,7 @@ type sessionPromptDemo struct {
 func main() {
 	flag.Parse()
 
-	demo := &sessionPromptDemo{
+	demo := &personaDemo{
 		modelName:   getModelName(),
 		sessionType: *sessionType,
 		eventLimit:  *eventLimit,
@@ -126,7 +122,7 @@ func main() {
 		streaming:   *streaming,
 	}
 	if err := demo.run(); err != nil {
-		log.Fatalf("Session prompt demo failed: %v", err)
+		log.Fatalf("Session persona demo failed: %v", err)
 	}
 }
 
@@ -137,7 +133,7 @@ func getModelName() string {
 	return defaultModelName
 }
 
-func (d *sessionPromptDemo) run() error {
+func (d *personaDemo) run() error {
 	ctx := context.Background()
 	if err := d.setup(ctx); err != nil {
 		return fmt.Errorf("setup failed: %w", err)
@@ -148,7 +144,7 @@ func (d *sessionPromptDemo) run() error {
 	return d.startChat(ctx)
 }
 
-func (d *sessionPromptDemo) setup(ctx context.Context) error {
+func (d *personaDemo) setup(ctx context.Context) error {
 	sessionService, err := util.NewSessionServiceByType(
 		util.SessionType(d.sessionType),
 		util.SessionServiceConfig{
@@ -171,9 +167,8 @@ func (d *sessionPromptDemo) setup(ctx context.Context) error {
 		agentName,
 		llmagent.WithModel(openai.New(d.modelName)),
 		llmagent.WithDescription(
-			"Assistant demo with session-scoped system prompt injection.",
+			"Assistant demo with per-run session persona override.",
 		),
-		llmagent.WithGlobalInstruction(systemPromptTemplate),
 		llmagent.WithInstruction(instructionText),
 		llmagent.WithGenerationConfig(model.GenerationConfig{
 			Stream: d.streaming,
@@ -188,38 +183,35 @@ func (d *sessionPromptDemo) setup(ctx context.Context) error {
 	return nil
 }
 
-func (d *sessionPromptDemo) printIntro(ctx context.Context) {
-	fmt.Println("Session Prompt Demo")
+func (d *personaDemo) printIntro(ctx context.Context) {
+	fmt.Println("Session Persona Demo")
 	fmt.Printf("Model: %s\n", d.modelName)
 	fmt.Printf("Session backend: %s\n", d.sessionType)
 	fmt.Printf("Streaming: %t\n", d.streaming)
 	fmt.Printf("Active session: %s\n", d.sessionID)
-	fmt.Println(strings.Repeat("=", bannerWidth))
+	fmt.Println(strings.Repeat("=", defaultBannerWidth))
 	fmt.Println("Commands:")
-	fmt.Println("  /prompt <text>    - Set the current session system prompt")
-	fmt.Println("  /plan <text>      - Alias of /prompt for task-plan prompts")
-	fmt.Println("  /show-prompt      - Show the active session system prompt")
-	fmt.Println("  /new [id]         - Start a new session with default prompt")
+	fmt.Println("  /persona <text>   - Set the current session persona")
+	fmt.Println("  /show-persona     - Show the current session persona")
+	fmt.Println("  /new [id]         - Start a new session with default persona")
 	fmt.Println("  /use <id>         - Switch to another session")
-	fmt.Println("  /sessions         - List sessions and their prompt previews")
+	fmt.Println("  /sessions         - List sessions and their persona previews")
 	fmt.Println("  /exit             - End the demo")
 	fmt.Println()
 	fmt.Println("Tip:")
-	fmt.Println("  Use \\n inside /prompt or /plan to store a multi-line task plan.")
+	fmt.Println("  Use \\n inside /persona to store a multi-line persona.")
 	fmt.Println()
 	fmt.Println("Example flow:")
 	fmt.Println("  1. Ask a question in the first session")
-	fmt.Println("  2. /plan You are coordinating a multimodal task.\\nStep 1: " +
-		"Collect images.\\nStep 2: Summarize findings.\\nStep 3: Draft the " +
-		"final reply.")
+	fmt.Println("  2. /persona You are a strict code reviewer.")
 	fmt.Println("  3. Continue chatting in the same session")
-	fmt.Println("  4. /new, set another plan, then /use to switch back")
+	fmt.Println("  4. /new, set another persona, then /use to switch back")
 	fmt.Println()
-	d.showPrompt(ctx)
+	d.showPersona(ctx)
 	fmt.Println()
 }
 
-func (d *sessionPromptDemo) startChat(ctx context.Context) error {
+func (d *personaDemo) startChat(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("You: ")
@@ -257,7 +249,7 @@ func (d *sessionPromptDemo) startChat(ctx context.Context) error {
 	return nil
 }
 
-func (d *sessionPromptDemo) handleCommand(
+func (d *personaDemo) handleCommand(
 	ctx context.Context,
 	userInput string,
 ) (bool, bool, error) {
@@ -266,26 +258,20 @@ func (d *sessionPromptDemo) handleCommand(
 	switch {
 	case lowerInput == commandExit:
 		return true, true, nil
-	case lowerInput == commandShowPrompt ||
-		lowerInput == commandShowPlan ||
-		lowerInput == commandShowPersona:
-		d.showPrompt(ctx)
+	case lowerInput == commandShowPersona:
+		d.showPersona(ctx)
 		return true, false, nil
 	case lowerInput == commandSessions:
 		return true, false, d.listSessions(ctx)
-	case hasCommandPrefix(lowerInput, commandPrompt),
-		hasCommandPrefix(lowerInput, commandPlan),
-		hasCommandPrefix(lowerInput, commandPersona):
-		prompt := normalizePromptInput(commandArgument(userInput))
-		if prompt == "" {
-			fmt.Println(setPromptUsage)
+	case hasCommandPrefix(lowerInput, commandPersona):
+		persona := normalizeInput(commandArgument(userInput))
+		if persona == "" {
+			fmt.Println(setPersonaUsage)
 			return true, false, nil
 		}
-		return true, false, d.setPrompt(ctx, prompt)
-	case lowerInput == commandPrompt ||
-		lowerInput == commandPlan ||
-		lowerInput == commandPersona:
-		fmt.Println(setPromptUsage)
+		return true, false, d.setPersona(ctx, persona)
+	case lowerInput == commandPersona:
+		fmt.Println(setPersonaUsage)
 		return true, false, nil
 	case strings.HasPrefix(lowerInput, commandNew):
 		targetSessionID := strings.TrimSpace(userInput[len(commandNew):])
@@ -319,21 +305,27 @@ func commandArgument(input string) string {
 	return strings.TrimSpace(arg)
 }
 
-func normalizePromptInput(value string) string {
+func normalizeInput(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.ReplaceAll(value, escapedNewline, actualNewline)
 	return strings.TrimSpace(value)
 }
 
-func (d *sessionPromptDemo) processMessage(
+func (d *personaDemo) processMessage(
 	ctx context.Context,
 	userInput string,
 ) error {
+	persona, err := d.currentPersona(ctx)
+	if err != nil {
+		return err
+	}
+
 	eventChan, err := d.runner.Run(
 		ctx,
 		d.userID,
 		d.sessionID,
 		model.NewUserMessage(userInput),
+		agent.WithGlobalInstruction(buildPersonaInstruction(persona)),
 	)
 	if err != nil {
 		return fmt.Errorf("run agent failed: %w", err)
@@ -341,7 +333,17 @@ func (d *sessionPromptDemo) processMessage(
 	return d.processResponse(eventChan)
 }
 
-func (d *sessionPromptDemo) processResponse(
+func buildPersonaInstruction(persona string) string {
+	persona = strings.TrimSpace(persona)
+	if persona == "" {
+		persona = defaultPersona
+	}
+	return "You are the assistant for the current session. The session " +
+		"persona below is authoritative. Adapt tone, expertise, and answer " +
+		"style to it.\nSession persona:\n" + persona
+}
+
+func (d *personaDemo) processResponse(
 	eventChan <-chan *event.Event,
 ) error {
 	fmt.Print("Assistant: ")
@@ -373,19 +375,19 @@ func (d *sessionPromptDemo) processResponse(
 	return nil
 }
 
-func (d *sessionPromptDemo) extractContent(choice model.Choice) string {
+func (d *personaDemo) extractContent(choice model.Choice) string {
 	if d.streaming {
 		return choice.Delta.Content
 	}
 	return choice.Message.Content
 }
 
-func (d *sessionPromptDemo) setPrompt(
+func (d *personaDemo) setPersona(
 	ctx context.Context,
-	prompt string,
+	persona string,
 ) error {
-	if prompt == "" {
-		return fmt.Errorf("session prompt must not be empty")
+	if persona == "" {
+		return fmt.Errorf("persona must not be empty")
 	}
 	if err := d.ensureSession(ctx, d.sessionID); err != nil {
 		return err
@@ -397,37 +399,36 @@ func (d *sessionPromptDemo) setPrompt(
 		SessionID: d.sessionID,
 	}
 	if err := d.sessionService.UpdateSessionState(ctx, key, session.StateMap{
-		sessionStateKeyPrompt: []byte(prompt),
+		personaStateKey: []byte(persona),
 	}); err != nil {
-		return fmt.Errorf("update session prompt failed: %w", err)
+		return fmt.Errorf("update persona failed: %w", err)
 	}
 
-	fmt.Printf("Updated prompt for session %s.\n", d.sessionID)
-	d.showPrompt(ctx)
+	fmt.Printf("Updated persona for session %s.\n", d.sessionID)
+	d.showPersona(ctx)
 	return nil
 }
 
-func (d *sessionPromptDemo) showPrompt(ctx context.Context) {
-	sess, err := d.sessionService.GetSession(ctx, session.Key{
-		AppName:   appName,
-		UserID:    d.userID,
-		SessionID: d.sessionID,
-	})
+func (d *personaDemo) showPersona(ctx context.Context) {
+	persona, err := d.currentPersona(ctx)
 	if err != nil {
-		fmt.Printf("Failed to load session: %v\n", err)
+		fmt.Printf("Failed to load persona: %v\n", err)
 		return
 	}
-	if sess == nil {
-		fmt.Printf("Session %s was not found.\n", d.sessionID)
-		return
-	}
-
 	fmt.Printf("Active session: %s\n", d.sessionID)
-	fmt.Println("System prompt:")
-	fmt.Println(promptFromSession(sess))
+	fmt.Println("Persona:")
+	fmt.Println(persona)
 }
 
-func (d *sessionPromptDemo) listSessions(ctx context.Context) error {
+func (d *personaDemo) currentPersona(ctx context.Context) (string, error) {
+	sess, err := d.loadSession(ctx, d.sessionID)
+	if err != nil {
+		return "", err
+	}
+	return personaFromSession(sess), nil
+}
+
+func (d *personaDemo) listSessions(ctx context.Context) error {
 	sessions, err := d.sessionService.ListSessions(ctx, session.UserKey{
 		AppName: appName,
 		UserID:  d.userID,
@@ -450,15 +451,15 @@ func (d *sessionPromptDemo) listSessions(ctx context.Context) error {
 		if sess.ID == d.sessionID {
 			marker = "*"
 		}
-		preview := singleLinePrompt(promptFromSession(sess))
-		preview = util.Truncate(preview, promptPreviewMaxLen)
+		preview := singleLinePersona(personaFromSession(sess))
+		preview = util.Truncate(preview, defaultPreviewMax)
 		fmt.Printf("  %s %s\n", marker, sess.ID)
-		fmt.Printf("    Prompt: %s\n", preview)
+		fmt.Printf("    Persona: %s\n", preview)
 	}
 	return nil
 }
 
-func (d *sessionPromptDemo) switchSession(
+func (d *personaDemo) switchSession(
 	ctx context.Context,
 	targetSessionID string,
 	announceNew bool,
@@ -469,7 +470,7 @@ func (d *sessionPromptDemo) switchSession(
 	}
 	if targetSessionID == d.sessionID {
 		fmt.Printf("Already using session %s.\n", d.sessionID)
-		d.showPrompt(ctx)
+		d.showPersona(ctx)
 		return nil
 	}
 	if err := d.ensureSession(ctx, targetSessionID); err != nil {
@@ -483,60 +484,93 @@ func (d *sessionPromptDemo) switchSession(
 	} else {
 		fmt.Printf("Switched from %s to %s.\n", previousSessionID, d.sessionID)
 	}
-	d.showPrompt(ctx)
+	d.showPersona(ctx)
 	return nil
 }
 
-func (d *sessionPromptDemo) ensureSession(
+func (d *personaDemo) ensureSession(
 	ctx context.Context,
 	targetSessionID string,
+) error {
+	sess, err := d.loadSession(ctx, targetSessionID)
+	if err != nil {
+		return err
+	}
+	if sess != nil {
+		if _, ok := sess.State[personaStateKey]; ok {
+			return nil
+		}
+		return d.updatePersona(ctx, targetSessionID, defaultPersona)
+	}
+
+	key := session.Key{
+		AppName:   appName,
+		UserID:    d.userID,
+		SessionID: targetSessionID,
+	}
+	_, err = d.sessionService.CreateSession(ctx, key, session.StateMap{
+		personaStateKey: []byte(defaultPersona),
+	})
+	if err != nil {
+		return fmt.Errorf("create session failed: %w", err)
+	}
+	return nil
+}
+
+func (d *personaDemo) loadSession(
+	ctx context.Context,
+	targetSessionID string,
+) (*session.Session, error) {
+	key := session.Key{
+		AppName:   appName,
+		UserID:    d.userID,
+		SessionID: targetSessionID,
+	}
+	sess, err := d.sessionService.GetSession(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("get session failed: %w", err)
+	}
+	return sess, nil
+}
+
+func (d *personaDemo) updatePersona(
+	ctx context.Context,
+	targetSessionID string,
+	persona string,
 ) error {
 	key := session.Key{
 		AppName:   appName,
 		UserID:    d.userID,
 		SessionID: targetSessionID,
 	}
-
-	sess, err := d.sessionService.GetSession(ctx, key)
-	if err != nil {
-		return fmt.Errorf("get session failed: %w", err)
-	}
-	if sess == nil {
-		_, err = d.sessionService.CreateSession(ctx, key, session.StateMap{
-			sessionStateKeyPrompt: []byte(defaultPrompt),
-		})
-		if err != nil {
-			return fmt.Errorf("create session failed: %w", err)
-		}
-		return nil
-	}
-	if _, ok := sess.State[sessionStateKeyPrompt]; ok {
-		return nil
-	}
 	if err := d.sessionService.UpdateSessionState(ctx, key, session.StateMap{
-		sessionStateKeyPrompt: []byte(defaultPrompt),
+		personaStateKey: []byte(persona),
 	}); err != nil {
-		return fmt.Errorf("initialize session prompt failed: %w", err)
+		return fmt.Errorf("initialize persona failed: %w", err)
 	}
 	return nil
 }
 
-func promptFromSession(sess *session.Session) string {
+func personaFromSession(sess *session.Session) string {
 	if sess == nil {
 		return "(missing session)"
 	}
-	prompt, ok := sess.State[sessionStateKeyPrompt]
-	if !ok || len(prompt) == 0 {
-		return "(session prompt not set)"
+	persona, ok := sess.State[personaStateKey]
+	if !ok || len(persona) == 0 {
+		return defaultPersona
 	}
-	return string(prompt)
+	return string(persona)
 }
 
-func singleLinePrompt(prompt string) string {
-	prompt = strings.ReplaceAll(prompt, actualNewline, " ")
-	return strings.Join(strings.Fields(prompt), " ")
+func singleLinePersona(persona string) string {
+	persona = strings.ReplaceAll(persona, actualNewline, " ")
+	return strings.Join(strings.Fields(persona), " ")
 }
 
 func newSessionID() string {
-	return fmt.Sprintf("session-%d", time.Now().UnixNano())
+	return fmt.Sprintf(
+		"%s-%d",
+		personaSessionPrefix,
+		time.Now().UnixNano(),
+	)
 }
