@@ -488,7 +488,7 @@ func parseRunOptions(args []string) (runOptions, error) {
 		&opts.OpenAIVariant,
 		"openai-variant",
 		defaultOpenAIVariant,
-		"OpenAI variant: auto, openai, deepseek, qwen, hunyuan (auto uses official base URL)",
+		"OpenAI variant: auto, openai, deepseek, qwen, hunyuan (auto uses configured base URL host)",
 	)
 	fs.StringVar(
 		&opts.OpenAIBaseURL,
