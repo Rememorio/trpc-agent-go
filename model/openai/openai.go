@@ -1621,10 +1621,189 @@ func (m *Model) handleStreamCompleteCallback(
 	}
 	var callbackAcc *openai.ChatCompletionAccumulator
 	if streamErr == nil {
-		callbackAcc = &acc
+		clonedAcc := cloneChatCompletionAccumulator(acc)
+		callbackAcc = &clonedAcc
 	}
 	defer imodel.RecoverCallbackPanic(ctx, "chat stream complete callback")
 	m.chatStreamCompleteCallback(ctx, &chatRequest, callbackAcc, streamErr)
+}
+
+func cloneChatCompletionAccumulator(acc openai.ChatCompletionAccumulator) openai.ChatCompletionAccumulator {
+	cloned := acc
+	cloned.ChatCompletion = cloneChatCompletion(acc.ChatCompletion)
+	return cloned
+}
+
+func cloneChatCompletion(chatCompletion openai.ChatCompletion) openai.ChatCompletion {
+	cloned := chatCompletion
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(chatCompletion.JSON.ExtraFields)
+	cloned.Usage = cloneCompletionUsage(chatCompletion.Usage)
+	if chatCompletion.Choices != nil {
+		cloned.Choices = make([]openai.ChatCompletionChoice, len(chatCompletion.Choices))
+		for i, choice := range chatCompletion.Choices {
+			cloned.Choices[i] = cloneChatCompletionChoice(choice)
+		}
+	}
+	return cloned
+}
+
+func cloneChatCompletionChoice(choice openai.ChatCompletionChoice) openai.ChatCompletionChoice {
+	cloned := choice
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(choice.JSON.ExtraFields)
+	cloned.Logprobs = cloneChatCompletionChoiceLogprobs(choice.Logprobs)
+	cloned.Message = cloneChatCompletionMessage(choice.Message)
+	return cloned
+}
+
+func cloneChatCompletionChoiceLogprobs(
+	logprobs openai.ChatCompletionChoiceLogprobs,
+) openai.ChatCompletionChoiceLogprobs {
+	cloned := logprobs
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(logprobs.JSON.ExtraFields)
+	if logprobs.Content != nil {
+		cloned.Content = make([]openai.ChatCompletionTokenLogprob, len(logprobs.Content))
+		for i, token := range logprobs.Content {
+			cloned.Content[i] = cloneChatCompletionTokenLogprob(token)
+		}
+	}
+	if logprobs.Refusal != nil {
+		cloned.Refusal = make([]openai.ChatCompletionTokenLogprob, len(logprobs.Refusal))
+		for i, token := range logprobs.Refusal {
+			cloned.Refusal[i] = cloneChatCompletionTokenLogprob(token)
+		}
+	}
+	return cloned
+}
+
+func cloneChatCompletionTokenLogprob(
+	token openai.ChatCompletionTokenLogprob,
+) openai.ChatCompletionTokenLogprob {
+	cloned := token
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(token.JSON.ExtraFields)
+	if token.Bytes != nil {
+		cloned.Bytes = append([]int64(nil), token.Bytes...)
+	}
+	if token.TopLogprobs != nil {
+		cloned.TopLogprobs = make([]openai.ChatCompletionTokenLogprobTopLogprob, len(token.TopLogprobs))
+		for i, top := range token.TopLogprobs {
+			cloned.TopLogprobs[i] = cloneChatCompletionTokenLogprobTopLogprob(top)
+		}
+	}
+	return cloned
+}
+
+func cloneChatCompletionTokenLogprobTopLogprob(
+	token openai.ChatCompletionTokenLogprobTopLogprob,
+) openai.ChatCompletionTokenLogprobTopLogprob {
+	cloned := token
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(token.JSON.ExtraFields)
+	if token.Bytes != nil {
+		cloned.Bytes = append([]int64(nil), token.Bytes...)
+	}
+	return cloned
+}
+
+func cloneChatCompletionMessage(message openai.ChatCompletionMessage) openai.ChatCompletionMessage {
+	cloned := message
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(message.JSON.ExtraFields)
+	cloned.Audio = cloneChatCompletionAudio(message.Audio)
+	cloned.FunctionCall = cloneChatCompletionMessageFunctionCall(message.FunctionCall)
+	if message.Annotations != nil {
+		cloned.Annotations = make([]openai.ChatCompletionMessageAnnotation, len(message.Annotations))
+		for i, annotation := range message.Annotations {
+			cloned.Annotations[i] = cloneChatCompletionMessageAnnotation(annotation)
+		}
+	}
+	if message.ToolCalls != nil {
+		cloned.ToolCalls = make([]openai.ChatCompletionMessageToolCall, len(message.ToolCalls))
+		for i, toolCall := range message.ToolCalls {
+			cloned.ToolCalls[i] = cloneChatCompletionMessageToolCall(toolCall)
+		}
+	}
+	return cloned
+}
+
+func cloneChatCompletionMessageAnnotation(
+	annotation openai.ChatCompletionMessageAnnotation,
+) openai.ChatCompletionMessageAnnotation {
+	cloned := annotation
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(annotation.JSON.ExtraFields)
+	cloned.URLCitation = cloneChatCompletionMessageAnnotationURLCitation(annotation.URLCitation)
+	return cloned
+}
+
+func cloneChatCompletionMessageAnnotationURLCitation(
+	urlCitation openai.ChatCompletionMessageAnnotationURLCitation,
+) openai.ChatCompletionMessageAnnotationURLCitation {
+	cloned := urlCitation
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(urlCitation.JSON.ExtraFields)
+	return cloned
+}
+
+func cloneChatCompletionAudio(audio openai.ChatCompletionAudio) openai.ChatCompletionAudio {
+	cloned := audio
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(audio.JSON.ExtraFields)
+	return cloned
+}
+
+func cloneChatCompletionMessageFunctionCall(
+	functionCall openai.ChatCompletionMessageFunctionCall,
+) openai.ChatCompletionMessageFunctionCall {
+	cloned := functionCall
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(functionCall.JSON.ExtraFields)
+	return cloned
+}
+
+func cloneChatCompletionMessageToolCall(
+	toolCall openai.ChatCompletionMessageToolCall,
+) openai.ChatCompletionMessageToolCall {
+	cloned := toolCall
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(toolCall.JSON.ExtraFields)
+	cloned.Function = cloneChatCompletionMessageToolCallFunction(toolCall.Function)
+	return cloned
+}
+
+func cloneChatCompletionMessageToolCallFunction(
+	function openai.ChatCompletionMessageToolCallFunction,
+) openai.ChatCompletionMessageToolCallFunction {
+	cloned := function
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(function.JSON.ExtraFields)
+	return cloned
+}
+
+func cloneCompletionUsage(usage openai.CompletionUsage) openai.CompletionUsage {
+	cloned := usage
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(usage.JSON.ExtraFields)
+	cloned.CompletionTokensDetails = cloneCompletionUsageCompletionTokensDetails(usage.CompletionTokensDetails)
+	cloned.PromptTokensDetails = cloneCompletionUsagePromptTokensDetails(usage.PromptTokensDetails)
+	return cloned
+}
+
+func cloneCompletionUsageCompletionTokensDetails(
+	details openai.CompletionUsageCompletionTokensDetails,
+) openai.CompletionUsageCompletionTokensDetails {
+	cloned := details
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(details.JSON.ExtraFields)
+	return cloned
+}
+
+func cloneCompletionUsagePromptTokensDetails(
+	details openai.CompletionUsagePromptTokensDetails,
+) openai.CompletionUsagePromptTokensDetails {
+	cloned := details
+	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(details.JSON.ExtraFields)
+	return cloned
+}
+
+func cloneRespJSONFieldMap(fields map[string]respjson.Field) map[string]respjson.Field {
+	if fields == nil {
+		return nil
+	}
+	cloned := make(map[string]respjson.Field, len(fields))
+	for key, value := range fields {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 // shouldSuppressChunk returns true when the chunk contains no meaningful delta

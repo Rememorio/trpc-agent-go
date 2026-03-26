@@ -1457,21 +1457,21 @@ func TestModel_GenerateContentStreamingError(t *testing.T) {
 		respChan, err := m.GenerateContent(context.Background(), req)
 		require.NoError(t, err)
 
-		var responses []*model.Response
-		for r := range respChan {
-			responses = append(responses, r)
-		}
+		partialResp := <-respChan
+		require.NotNil(t, partialResp)
+		require.Nil(t, partialResp.Error)
+		require.Equal(t, "partial", partialResp.Choices[0].Delta.Content)
 
-		// One partial chunk then one error response.
-		require.Len(t, responses, 2)
-		require.Nil(t, responses[0].Error)
-		require.Equal(t, "partial", responses[0].Choices[0].Delta.Content)
-		require.NotNil(t, responses[1].Error)
-		require.Equal(t, "mid-stream interruption", responses[1].Error.Message)
+		errorResp := <-respChan
+		require.NotNil(t, errorResp)
+		require.NotNil(t, errorResp.Error)
+		require.Equal(t, "mid-stream interruption", errorResp.Error.Message)
 		select {
 		case <-completeCallbackCalled:
 		default:
 			t.Fatal("stream-complete callback must run before error response is emitted")
+		}
+		for range respChan {
 		}
 		// chatChunkCallback must have been called once (for the flushed chunk).
 		require.Len(t, chunkCallbackRaw, 1)

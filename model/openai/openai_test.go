@@ -588,7 +588,7 @@ func TestModel_GenerateContentIter_StreamingContextCancellationRunsCallback(t *t
 	seq(func(resp *model.Response) bool {
 		responses = append(responses, resp)
 		cancel()
-		return true
+		return false
 	})
 
 	require.Len(t, responses, 1)
@@ -6898,6 +6898,54 @@ func TestModel_handleStreamCompleteCallback(t *testing.T) {
 			m.handleStreamCompleteCallback(context.Background(), chatRequest, acc, nil)
 		})
 		assert.True(t, callbackCalled)
+	})
+
+	t.Run("callback mutations do not affect original accumulator", func(t *testing.T) {
+		callbackCalled := false
+		callback := func(ctx context.Context, req *openai.ChatCompletionNewParams, acc *openai.ChatCompletionAccumulator, streamErr error) {
+			callbackCalled = true
+			require.NotNil(t, acc)
+			acc.Choices[0].Message.Content = "mutated"
+			acc.Choices[0].Message.ToolCalls[0].Function.Arguments = `{"city":"shanghai"}`
+			delete(acc.Choices[0].Message.JSON.ExtraFields, "reasoning_content")
+		}
+
+		m := New("test-model", WithAPIKey("test-key"), WithChatStreamCompleteCallback(callback))
+		chatRequest := openai.ChatCompletionNewParams{}
+		acc := openai.ChatCompletionAccumulator{
+			ChatCompletion: openai.ChatCompletion{
+				ID: "acc-id",
+				Choices: []openai.ChatCompletionChoice{
+					{
+						Index:        0,
+						FinishReason: "stop",
+						Message: openai.ChatCompletionMessage{
+							Content: "original",
+							ToolCalls: []openai.ChatCompletionMessageToolCall{
+								{
+									ID: "call-1",
+									Function: openai.ChatCompletionMessageToolCallFunction{
+										Name:      "weather",
+										Arguments: `{"city":"beijing"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		acc.Choices[0].Message.JSON.ExtraFields = map[string]respjson.Field{
+			"reasoning_content": {},
+		}
+
+		m.handleStreamCompleteCallback(context.Background(), chatRequest, acc, nil)
+
+		assert.True(t, callbackCalled)
+		assert.Equal(t, "original", acc.Choices[0].Message.Content)
+		assert.Equal(t, `{"city":"beijing"}`, acc.Choices[0].Message.ToolCalls[0].Function.Arguments)
+		_, exists := acc.Choices[0].Message.JSON.ExtraFields["reasoning_content"]
+		assert.True(t, exists)
 	})
 }
 
