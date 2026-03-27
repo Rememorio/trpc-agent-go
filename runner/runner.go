@@ -25,7 +25,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
-	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
@@ -1732,8 +1732,8 @@ func (r *runner) enqueueAutoMemoryJob(
 	if r.memoryService == nil || sess == nil {
 		return
 	}
-	jobSession := memoryscope.CloneSessionWithRuntimeState(sess, runtimeState)
-	jobCtx := memoryscope.ContextWithAutoMemoryCursorSession(ctx, sess)
+	jobSession := imemory.CloneSessionWithRuntimeState(sess, runtimeState)
+	jobCtx := imemory.ContextWithAutoMemoryCursorSession(ctx, sess)
 	if err := r.memoryService.EnqueueAutoMemoryJob(jobCtx, jobSession); err != nil {
 		log.DebugfContext(ctx, "Auto memory extraction skipped or failed: %v", err)
 		return

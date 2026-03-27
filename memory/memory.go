@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -312,7 +312,7 @@ type SearchOptions struct {
 
 // RuntimeState returns runtime state for one run-scoped memory user override.
 func RuntimeState(userID string) map[string]any {
-	return memoryscope.RuntimeState(userID)
+	return imemory.RuntimeState(userID)
 }
 
 // ResolveUserID resolves the effective memory user for the current run.
@@ -325,7 +325,7 @@ func ResolveUserID(
 	sess *session.Session,
 	runtimeState map[string]any,
 ) (string, bool) {
-	return memoryscope.ResolveUserID(sess, runtimeState)
+	return imemory.ResolveUserID(sess, runtimeState)
 }
 
 // ResolveUserKey resolves the effective memory user key for the current run.

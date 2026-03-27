@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -62,7 +62,7 @@ func (m *mockMemoryServiceForAutoMemory) Tools() []tool.Tool {
 func (m *mockMemoryServiceForAutoMemory) EnqueueAutoMemoryJob(ctx context.Context, sess *session.Session) error {
 	m.enqueueCalled = true
 	m.sess = sess
-	m.cursorSess, _ = memoryscope.AutoMemoryCursorSessionFromContext(ctx)
+	m.cursorSess, _ = imemory.AutoMemoryCursorSessionFromContext(ctx)
 	return m.enqueueErr
 }
 

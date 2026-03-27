@@ -15,7 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -406,7 +406,7 @@ func TestResolveUserID(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "session-user", userID)
 
-	cloned := memoryscope.CloneSessionWithRuntimeState(
+	cloned := imemory.CloneSessionWithRuntimeState(
 		sess,
 		RuntimeState("state-user"),
 	)

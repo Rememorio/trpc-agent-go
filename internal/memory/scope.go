@@ -6,8 +6,8 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-// Package memoryscope contains internal helpers for resolving run-scoped memory users.
-package memoryscope
+// Package memory contains internal helpers for resolving run-scoped memory users.
+package memory
 
 import (
 	"context"
