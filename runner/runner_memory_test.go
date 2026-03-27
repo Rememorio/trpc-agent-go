@@ -27,6 +27,7 @@ type mockMemoryServiceForAutoMemory struct {
 	enqueueCalled bool
 	enqueueErr    error
 	sess          *session.Session
+	cursorSess    *session.Session
 }
 
 func (m *mockMemoryServiceForAutoMemory) AddMemory(ctx context.Context, userKey memory.UserKey, memoryStr string, topics []string, _ ...memory.AddOption) error {
@@ -60,6 +61,7 @@ func (m *mockMemoryServiceForAutoMemory) Tools() []tool.Tool {
 func (m *mockMemoryServiceForAutoMemory) EnqueueAutoMemoryJob(ctx context.Context, sess *session.Session) error {
 	m.enqueueCalled = true
 	m.sess = sess
+	m.cursorSess, _ = memory.AutoMemoryCursorSessionFromContext(ctx)
 	return m.enqueueErr
 }
 
@@ -103,6 +105,7 @@ func TestEnqueueAutoMemoryJob(t *testing.T) {
 		)
 		require.True(t, mockSvc.enqueueCalled)
 		require.NotSame(t, sess, mockSvc.sess)
+		require.Same(t, sess, mockSvc.cursorSess)
 
 		userID, ok := memory.ResolveUserID(mockSvc.sess, nil)
 		require.True(t, ok)

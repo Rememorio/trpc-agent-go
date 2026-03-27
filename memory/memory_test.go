@@ -10,6 +10,7 @@
 package memory
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -417,6 +418,17 @@ func TestResolveUserID(t *testing.T) {
 	)
 	require.True(t, ok)
 	require.Equal(t, "runtime-user", userID)
+
+	userID, ok = ResolveUserID(nil, RuntimeState("runtime-user"))
+	require.True(t, ok)
+	require.Equal(t, "runtime-user", userID)
+
+	userID, ok = ResolveUserID(
+		session.NewSession("app", " ", "sess-1"),
+		map[string]any{RuntimeStateKeyUserID: 123},
+	)
+	require.False(t, ok)
+	require.Empty(t, userID)
 }
 
 func TestResolveUserKey(t *testing.T) {
@@ -431,6 +443,12 @@ func TestResolveUserKey(t *testing.T) {
 		AppName: "app",
 		UserID:  "runtime-user",
 	}, userKey)
+
+	_, ok = ResolveUserKey(nil, nil)
+	require.False(t, ok)
+
+	_, ok = ResolveUserKey(session.NewSession("", "user", "sess-1"), nil)
+	require.False(t, ok)
 }
 
 func TestCloneSessionWithRuntimeState(t *testing.T) {
@@ -453,4 +471,31 @@ func TestCloneSessionWithRuntimeState(t *testing.T) {
 	require.Equal(t, "session-user", originalUserID)
 
 	require.Same(t, sess, CloneSessionWithRuntimeState(sess, nil))
+
+	cloned = CloneSessionWithRuntimeState(
+		sess,
+		map[string]any{RuntimeStateKeyUserID: 123},
+	)
+	require.Same(t, sess, cloned)
+}
+
+func TestAutoMemoryCursorSessionContext(t *testing.T) {
+	t.Parallel()
+
+	sess := session.NewSession("app", "user", "sess-1")
+
+	ctx := ContextWithAutoMemoryCursorSession(nil, sess)
+	cursorSess, ok := AutoMemoryCursorSessionFromContext(ctx)
+	require.True(t, ok)
+	require.Same(t, sess, cursorSess)
+
+	ctx = ContextWithAutoMemoryCursorSession(context.Background(), nil)
+	_, ok = AutoMemoryCursorSessionFromContext(ctx)
+	require.False(t, ok)
+
+	_, ok = AutoMemoryCursorSessionFromContext(context.Background())
+	require.False(t, ok)
+
+	_, ok = AutoMemoryCursorSessionFromContext(nil)
+	require.False(t, ok)
 }

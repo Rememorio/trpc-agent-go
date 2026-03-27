@@ -515,8 +515,13 @@ func GetAppAndUserFromContext(ctx context.Context) (string, string, error) {
 	}
 
 	// Return error if session exists but missing required fields.
-	return "", "", fmt.Errorf("session exists but missing appName or userID: appName=%s, userID=%s",
-		invocation.Session.AppName, invocation.Session.UserID)
+	return "", "", fmt.Errorf(
+		"session exists but missing appName or userID: appName=%s, session.UserID=%s, resolvedUserID=%q, resolved=%t",
+		invocation.Session.AppName,
+		invocation.Session.UserID,
+		userID,
+		ok,
+	)
 }
 
 // buildMetadata constructs MemoryMetadata from tool

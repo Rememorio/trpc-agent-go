@@ -37,10 +37,12 @@ const (
 	SessionStateKeyAutoMemoryLastExtractAt = "memory:last_extract_at"
 	// SessionStateKeyUserID stores the per-run memory user override on a
 	// cloned session when auto memory needs to resolve the actor scope
-	// without changing the session key itself.
+	// without changing the session key itself. Session state keys keep the
+	// existing ":" namespace used by persisted memory-related session data.
 	SessionStateKeyUserID = "memory:user_id"
 	// RuntimeStateKeyUserID stores the per-run memory user override inside
-	// agent.RunOptions.RuntimeState.
+	// agent.RunOptions.RuntimeState. Runtime state keys use "." to match
+	// other run-scoped option keys merged into agent.RunOptions.RuntimeState.
 	RuntimeStateKeyUserID = "memory.user_id"
 )
 
@@ -325,6 +327,40 @@ func RuntimeState(userID string) map[string]any {
 	return map[string]any{
 		RuntimeStateKeyUserID: userID,
 	}
+}
+
+type autoMemoryCursorSessionContextKey struct{}
+
+// ContextWithAutoMemoryCursorSession attaches the session whose state should
+// store incremental auto-memory extraction markers. This lets auto memory use
+// a cloned session for run-scoped user resolution while persisting progress on
+// the original session.
+func ContextWithAutoMemoryCursorSession(
+	ctx context.Context,
+	sess *session.Session,
+) context.Context {
+	if sess == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, autoMemoryCursorSessionContextKey{}, sess)
+}
+
+// AutoMemoryCursorSessionFromContext resolves the session whose state should be
+// used for incremental auto-memory extraction markers.
+func AutoMemoryCursorSessionFromContext(
+	ctx context.Context,
+) (*session.Session, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	sess, ok := ctx.Value(autoMemoryCursorSessionContextKey{}).(*session.Session)
+	if !ok || sess == nil {
+		return nil, false
+	}
+	return sess, true
 }
 
 // UserIDFromRuntimeState resolves the memory user override from runtime state.

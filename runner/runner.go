@@ -1732,7 +1732,8 @@ func (r *runner) enqueueAutoMemoryJob(
 		return
 	}
 	jobSession := memory.CloneSessionWithRuntimeState(sess, runtimeState)
-	if err := r.memoryService.EnqueueAutoMemoryJob(ctx, jobSession); err != nil {
+	jobCtx := memory.ContextWithAutoMemoryCursorSession(ctx, sess)
+	if err := r.memoryService.EnqueueAutoMemoryJob(jobCtx, jobSession); err != nil {
 		log.DebugfContext(ctx, "Auto memory extraction skipped or failed: %v", err)
 		return
 	}

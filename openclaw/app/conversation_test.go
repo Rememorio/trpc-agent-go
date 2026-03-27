@@ -284,4 +284,44 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 		_, ok = cfg.RuntimeState[graph.CfgKeyIncludeContents]
 		require.False(t, ok)
 	})
+
+	t.Run("shared mode without actor keeps conversation runtime state only", func(t *testing.T) {
+		t.Parallel()
+
+		extensions, err := conversation.MergeRequestExtension(
+			nil,
+			conversation.Annotation{
+				HistoryMode: conversation.HistoryModeShared,
+			},
+		)
+		require.NoError(t, err)
+
+		_, runOpts := buildConversationRunOptionResolver(
+			"demo-app",
+			nil,
+			conversation.HistoryOptions{},
+		)(
+			context.Background(),
+			gateway.RunOptionInput{Extensions: extensions},
+		)
+		require.Len(t, runOpts, 1)
+
+		cfg := agent.RunOptions{}
+		runOpts[0](&cfg)
+		require.Equal(
+			t,
+			conversation.Annotation{
+				HistoryMode: conversation.HistoryModeShared,
+			},
+			cfg.RuntimeState[conversation.RuntimeStateKey],
+		)
+		require.Equal(
+			t,
+			includeContentsNone,
+			cfg.RuntimeState[graph.CfgKeyIncludeContents],
+		)
+		_, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+		require.False(t, ok)
+		require.Nil(t, cfg.InjectedContextMessages)
+	})
 }
