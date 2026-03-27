@@ -34,6 +34,14 @@ var (
 			`ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\b`,
 	)
 
+	sensitiveEnvRuntimeReadPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bos\.environ(?:\.get\s*\(|\s*\[)`),
+		regexp.MustCompile(`(?i)\bos\.getenv\s*\(`),
+		regexp.MustCompile(`(?i)\bprocess\.env(?:\.[a-z0-9_]+|\s*\[)`),
+		regexp.MustCompile(`(?i)\bgetenv\s*\(`),
+		regexp.MustCompile(`(?i)\benv\s*\[`),
+	}
+
 	sensitivePathFragments = []string{
 		".aws/config",
 		".aws/credentials",
@@ -122,6 +130,11 @@ func blocksSensitiveEnv(command string) bool {
 	}
 	for _, hint := range sensitiveEnvReadHints {
 		if strings.Contains(command, hint) {
+			return true
+		}
+	}
+	for _, pattern := range sensitiveEnvRuntimeReadPatterns {
+		if pattern.MatchString(command) {
 			return true
 		}
 	}
