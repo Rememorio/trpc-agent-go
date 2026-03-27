@@ -35,11 +35,23 @@ var (
 	)
 
 	sensitiveEnvRuntimeReadPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bos\.environ(?:\.get\s*\(|\s*\[)`),
-		regexp.MustCompile(`(?i)\bos\.getenv\s*\(`),
-		regexp.MustCompile(`(?i)\bprocess\.env(?:\.[a-z0-9_]+|\s*\[)`),
-		regexp.MustCompile(`(?i)\bgetenv\s*\(`),
-		regexp.MustCompile(`(?i)\benv\s*\[`),
+		regexp.MustCompile(
+			`(?i)\bos\.environ\.get\s*\(\s*["']([a-z0-9_]+)["']`,
+		),
+		regexp.MustCompile(
+			`(?i)\bos\.environ\s*\[\s*["']([a-z0-9_]+)["']`,
+		),
+		regexp.MustCompile(
+			`(?i)\b(?:os\.)?getenv\s*\(\s*["']([a-z0-9_]+)["']`,
+		),
+		regexp.MustCompile(
+			`(?i)\b(?:os\.)?lookupenv\s*\(\s*["']([a-z0-9_]+)["']`,
+		),
+		regexp.MustCompile(`(?i)\bprocess\.env\.([a-z0-9_]+)\b`),
+		regexp.MustCompile(
+			`(?i)\bprocess\.env\s*\[\s*["']([a-z0-9_]+)["']`,
+		),
+		regexp.MustCompile(`(?i)\benv\s*\[\s*["']([a-z0-9_]+)["']`),
 	}
 
 	sensitivePathFragments = []string{
@@ -125,16 +137,22 @@ func newCommandRequest(params execParams) CommandRequest {
 }
 
 func blocksSensitiveEnv(command string) bool {
+	for _, pattern := range sensitiveEnvRuntimeReadPatterns {
+		matches := pattern.FindAllStringSubmatch(command, -1)
+		for _, match := range matches {
+			if len(match) < 2 {
+				continue
+			}
+			if sensitiveEnvNamePattern.MatchString(match[1]) {
+				return true
+			}
+		}
+	}
 	if !sensitiveEnvNamePattern.MatchString(command) {
 		return false
 	}
 	for _, hint := range sensitiveEnvReadHints {
 		if strings.Contains(command, hint) {
-			return true
-		}
-	}
-	for _, pattern := range sensitiveEnvRuntimeReadPatterns {
-		if pattern.MatchString(command) {
 			return true
 		}
 	}
