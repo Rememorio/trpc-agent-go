@@ -186,12 +186,17 @@ func (w *AutoMemoryWorker) EnqueueJob(ctx context.Context, sess *session.Session
 		log.DebugfContext(ctx, "auto_memory: skipped due to nil session")
 		return nil
 	}
+	// runner.enqueueAutoMemoryJob already folds any run-scoped memory user
+	// override into the cloned job session, so ResolveUserKey should read the
+	// effective user directly from sess without a separate runtimeState map.
 	userKey, ok := memory.ResolveUserKey(sess, nil)
 	if !ok {
 		log.DebugfContext(ctx, "auto_memory: skipped due to empty userKey")
 		return nil
 	}
 
+	// Scan new transcript events from the cloned job snapshot, but persist the
+	// per-user extraction cursor on the original session carried via context.
 	cursorSession := autoMemoryCursorSession(ctx, sess)
 	since := readLastExtractAt(cursorSession, userKey)
 	latestTs, messages := scanDeltaSince(sess, since)
