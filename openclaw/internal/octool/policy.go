@@ -24,6 +24,8 @@ const (
 		"credentials is not allowed in chat"
 	reasonSensitivePath = "reading or modifying shell or " +
 		"credential files is not allowed in chat"
+
+	sensitivePathBoundaryChars = " \t\r\n\"'`=:/\\|&;()[]{}<>"
 )
 
 var (
@@ -128,9 +130,57 @@ func blocksSensitiveEnv(command string) bool {
 
 func blocksSensitivePath(command string) bool {
 	for _, fragment := range sensitivePathFragments {
-		if strings.Contains(command, fragment) {
+		if containsSensitivePathFragment(command, fragment) {
 			return true
 		}
 	}
 	return false
+}
+
+func containsSensitivePathFragment(command, fragment string) bool {
+	if fragment == "" {
+		return false
+	}
+	offset := 0
+	for offset < len(command) {
+		idx := strings.Index(command[offset:], fragment)
+		if idx < 0 {
+			return false
+		}
+		idx += offset
+		if hasSensitivePathBoundaryBefore(command, idx) &&
+			hasSensitivePathBoundaryAfter(command, idx+len(fragment), fragment) {
+			return true
+		}
+		offset = idx + 1
+	}
+	return false
+}
+
+func hasSensitivePathBoundaryBefore(command string, idx int) bool {
+	if idx <= 0 {
+		return true
+	}
+	return isSensitivePathBoundary(command[idx-1])
+}
+
+func hasSensitivePathBoundaryAfter(
+	command string,
+	idx int,
+	fragment string,
+) bool {
+	if strings.HasSuffix(fragment, "/") {
+		return true
+	}
+	if idx >= len(command) {
+		return true
+	}
+	if fragment == ".env" && command[idx] == '.' {
+		return true
+	}
+	return isSensitivePathBoundary(command[idx])
+}
+
+func isSensitivePathBoundary(ch byte) bool {
+	return strings.ContainsRune(sensitivePathBoundaryChars, rune(ch))
 }

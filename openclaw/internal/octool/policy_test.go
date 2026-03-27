@@ -1,0 +1,38 @@
+package octool
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestBlocksSensitivePath_BlocksDotEnvAccess(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, blocksSensitivePath(`python - <<'PY'
+from pathlib import Path
+print(Path("/tmp/.env.local").read_text())
+PY`))
+}
+
+func TestBlocksSensitivePath_IgnoresPythonOsEnviron(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, blocksSensitivePath(`python - <<'PY'
+import os
+print(os.environ.get("OPENCLAW_MEMORY_FILE"))
+PY`))
+}
+
+func TestChatCommandSafetyPolicy_AllowsPythonOsEnviron(t *testing.T) {
+	t.Parallel()
+
+	err := NewChatCommandSafetyPolicy()(context.Background(), CommandRequest{
+		Command: `python - <<'PY'
+import os
+print(os.environ.get("OPENCLAW_MEMORY_FILE"))
+PY`,
+	})
+	require.NoError(t, err)
+}
