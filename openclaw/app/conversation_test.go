@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/delivery"
@@ -107,6 +108,9 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
+	userID, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+	require.True(t, ok)
+	require.Equal(t, "user1", userID)
 }
 
 func TestBuildConversationRunOptionResolverSharedHistory(
@@ -209,6 +213,9 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
+	userID, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+	require.True(t, ok)
+	require.Equal(t, "u-1", userID)
 }
 
 func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
@@ -270,8 +277,11 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 			},
 			cfg.RuntimeState[conversation.RuntimeStateKey],
 		)
+		userID, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+		require.True(t, ok)
+		require.Equal(t, "u-1", userID)
 		require.Nil(t, cfg.InjectedContextMessages)
-		_, ok := cfg.RuntimeState[graph.CfgKeyIncludeContents]
+		_, ok = cfg.RuntimeState[graph.CfgKeyIncludeContents]
 		require.False(t, ok)
 	})
 }

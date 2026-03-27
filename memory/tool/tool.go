@@ -506,9 +506,12 @@ func GetAppAndUserFromContext(ctx context.Context) (string, string, error) {
 		return "", "", errors.New("invocation exists but no session available")
 	}
 
-	// Session has AppName and UserID fields.
-	if invocation.Session.AppName != "" && invocation.Session.UserID != "" {
-		return invocation.Session.AppName, invocation.Session.UserID, nil
+	userID, ok := memory.ResolveUserID(
+		invocation.Session,
+		invocation.RunOptions.RuntimeState,
+	)
+	if invocation.Session.AppName != "" && ok {
+		return invocation.Session.AppName, userID, nil
 	}
 
 	// Return error if session exists but missing required fields.

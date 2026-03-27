@@ -183,8 +183,8 @@ func (w *AutoMemoryWorker) EnqueueJob(ctx context.Context, sess *session.Session
 		log.DebugfContext(ctx, "auto_memory: skipped due to nil session")
 		return nil
 	}
-	userKey := memory.UserKey{AppName: sess.AppName, UserID: sess.UserID}
-	if userKey.AppName == "" || userKey.UserID == "" {
+	userKey, ok := memory.ResolveUserKey(sess, nil)
+	if !ok {
 		log.DebugfContext(ctx, "auto_memory: skipped due to empty userKey")
 		return nil
 	}

@@ -1602,12 +1602,11 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 	if inv.MemoryService == nil || inv.Session == nil {
 		return nil
 	}
-	userKey := memory.UserKey{
-		AppName: inv.Session.AppName,
-		UserID:  inv.Session.UserID,
-	}
-	// Validate user key.
-	if userKey.AppName == "" || userKey.UserID == "" {
+	userKey, ok := memory.ResolveUserKey(
+		inv.Session,
+		inv.RunOptions.RuntimeState,
+	)
+	if !ok {
 		return nil
 	}
 	// Handle PreloadMemory: 0 = disabled, -1 = all, N > 0 = adaptive budget.

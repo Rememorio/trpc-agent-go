@@ -211,11 +211,13 @@ type mockMemoryService struct {
 	readCalled    bool
 	readLimit     int
 	readLimits    []int
+	readUserKey   memory.UserKey
 	searchResults []*memory.Entry
 	searchErr     error
 	searchCalled  bool
 	searchQuery   string
 	searchOpts    memory.SearchOptions
+	searchUserKey memory.UserKey
 }
 
 func (m *mockMemoryService) AddMemory(ctx context.Context, userKey memory.UserKey, memoryStr string, topics []string, _ ...memory.AddOption) error {
@@ -238,6 +240,7 @@ func (m *mockMemoryService) ReadMemories(ctx context.Context, userKey memory.Use
 	m.readCalled = true
 	m.readLimit = limit
 	m.readLimits = append(m.readLimits, limit)
+	m.readUserKey = userKey
 	if m.readErr != nil {
 		return nil, m.readErr
 	}
@@ -253,6 +256,7 @@ func (m *mockMemoryService) ReadMemories(ctx context.Context, userKey memory.Use
 func (m *mockMemoryService) SearchMemories(ctx context.Context, userKey memory.UserKey, query string, opts ...memory.SearchOption) ([]*memory.Entry, error) {
 	m.searchCalled = true
 	m.searchQuery = query
+	m.searchUserKey = userKey
 	m.searchOpts = memory.ResolveSearchOptions(query, opts)
 	if m.searchErr != nil {
 		return nil, m.searchErr
@@ -568,6 +572,26 @@ func TestGetPreloadMemoryMessage(t *testing.T) {
 		assert.Contains(t, msg.Content, "first")
 		assert.Contains(t, msg.Content, "second")
 		assert.NotContains(t, msg.Content, "third")
+	})
+
+	t.Run("runtime state overrides memory user", func(t *testing.T) {
+		p := NewContentRequestProcessor(WithPreloadMemory(-1))
+		mockSvc := &mockMemoryService{
+			memories: []*memory.Entry{
+				newTestMemoryEntry("mem-1", "actor scoped memory"),
+			},
+		}
+		inv := newTestInvocation(model.NewUserMessage("hello"), mockSvc)
+		inv.RunOptions = agent.RunOptions{
+			RuntimeState: memory.RuntimeState("actor-1"),
+		}
+
+		msg := p.getPreloadMemoryMessage(context.Background(), inv)
+		assert.NotNil(t, msg)
+		assert.Equal(t, memory.UserKey{
+			AppName: "app",
+			UserID:  "actor-1",
+		}, mockSvc.readUserKey)
 	})
 }
 

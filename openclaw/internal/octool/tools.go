@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
@@ -731,16 +732,18 @@ func memoryFileEnvFromContext(
 		return nil
 	}
 
-	appName := strings.TrimSpace(inv.Session.AppName)
-	userID := strings.TrimSpace(inv.Session.UserID)
-	if appName == "" || userID == "" {
+	userKey, ok := memory.ResolveUserKey(
+		inv.Session,
+		inv.RunOptions.RuntimeState,
+	)
+	if !ok {
 		return nil
 	}
 
 	path, err := store.EnsureMemory(
 		context.Background(),
-		appName,
-		userID,
+		userKey.AppName,
+		userKey.UserID,
 	)
 	if err != nil || strings.TrimSpace(path) == "" {
 		return nil

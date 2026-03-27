@@ -13,6 +13,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -34,6 +35,13 @@ const (
 	// SessionStateKeyAutoMemoryLastExtractAt stores the last included event
 	// timestamp for auto memory extraction.
 	SessionStateKeyAutoMemoryLastExtractAt = "memory:last_extract_at"
+	// SessionStateKeyUserID stores the per-run memory user override on a
+	// cloned session when auto memory needs to resolve the actor scope
+	// without changing the session key itself.
+	SessionStateKeyUserID = "memory:user_id"
+	// RuntimeStateKeyUserID stores the per-run memory user override inside
+	// agent.RunOptions.RuntimeState.
+	RuntimeStateKeyUserID = "memory.user_id"
 )
 
 var (
@@ -306,6 +314,120 @@ type SearchOptions struct {
 	// Higher values give more weight to lower-ranked results.
 	// Default is 60 (standard RRF value). Only used when HybridSearch is true.
 	HybridRRFK int
+}
+
+// RuntimeState returns runtime state for one run-scoped memory user override.
+func RuntimeState(userID string) map[string]any {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	return map[string]any{
+		RuntimeStateKeyUserID: userID,
+	}
+}
+
+// UserIDFromRuntimeState resolves the memory user override from runtime state.
+func UserIDFromRuntimeState(state map[string]any) (string, bool) {
+	if len(state) == 0 {
+		return "", false
+	}
+	value, ok := state[RuntimeStateKeyUserID]
+	if !ok {
+		return "", false
+	}
+	userID, ok := value.(string)
+	if !ok {
+		return "", false
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return "", false
+	}
+	return userID, true
+}
+
+// UserIDFromSessionState resolves the memory user override from session state.
+func UserIDFromSessionState(sess *session.Session) (string, bool) {
+	if sess == nil {
+		return "", false
+	}
+	raw, ok := sess.GetState(SessionStateKeyUserID)
+	if !ok {
+		return "", false
+	}
+	userID := strings.TrimSpace(string(raw))
+	if userID == "" {
+		return "", false
+	}
+	return userID, true
+}
+
+// ResolveUserID resolves the effective memory user for the current run.
+//
+// Resolution priority is:
+// 1. RuntimeStateKeyUserID from RunOptions.RuntimeState.
+// 2. SessionStateKeyUserID from a cloned session used by auto memory.
+// 3. sess.UserID.
+func ResolveUserID(
+	sess *session.Session,
+	runtimeState map[string]any,
+) (string, bool) {
+	if userID, ok := UserIDFromRuntimeState(runtimeState); ok {
+		return userID, true
+	}
+	if userID, ok := UserIDFromSessionState(sess); ok {
+		return userID, true
+	}
+	if sess == nil {
+		return "", false
+	}
+	userID := strings.TrimSpace(sess.UserID)
+	if userID == "" {
+		return "", false
+	}
+	return userID, true
+}
+
+// ResolveUserKey resolves the effective memory user key for the current run.
+func ResolveUserKey(
+	sess *session.Session,
+	runtimeState map[string]any,
+) (UserKey, bool) {
+	if sess == nil {
+		return UserKey{}, false
+	}
+	appName := strings.TrimSpace(sess.AppName)
+	if appName == "" {
+		return UserKey{}, false
+	}
+	userID, ok := ResolveUserID(sess, runtimeState)
+	if !ok {
+		return UserKey{}, false
+	}
+	return UserKey{
+		AppName: appName,
+		UserID:  userID,
+	}, true
+}
+
+// CloneSessionWithRuntimeState clones the session and carries the run-scoped
+// memory user override via session state for downstream components that only
+// receive a session pointer (for example, auto memory workers).
+func CloneSessionWithRuntimeState(
+	sess *session.Session,
+	runtimeState map[string]any,
+) *session.Session {
+	if sess == nil {
+		return nil
+	}
+	userID, ok := UserIDFromRuntimeState(runtimeState)
+	if !ok {
+		return sess
+	}
+	cloned := sess.Clone()
+	cloned.SetState(SessionStateKeyUserID, []byte(userID))
+	return cloned
 }
 
 func checkMemoryKey(appName, userID, memoryID string) error {

@@ -72,14 +72,14 @@ func TestEnqueueAutoMemoryJob(t *testing.T) {
 		r := &runner{memoryService: nil}
 		sess := session.NewSession("app", "user", "sess")
 		// Should not panic with nil memory service.
-		r.enqueueAutoMemoryJob(context.Background(), sess)
+		r.enqueueAutoMemoryJob(context.Background(), sess, nil)
 	})
 
 	t.Run("nil session", func(t *testing.T) {
 		mockSvc := &mockMemoryServiceForAutoMemory{}
 		r := &runner{memoryService: mockSvc}
 		// Should not panic with nil session.
-		r.enqueueAutoMemoryJob(context.Background(), nil)
+		r.enqueueAutoMemoryJob(context.Background(), nil, nil)
 		require.False(t, mockSvc.enqueueCalled)
 	})
 
@@ -87,9 +87,30 @@ func TestEnqueueAutoMemoryJob(t *testing.T) {
 		mockSvc := &mockMemoryServiceForAutoMemory{}
 		r := &runner{memoryService: mockSvc}
 		sess := session.NewSession("app", "user", "sess")
-		r.enqueueAutoMemoryJob(context.Background(), sess)
+		r.enqueueAutoMemoryJob(context.Background(), sess, nil)
 		require.True(t, mockSvc.enqueueCalled)
 		require.Same(t, sess, mockSvc.sess)
+	})
+
+	t.Run("clones session when runtime state overrides memory user", func(t *testing.T) {
+		mockSvc := &mockMemoryServiceForAutoMemory{}
+		r := &runner{memoryService: mockSvc}
+		sess := session.NewSession("app", "scope-user", "sess")
+		r.enqueueAutoMemoryJob(
+			context.Background(),
+			sess,
+			memory.RuntimeState("actor-user"),
+		)
+		require.True(t, mockSvc.enqueueCalled)
+		require.NotSame(t, sess, mockSvc.sess)
+
+		userID, ok := memory.ResolveUserID(mockSvc.sess, nil)
+		require.True(t, ok)
+		require.Equal(t, "actor-user", userID)
+
+		originalUserID, ok := memory.ResolveUserID(sess, nil)
+		require.True(t, ok)
+		require.Equal(t, "scope-user", originalUserID)
 	})
 
 	t.Run("handles enqueue error gracefully", func(t *testing.T) {
@@ -97,7 +118,7 @@ func TestEnqueueAutoMemoryJob(t *testing.T) {
 		r := &runner{memoryService: mockSvc}
 		sess := session.NewSession("app", "user", "sess")
 		// Should not panic even if enqueue fails.
-		r.enqueueAutoMemoryJob(context.Background(), sess)
+		r.enqueueAutoMemoryJob(context.Background(), sess, nil)
 		require.True(t, mockSvc.enqueueCalled)
 	})
 }

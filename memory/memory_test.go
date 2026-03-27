@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -383,4 +384,73 @@ func TestResolveSearchOptions(t *testing.T) {
 
 		assert.Equal(t, expected, got)
 	})
+}
+
+func TestRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	require.Nil(t, RuntimeState(" "))
+	require.Equal(
+		t,
+		map[string]any{RuntimeStateKeyUserID: "u-1"},
+		RuntimeState(" u-1 "),
+	)
+}
+
+func TestResolveUserID(t *testing.T) {
+	t.Parallel()
+
+	sess := session.NewSession("app", "session-user", "sess-1")
+
+	userID, ok := ResolveUserID(sess, nil)
+	require.True(t, ok)
+	require.Equal(t, "session-user", userID)
+
+	sess.SetState(SessionStateKeyUserID, []byte("state-user"))
+	userID, ok = ResolveUserID(sess, nil)
+	require.True(t, ok)
+	require.Equal(t, "state-user", userID)
+
+	userID, ok = ResolveUserID(
+		sess,
+		RuntimeState("runtime-user"),
+	)
+	require.True(t, ok)
+	require.Equal(t, "runtime-user", userID)
+}
+
+func TestResolveUserKey(t *testing.T) {
+	t.Parallel()
+
+	userKey, ok := ResolveUserKey(
+		session.NewSession("app", "session-user", "sess-1"),
+		RuntimeState("runtime-user"),
+	)
+	require.True(t, ok)
+	require.Equal(t, UserKey{
+		AppName: "app",
+		UserID:  "runtime-user",
+	}, userKey)
+}
+
+func TestCloneSessionWithRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	sess := session.NewSession("app", "session-user", "sess-1")
+
+	cloned := CloneSessionWithRuntimeState(
+		sess,
+		RuntimeState("runtime-user"),
+	)
+	require.NotSame(t, sess, cloned)
+
+	userID, ok := ResolveUserID(cloned, nil)
+	require.True(t, ok)
+	require.Equal(t, "runtime-user", userID)
+
+	originalUserID, ok := ResolveUserID(sess, nil)
+	require.True(t, ok)
+	require.Equal(t, "session-user", originalUserID)
+
+	require.Same(t, sess, CloneSessionWithRuntimeState(sess, nil))
 }
