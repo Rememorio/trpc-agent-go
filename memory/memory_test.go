@@ -15,7 +15,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -384,14 +383,4 @@ func TestResolveSearchOptions(t *testing.T) {
 
 		assert.Equal(t, expected, got)
 	})
-}
-
-func TestRuntimeState(t *testing.T) {
-	t.Parallel()
-
-	require.Nil(t, RuntimeState(" "))
-
-	userID, ok := imemory.ResolveUserID(nil, RuntimeState(" u-1 "))
-	require.True(t, ok)
-	require.Equal(t, "u-1", userID)
 }

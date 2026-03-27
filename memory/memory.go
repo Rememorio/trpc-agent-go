@@ -15,7 +15,6 @@ import (
 	"errors"
 	"time"
 
-	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -307,11 +306,6 @@ type SearchOptions struct {
 	// Higher values give more weight to lower-ranked results.
 	// Default is 60 (standard RRF value). Only used when HybridSearch is true.
 	HybridRRFK int
-}
-
-// RuntimeState returns runtime state for one run-scoped memory user override.
-func RuntimeState(userID string) map[string]any {
-	return imemory.RuntimeState(userID)
 }
 
 func checkMemoryKey(appName, userID, memoryID string) error {

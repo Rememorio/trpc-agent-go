@@ -32,7 +32,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
@@ -787,7 +786,7 @@ func TestServerInjectedContextMessages_RuntimeStateOverridesMemoryUser(
 		"scope-user",
 		"telegram:thread:group1",
 		"",
-		memory.RuntimeState("actor-user"),
+		imemory.RuntimeState("actor-user"),
 	)
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].Content, "actor-scoped memory")
@@ -1661,7 +1660,7 @@ func TestServer_ProcessMessage_RunOptionResolver_AppliesMemoryRuntimeStateBefore
 		) (context.Context, []agent.RunOption) {
 			return ctx, []agent.RunOption{
 				agent.MergeRuntimeState(
-					memory.RuntimeState("actor-user"),
+					imemory.RuntimeState("actor-user"),
 				),
 			}
 		}),

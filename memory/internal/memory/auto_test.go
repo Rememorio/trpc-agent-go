@@ -1248,7 +1248,7 @@ func TestAutoMemoryWorker_DeltaMessages_UsesActorScopedTimestampFromCursorSessio
 
 	clonedSess := imemory.CloneSessionWithRuntimeState(
 		originalSess,
-		memory.RuntimeState("actor-user"),
+		imemory.RuntimeState("actor-user"),
 	)
 
 	err := worker.EnqueueJob(
@@ -1599,7 +1599,7 @@ func TestAutoMemoryWorker_WritesLastExtractAt_ToCursorSessionForActorScopedUser(
 
 	clonedSess := imemory.CloneSessionWithRuntimeState(
 		originalSess,
-		memory.RuntimeState("actor-user"),
+		imemory.RuntimeState("actor-user"),
 	)
 
 	err := worker.EnqueueJob(

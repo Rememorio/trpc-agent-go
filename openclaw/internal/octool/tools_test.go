@@ -26,7 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
@@ -225,7 +225,7 @@ func TestMemoryFileEnvFromContext_RuntimeStateOverridesUserID(t *testing.T) {
 			sessionpkg.NewSession("app", "scope-user", "telegram:thread:g1"),
 		),
 		agent.WithInvocationRunOptions(agent.RunOptions{
-			RuntimeState: memory.RuntimeState("actor-user"),
+			RuntimeState: imemory.RuntimeState("actor-user"),
 		}),
 	)
 	ctx := agent.NewInvocationContext(context.Background(), inv)

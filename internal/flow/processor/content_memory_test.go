@@ -16,6 +16,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -583,7 +584,7 @@ func TestGetPreloadMemoryMessage(t *testing.T) {
 		}
 		inv := newTestInvocation(model.NewUserMessage("hello"), mockSvc)
 		inv.RunOptions = agent.RunOptions{
-			RuntimeState: memory.RuntimeState("actor-1"),
+			RuntimeState: imemory.RuntimeState("actor-1"),
 		}
 
 		msg := p.getPreloadMemoryMessage(context.Background(), inv)

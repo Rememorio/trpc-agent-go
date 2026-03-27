@@ -102,7 +102,7 @@ func TestEnqueueAutoMemoryJob(t *testing.T) {
 		r.enqueueAutoMemoryJob(
 			context.Background(),
 			sess,
-			memory.RuntimeState("actor-user"),
+			imemory.RuntimeState("actor-user"),
 		)
 		require.True(t, mockSvc.enqueueCalled)
 		require.NotSame(t, sess, mockSvc.sess)

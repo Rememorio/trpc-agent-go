@@ -23,6 +23,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -240,7 +241,7 @@ func TestMemoryTool_AddMemory_RuntimeStateOverridesUser(t *testing.T) {
 		"scope-user",
 		service,
 		agent.RunOptions{
-			RuntimeState: memory.RuntimeState("actor-user"),
+			RuntimeState: imemory.RuntimeState("actor-user"),
 		},
 	)
 
