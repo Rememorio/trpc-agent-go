@@ -1682,7 +1682,7 @@ func TestServer_ProcessMessage_RunOptionResolver_AppliesMemoryRuntimeStateBefore
 	opts := runner.Options()
 	require.Len(t, opts.InjectedContextMessages, 1)
 	require.Contains(t, opts.InjectedContextMessages[0].Content, "Use actor memory")
-	userID, ok := memory.UserIDFromRuntimeState(opts.RuntimeState)
+	userID, ok := memory.ResolveUserID(nil, opts.RuntimeState)
 	require.True(t, ok)
 	require.Equal(t, "actor-user", userID)
 }

@@ -105,7 +105,7 @@ func (s *Server) memoryFileContextMessages(
 		return nil
 	}
 	memoryUserID := strings.TrimSpace(userID)
-	if resolvedUserID, ok := memory.UserIDFromRuntimeState(runtimeState); ok {
+	if resolvedUserID, ok := memory.ResolveUserID(nil, runtimeState); ok {
 		memoryUserID = resolvedUserID
 	}
 	if memoryUserID == "" {

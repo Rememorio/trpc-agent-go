@@ -10,12 +10,12 @@
 package memory
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -391,11 +391,10 @@ func TestRuntimeState(t *testing.T) {
 	t.Parallel()
 
 	require.Nil(t, RuntimeState(" "))
-	require.Equal(
-		t,
-		map[string]any{RuntimeStateKeyUserID: "u-1"},
-		RuntimeState(" u-1 "),
-	)
+
+	userID, ok := ResolveUserID(nil, RuntimeState(" u-1 "))
+	require.True(t, ok)
+	require.Equal(t, "u-1", userID)
 }
 
 func TestResolveUserID(t *testing.T) {
@@ -407,8 +406,11 @@ func TestResolveUserID(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "session-user", userID)
 
-	sess.SetState(SessionStateKeyUserID, []byte("state-user"))
-	userID, ok = ResolveUserID(sess, nil)
+	cloned := memoryscope.CloneSessionWithRuntimeState(
+		sess,
+		RuntimeState("state-user"),
+	)
+	userID, ok = ResolveUserID(cloned, nil)
 	require.True(t, ok)
 	require.Equal(t, "state-user", userID)
 
@@ -425,7 +427,7 @@ func TestResolveUserID(t *testing.T) {
 
 	userID, ok = ResolveUserID(
 		session.NewSession("app", " ", "sess-1"),
-		map[string]any{RuntimeStateKeyUserID: 123},
+		map[string]any{"memory.user_id": 123},
 	)
 	require.False(t, ok)
 	require.Empty(t, userID)
@@ -448,54 +450,5 @@ func TestResolveUserKey(t *testing.T) {
 	require.False(t, ok)
 
 	_, ok = ResolveUserKey(session.NewSession("", "user", "sess-1"), nil)
-	require.False(t, ok)
-}
-
-func TestCloneSessionWithRuntimeState(t *testing.T) {
-	t.Parallel()
-
-	sess := session.NewSession("app", "session-user", "sess-1")
-
-	cloned := CloneSessionWithRuntimeState(
-		sess,
-		RuntimeState("runtime-user"),
-	)
-	require.NotSame(t, sess, cloned)
-
-	userID, ok := ResolveUserID(cloned, nil)
-	require.True(t, ok)
-	require.Equal(t, "runtime-user", userID)
-
-	originalUserID, ok := ResolveUserID(sess, nil)
-	require.True(t, ok)
-	require.Equal(t, "session-user", originalUserID)
-
-	require.Same(t, sess, CloneSessionWithRuntimeState(sess, nil))
-
-	cloned = CloneSessionWithRuntimeState(
-		sess,
-		map[string]any{RuntimeStateKeyUserID: 123},
-	)
-	require.Same(t, sess, cloned)
-}
-
-func TestAutoMemoryCursorSessionContext(t *testing.T) {
-	t.Parallel()
-
-	sess := session.NewSession("app", "user", "sess-1")
-
-	ctx := ContextWithAutoMemoryCursorSession(nil, sess)
-	cursorSess, ok := AutoMemoryCursorSessionFromContext(ctx)
-	require.True(t, ok)
-	require.Same(t, sess, cursorSess)
-
-	ctx = ContextWithAutoMemoryCursorSession(context.Background(), nil)
-	_, ok = AutoMemoryCursorSessionFromContext(ctx)
-	require.False(t, ok)
-
-	_, ok = AutoMemoryCursorSessionFromContext(context.Background())
-	require.False(t, ok)
-
-	_, ok = AutoMemoryCursorSessionFromContext(nil)
 	require.False(t, ok)
 }

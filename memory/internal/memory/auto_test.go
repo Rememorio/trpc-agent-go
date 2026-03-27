@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -1245,11 +1246,13 @@ func TestAutoMemoryWorker_DeltaMessages_UsesActorScopedTimestampFromCursorSessio
 	actorKey := memory.UserKey{AppName: "test-app", UserID: "actor-user"}
 	writeLastExtractAt(originalSess, actorKey, t1)
 
-	clonedSess := originalSess.Clone()
-	clonedSess.SetState(memory.SessionStateKeyUserID, []byte("actor-user"))
+	clonedSess := memoryscope.CloneSessionWithRuntimeState(
+		originalSess,
+		memory.RuntimeState("actor-user"),
+	)
 
 	err := worker.EnqueueJob(
-		memory.ContextWithAutoMemoryCursorSession(
+		memoryscope.ContextWithAutoMemoryCursorSession(
 			context.Background(),
 			originalSess,
 		),
@@ -1594,11 +1597,13 @@ func TestAutoMemoryWorker_WritesLastExtractAt_ToCursorSessionForActorScopedUser(
 	appendSessionMessage(originalSess, t1, model.NewUserMessage("m1"))
 	appendSessionMessage(originalSess, t2, model.NewAssistantMessage("m2"))
 
-	clonedSess := originalSess.Clone()
-	clonedSess.SetState(memory.SessionStateKeyUserID, []byte("actor-user"))
+	clonedSess := memoryscope.CloneSessionWithRuntimeState(
+		originalSess,
+		memory.RuntimeState("actor-user"),
+	)
 
 	err := worker.EnqueueJob(
-		memory.ContextWithAutoMemoryCursorSession(
+		memoryscope.ContextWithAutoMemoryCursorSession(
 			context.Background(),
 			originalSess,
 		),

@@ -108,7 +108,7 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
-	userID, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+	userID, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
 	require.True(t, ok)
 	require.Equal(t, "user1", userID)
 }
@@ -213,7 +213,7 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
-	userID, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+	userID, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
 	require.True(t, ok)
 	require.Equal(t, "u-1", userID)
 }
@@ -277,7 +277,7 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 			},
 			cfg.RuntimeState[conversation.RuntimeStateKey],
 		)
-		userID, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+		userID, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
 		require.True(t, ok)
 		require.Equal(t, "u-1", userID)
 		require.Nil(t, cfg.InjectedContextMessages)
@@ -320,7 +320,7 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 			includeContentsNone,
 			cfg.RuntimeState[graph.CfgKeyIncludeContents],
 		)
-		_, ok := memory.UserIDFromRuntimeState(cfg.RuntimeState)
+		_, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
 		require.False(t, ok)
 		require.Nil(t, cfg.InjectedContextMessages)
 	})

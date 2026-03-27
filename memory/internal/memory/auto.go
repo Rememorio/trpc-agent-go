@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
@@ -563,7 +564,7 @@ func autoMemoryCursorSession(
 	ctx context.Context,
 	sess *session.Session,
 ) *session.Session {
-	if scopedSess, ok := memory.AutoMemoryCursorSessionFromContext(ctx); ok {
+	if scopedSess, ok := memoryscope.AutoMemoryCursorSessionFromContext(ctx); ok {
 		return scopedSess
 	}
 	return sess
