@@ -20,7 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/delivery"
@@ -108,7 +108,7 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
-	userID, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
+	userID, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
 	require.True(t, ok)
 	require.Equal(t, "user1", userID)
 }
@@ -213,7 +213,7 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 		includeContentsNone,
 		cfg.RuntimeState[graph.CfgKeyIncludeContents],
 	)
-	userID, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
+	userID, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
 	require.True(t, ok)
 	require.Equal(t, "u-1", userID)
 }
@@ -277,7 +277,7 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 			},
 			cfg.RuntimeState[conversation.RuntimeStateKey],
 		)
-		userID, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
+		userID, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
 		require.True(t, ok)
 		require.Equal(t, "u-1", userID)
 		require.Nil(t, cfg.InjectedContextMessages)
@@ -320,7 +320,7 @@ func TestBuildConversationRunOptionResolver_EdgeCases(t *testing.T) {
 			includeContentsNone,
 			cfg.RuntimeState[graph.CfgKeyIncludeContents],
 		)
-		_, ok := memory.ResolveUserID(nil, cfg.RuntimeState)
+		_, ok := imemory.ResolveUserID(nil, cfg.RuntimeState)
 		require.False(t, ok)
 		require.Nil(t, cfg.InjectedContextMessages)
 	})

@@ -28,6 +28,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -1602,13 +1603,14 @@ func (p *ContentRequestProcessor) getPreloadMemoryMessage(
 	if inv.MemoryService == nil || inv.Session == nil {
 		return nil
 	}
-	userKey, ok := memory.ResolveUserKey(
+	appName, userID, ok := imemory.ResolveUserKey(
 		inv.Session,
 		inv.RunOptions.RuntimeState,
 	)
 	if !ok {
 		return nil
 	}
+	userKey := memory.UserKey{AppName: appName, UserID: userID}
 	// Handle PreloadMemory: 0 = disabled, -1 = all, N > 0 = adaptive budget.
 	if p.PreloadMemory == 0 {
 		return nil

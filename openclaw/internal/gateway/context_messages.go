@@ -13,7 +13,7 @@ import (
 	"context"
 	"strings"
 
-	"trpc.group/trpc-go/trpc-agent-go/memory"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
@@ -105,7 +105,7 @@ func (s *Server) memoryFileContextMessages(
 		return nil
 	}
 	memoryUserID := strings.TrimSpace(userID)
-	if resolvedUserID, ok := memory.ResolveUserID(nil, runtimeState); ok {
+	if resolvedUserID, ok := imemory.ResolveUserID(nil, runtimeState); ok {
 		memoryUserID = resolvedUserID
 	}
 	if memoryUserID == "" {

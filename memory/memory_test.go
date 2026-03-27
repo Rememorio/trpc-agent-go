@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
-	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
@@ -392,63 +391,7 @@ func TestRuntimeState(t *testing.T) {
 
 	require.Nil(t, RuntimeState(" "))
 
-	userID, ok := ResolveUserID(nil, RuntimeState(" u-1 "))
+	userID, ok := imemory.ResolveUserID(nil, RuntimeState(" u-1 "))
 	require.True(t, ok)
 	require.Equal(t, "u-1", userID)
-}
-
-func TestResolveUserID(t *testing.T) {
-	t.Parallel()
-
-	sess := session.NewSession("app", "session-user", "sess-1")
-
-	userID, ok := ResolveUserID(sess, nil)
-	require.True(t, ok)
-	require.Equal(t, "session-user", userID)
-
-	cloned := imemory.CloneSessionWithRuntimeState(
-		sess,
-		RuntimeState("state-user"),
-	)
-	userID, ok = ResolveUserID(cloned, nil)
-	require.True(t, ok)
-	require.Equal(t, "state-user", userID)
-
-	userID, ok = ResolveUserID(
-		sess,
-		RuntimeState("runtime-user"),
-	)
-	require.True(t, ok)
-	require.Equal(t, "runtime-user", userID)
-
-	userID, ok = ResolveUserID(nil, RuntimeState("runtime-user"))
-	require.True(t, ok)
-	require.Equal(t, "runtime-user", userID)
-
-	userID, ok = ResolveUserID(
-		session.NewSession("app", " ", "sess-1"),
-		map[string]any{"memory.user_id": 123},
-	)
-	require.False(t, ok)
-	require.Empty(t, userID)
-}
-
-func TestResolveUserKey(t *testing.T) {
-	t.Parallel()
-
-	userKey, ok := ResolveUserKey(
-		session.NewSession("app", "session-user", "sess-1"),
-		RuntimeState("runtime-user"),
-	)
-	require.True(t, ok)
-	require.Equal(t, UserKey{
-		AppName: "app",
-		UserID:  "runtime-user",
-	}, userKey)
-
-	_, ok = ResolveUserKey(nil, nil)
-	require.False(t, ok)
-
-	_, ok = ResolveUserKey(session.NewSession("", "user", "sess-1"), nil)
-	require.False(t, ok)
 }

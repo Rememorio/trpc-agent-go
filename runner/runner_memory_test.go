@@ -108,11 +108,11 @@ func TestEnqueueAutoMemoryJob(t *testing.T) {
 		require.NotSame(t, sess, mockSvc.sess)
 		require.Same(t, sess, mockSvc.cursorSess)
 
-		userID, ok := memory.ResolveUserID(mockSvc.sess, nil)
+		userID, ok := imemory.ResolveUserID(mockSvc.sess, nil)
 		require.True(t, ok)
 		require.Equal(t, "actor-user", userID)
 
-		originalUserID, ok := memory.ResolveUserID(sess, nil)
+		originalUserID, ok := imemory.ResolveUserID(sess, nil)
 		require.True(t, ok)
 		require.Equal(t, "scope-user", originalUserID)
 	})

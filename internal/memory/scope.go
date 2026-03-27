@@ -130,6 +130,25 @@ func ResolveUserID(
 	return userID, true
 }
 
+// ResolveUserKey resolves the effective memory app and user for the current run.
+func ResolveUserKey(
+	sess *session.Session,
+	runtimeState map[string]any,
+) (string, string, bool) {
+	if sess == nil {
+		return "", "", false
+	}
+	appName := strings.TrimSpace(sess.AppName)
+	if appName == "" {
+		return "", "", false
+	}
+	userID, ok := ResolveUserID(sess, runtimeState)
+	if !ok {
+		return "", "", false
+	}
+	return appName, userID, true
+}
+
 // CloneSessionWithRuntimeState clones the session and carries the run-scoped
 // memory user override via session state for downstream components that only
 // receive a session pointer (for example, auto memory workers).

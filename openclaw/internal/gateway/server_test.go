@@ -31,6 +31,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
@@ -1682,7 +1683,7 @@ func TestServer_ProcessMessage_RunOptionResolver_AppliesMemoryRuntimeStateBefore
 	opts := runner.Options()
 	require.Len(t, opts.InjectedContextMessages, 1)
 	require.Contains(t, opts.InjectedContextMessages[0].Content, "Use actor memory")
-	userID, ok := memory.ResolveUserID(nil, opts.RuntimeState)
+	userID, ok := imemory.ResolveUserID(nil, opts.RuntimeState)
 	require.True(t, ok)
 	require.Equal(t, "actor-user", userID)
 }

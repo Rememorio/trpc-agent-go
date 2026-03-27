@@ -13,7 +13,6 @@ package memory
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
@@ -313,41 +312,6 @@ type SearchOptions struct {
 // RuntimeState returns runtime state for one run-scoped memory user override.
 func RuntimeState(userID string) map[string]any {
 	return imemory.RuntimeState(userID)
-}
-
-// ResolveUserID resolves the effective memory user for the current run.
-//
-// Resolution priority is:
-// 1. Runtime state override from RunOptions.RuntimeState.
-// 2. Cloned-session state override used by auto memory.
-// 3. sess.UserID.
-func ResolveUserID(
-	sess *session.Session,
-	runtimeState map[string]any,
-) (string, bool) {
-	return imemory.ResolveUserID(sess, runtimeState)
-}
-
-// ResolveUserKey resolves the effective memory user key for the current run.
-func ResolveUserKey(
-	sess *session.Session,
-	runtimeState map[string]any,
-) (UserKey, bool) {
-	if sess == nil {
-		return UserKey{}, false
-	}
-	appName := strings.TrimSpace(sess.AppName)
-	if appName == "" {
-		return UserKey{}, false
-	}
-	userID, ok := ResolveUserID(sess, runtimeState)
-	if !ok {
-		return UserKey{}, false
-	}
-	return UserKey{
-		AppName: appName,
-		UserID:  userID,
-	}, true
 }
 
 func checkMemoryKey(appName, userID, memoryID string) error {

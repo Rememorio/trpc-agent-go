@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
@@ -506,7 +507,7 @@ func GetAppAndUserFromContext(ctx context.Context) (string, string, error) {
 		return "", "", errors.New("invocation exists but no session available")
 	}
 
-	userID, ok := memory.ResolveUserID(
+	userID, ok := imemory.ResolveUserID(
 		invocation.Session,
 		invocation.RunOptions.RuntimeState,
 	)
