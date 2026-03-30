@@ -342,7 +342,44 @@ func TestBuildRequestProcessors_PreloadSessionRecallWiring(t *testing.T) {
 	require.NotNil(t, crp)
 	require.Equal(t, 4, crp.PreloadSessionRecall)
 	require.Equal(t, 0.6, crp.PreloadSessionRecallMinScore)
-	require.Equal(t, session.SearchModeDense, crp.PreloadSessionRecallSearchMode)
+	require.Equal(
+		t,
+		session.SearchModeDense,
+		crp.PreloadSessionRecallSearchMode,
+	)
+}
+
+func TestBuildRequestProcessors_EventMessageProjectorWiring(
+	t *testing.T,
+) {
+	projector := func(
+		_ *agent.Invocation,
+		_ event.Event,
+		msg model.Message,
+	) model.Message {
+		msg.Content = "projected"
+		return msg
+	}
+
+	opts := &Options{}
+	WithEventMessageProjector(projector)(opts)
+	procs := buildRequestProcessors("tester", opts)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+
+	require.NotNil(t, crp)
+	require.NotNil(t, crp.EventMessageProjector)
+
+	got := crp.EventMessageProjector(
+		nil,
+		event.Event{},
+		model.NewUserMessage("hello"),
+	)
+	require.Equal(t, "projected", got.Content)
 }
 
 func TestBuildRequestProcessors_PostToolPromptInjection(t *testing.T) {
