@@ -17,6 +17,12 @@ import (
 	imodel "trpc.group/trpc-go/trpc-agent-go/model/internal/model"
 )
 
+func deleteRegisteredModelContextWindowForTest(modelName string) {
+	imodel.ModelMutex.Lock()
+	defer imodel.ModelMutex.Unlock()
+	delete(imodel.ModelContextWindows, modelName)
+}
+
 func TestRegisterModelContextWindow(t *testing.T) {
 	// Save original GPT-4 size
 	originalGPT4 := imodel.ResolveContextWindow("gpt-4")
@@ -103,6 +109,10 @@ func TestConcurrentRegistryAccess(t *testing.T) {
 
 func TestLookupModelContextWindow(t *testing.T) {
 	const modelName = "lookup-test-model"
+	deleteRegisteredModelContextWindowForTest(modelName)
+	t.Cleanup(func() {
+		deleteRegisteredModelContextWindowForTest(modelName)
+	})
 
 	RegisterModelContextWindow(modelName, 54321)
 
@@ -115,6 +125,12 @@ func TestLookupModelContextWindowMatchesMixedCaseRegistration(
 	t *testing.T,
 ) {
 	const registeredModelName = "Mixed-Case-Model"
+	deleteRegisteredModelContextWindowForTest("mixed-case-model")
+	t.Cleanup(func() {
+		deleteRegisteredModelContextWindowForTest(
+			"mixed-case-model",
+		)
+	})
 
 	RegisterModelContextWindow(registeredModelName, 54321)
 
@@ -128,6 +144,21 @@ func TestLookupModelContextWindowMatchesMixedCaseRegistration(
 func TestRegisterModelContextWindowsNormalizesMixedCaseKeys(
 	t *testing.T,
 ) {
+	deleteRegisteredModelContextWindowForTest(
+		"mixed-case-model-1",
+	)
+	deleteRegisteredModelContextWindowForTest(
+		"mixed-case-model-2",
+	)
+	t.Cleanup(func() {
+		deleteRegisteredModelContextWindowForTest(
+			"mixed-case-model-1",
+		)
+		deleteRegisteredModelContextWindowForTest(
+			"mixed-case-model-2",
+		)
+	})
+
 	RegisterModelContextWindows(map[string]int{
 		"Mixed-Case-Model-1": 11111,
 		"Mixed-Case-Model-2": 22222,
@@ -147,7 +178,12 @@ func TestRegisterModelContextWindowsNormalizesMixedCaseKeys(
 }
 
 func TestLookupModelContextWindowUnknown(t *testing.T) {
-	window, ok := LookupModelContextWindow("unknown-model-for-lookup")
+	const unknownModelName = "unknown-model-for-lookup"
+	deleteRegisteredModelContextWindowForTest(
+		unknownModelName,
+	)
+
+	window, ok := LookupModelContextWindow(unknownModelName)
 	assert.False(t, ok)
 	assert.Zero(t, window)
 }

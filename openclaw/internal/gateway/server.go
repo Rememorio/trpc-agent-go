@@ -680,10 +680,14 @@ func (a *replyAccumulator) consumeDelta(rsp *model.Response) {
 }
 
 func (a *replyAccumulator) captureUsage(rsp *model.Response) {
-	if a == nil || rsp == nil || rsp.Usage == nil {
+	if a == nil || !responseShouldAggregateUsage(rsp) {
 		return
 	}
-	a.Usage = usageFromModelUsage(rsp.Usage)
+	usage := usageFromModelUsage(rsp.Usage)
+	if usage == nil {
+		return
+	}
+	a.Usage = mergeGatewayUsage(a.Usage, usage)
 }
 
 func usageFromModelUsage(usage *model.Usage) *gwproto.Usage {
@@ -704,6 +708,40 @@ func modelUsageHasKnownTokenCounts(usage *model.Usage) bool {
 	return usage.PromptTokens != 0 ||
 		usage.CompletionTokens != 0 ||
 		usage.TotalTokens != 0
+}
+
+func responseShouldAggregateUsage(rsp *model.Response) bool {
+	if rsp == nil || rsp.Usage == nil {
+		return false
+	}
+	switch rsp.Object {
+	case model.ObjectTypeChatCompletion:
+		return true
+	case model.ObjectTypeChatCompletionChunk:
+		return rsp.Done
+	default:
+		return false
+	}
+}
+
+func mergeGatewayUsage(
+	accumulated *gwproto.Usage,
+	usage *gwproto.Usage,
+) *gwproto.Usage {
+	if usage == nil {
+		return cloneGatewayUsage(accumulated)
+	}
+	if accumulated == nil {
+		return cloneGatewayUsage(usage)
+	}
+	return &gwproto.Usage{
+		PromptTokens: accumulated.PromptTokens +
+			usage.PromptTokens,
+		CompletionTokens: accumulated.CompletionTokens +
+			usage.CompletionTokens,
+		TotalTokens: accumulated.TotalTokens +
+			usage.TotalTokens,
+	}
 }
 
 func cloneGatewayUsage(usage *gwproto.Usage) *gwproto.Usage {

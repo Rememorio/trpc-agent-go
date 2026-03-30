@@ -2764,6 +2764,52 @@ func TestReplyAccumulator_CapturesUsage(t *testing.T) {
 	require.Equal(t, 12345, acc.Usage.TotalTokens)
 }
 
+func TestReplyAccumulator_AggregatesUsageAcrossResponses(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	acc := newReplyAccumulator()
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{
+					Message: model.Message{
+						ToolCalls: []model.ToolCall{{ID: "call-1"}},
+					},
+				},
+			},
+			Usage: &model.Usage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				TotalTokens:      150,
+			},
+		},
+		RequestID: "req-1",
+	})
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("final")},
+			},
+			Usage: &model.Usage{
+				PromptTokens:     200,
+				CompletionTokens: 30,
+				TotalTokens:      230,
+			},
+		},
+		RequestID: "req-1",
+	})
+
+	require.Equal(t, "final", acc.Text)
+	require.NotNil(t, acc.Usage)
+	require.Equal(t, 300, acc.Usage.PromptTokens)
+	require.Equal(t, 80, acc.Usage.CompletionTokens)
+	require.Equal(t, 380, acc.Usage.TotalTokens)
+}
+
 func TestReplyAccumulator_IgnoresUsageWithoutTokenCounts(
 	t *testing.T,
 ) {
@@ -2808,6 +2854,7 @@ func TestServer_StreamMessage_Success(t *testing.T) {
 							Delta: model.Message{Content: " me"},
 						},
 					},
+					Done: true,
 					Usage: &model.Usage{
 						PromptTokens:     12000,
 						CompletionTokens: 345,
