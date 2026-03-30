@@ -203,7 +203,18 @@ var ModelContextWindows = map[string]int{
 	"mixtral-8x7b-instruct": 32000,
 	"mixtral-8x7b-32768":    32768,
 
-	// Qwen
+	// Alibaba Qwen / QwQ
+	// ref: https://help.aliyun.com/zh/model-studio/user-guide/models
+	// ref: https://help.aliyun.com/zh/model-studio/developer-reference/what-is-qwen-llm
+	"qwen3-max":     262144,
+	"qwen3.5-plus":  1000000,
+	"qwen3.5-flash": 1000000,
+	"qwen-max":      131072,
+	"qwen-plus":     1000000,
+	// qwen-turbo supports 1,000,000 in non-thinking mode but a smaller
+	// 131,072 window in thinking mode. Use the smaller documented limit as
+	// the safe default for token budgeting.
+	"qwen-turbo":                 131072,
 	"qwen2.5-72b-instruct":       8192,
 	"qwen2.5-14b-instruct":       128000,
 	"qwen2.5-7b-instruct":        32000,
@@ -211,6 +222,8 @@ var ModelContextWindows = map[string]int{
 	"qwq-32b-preview":            8192,
 
 	// DeepSeek
+	// ref: https://api-docs.deepseek.com/
+	// ref: https://api-docs.deepseek.com/guides/reasoning_model
 	"deepseek-chat":     131072,
 	"deepseek-reasoner": 131072,
 
@@ -238,8 +251,51 @@ var ModelContextWindows = map[string]int{
 	"hunyuan-turbos":       32768,
 	"hunyuan-a13b":         229376,
 
-	//huggingface models
-	"zai-org/glm-4.7": 131072,
+	// Z.AI GLM
+	// ref: https://docs.z.ai/guides/llm/glm-5
+	// ref: https://docs.z.ai/guides/llm/glm-4.6
+	// ref: https://docs.z.ai/guides/llm/glm-4.7
+	// ref: https://docs.z.ai/devpack/using5.1
+	"glm-5":          200000,
+	"glm-5.1":        204800,
+	"glm-4.7":        200000,
+	"glm-4.7-flashx": 200000,
+	"glm-4.7-flash":  200000,
+	"glm-4.6":        200000,
+
+	// Z.AI GLM (Hugging Face repository IDs; context windows follow the
+	// matching model-family docs above)
+	// ref: https://huggingface.co/zai-org/GLM-5
+	// ref: https://huggingface.co/zai-org/GLM-4.7
+	// ref: https://huggingface.co/zai-org/GLM-4.7-Flash
+	// ref: https://huggingface.co/zai-org/GLM-4.5-Air
+	// ref: https://docs.z.ai/guides/llm/glm-4.5
+	"zai-org/glm-5":         200000,
+	"zai-org/glm-4.7":       200000,
+	"zai-org/glm-4.7-flash": 200000,
+	"zai-org/glm-4.5-air":   128000,
+
+	// Moonshot Kimi
+	// ref: https://platform.moonshot.cn/docs/overview
+	// ref: https://platform.moonshot.cn/docs/guide/kimi-k2-quickstart
+	// ref: https://platform.moonshot.cn/docs/pricing/chat
+	"kimi-k2.5":              256000,
+	"kimi-k2-0905-preview":   256000,
+	"kimi-k2-turbo-preview":  256000,
+	"kimi-k2-thinking":       256000,
+	"kimi-k2-thinking-turbo": 256000,
+	"kimi-k2-0711-preview":   128000,
+
+	// MiniMax
+	// ref: https://platform.minimax.io/docs
+	// ref: https://platform.minimax.io/docs/guides/text-generation
+	"minimax-m2.7":           204800,
+	"minimax-m2.7-highspeed": 204800,
+	"minimax-m2.5":           204800,
+	"minimax-m2.5-highspeed": 204800,
+	"minimax-m2.1":           204800,
+	"minimax-m2.1-highspeed": 204800,
+	"minimax-m2":             204800,
 }
 
 // LookupContextWindow returns a known context window size for a given

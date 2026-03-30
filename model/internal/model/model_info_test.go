@@ -82,6 +82,66 @@ func TestResolveContextWindow(t *testing.T) {
 			expected:  200000,
 		},
 		{
+			name:      "exact match - GLM-5",
+			modelName: "glm-5",
+			expected:  200000,
+		},
+		{
+			name:      "exact match - GLM-5 Hugging Face repo",
+			modelName: "zai-org/glm-5",
+			expected:  200000,
+		},
+		{
+			name:      "exact match - GLM-4.5-Air Hugging Face repo",
+			modelName: "zai-org/glm-4.5-air",
+			expected:  128000,
+		},
+		{
+			name:      "exact match - GLM-5.1",
+			modelName: "glm-5.1",
+			expected:  204800,
+		},
+		{
+			name:      "exact match - Qwen3-Max",
+			modelName: "qwen3-max",
+			expected:  262144,
+		},
+		{
+			name:      "exact match - Qwen3.5-Plus",
+			modelName: "qwen3.5-plus",
+			expected:  1000000,
+		},
+		{
+			name:      "exact match - Qwen-Max",
+			modelName: "qwen-max",
+			expected:  131072,
+		},
+		{
+			name:      "exact match - Qwen-Plus",
+			modelName: "qwen-plus",
+			expected:  1000000,
+		},
+		{
+			name:      "exact match - DeepSeek chat",
+			modelName: "deepseek-chat",
+			expected:  131072,
+		},
+		{
+			name:      "exact match - Kimi K2.5",
+			modelName: "kimi-k2.5",
+			expected:  256000,
+		},
+		{
+			name:      "exact match - Kimi K2 legacy preview",
+			modelName: "kimi-k2-0711-preview",
+			expected:  128000,
+		},
+		{
+			name:      "exact match - MiniMax M2.7",
+			modelName: "minimax-m2.7",
+			expected:  204800,
+		},
+		{
 			name:      "case insensitive match",
 			modelName: "GPT-4O",
 			expected:  128000,
@@ -155,6 +215,36 @@ func TestLookupContextWindow(t *testing.T) {
 			modelName: "gpt-4o-mini-preview",
 			expected:  200000,
 			ok:        true,
+		},
+		{
+			name:      "new provider exact match",
+			modelName: "minimax-m2.5-highspeed",
+			expected:  204800,
+			ok:        true,
+		},
+		{
+			name:      "separator boundary prefix match",
+			modelName: "glm-5@latest",
+			expected:  200000,
+			ok:        true,
+		},
+		{
+			name:      "qwen snapshot prefix match",
+			modelName: "qwen-max-2025-01-25",
+			expected:  131072,
+			ok:        true,
+		},
+		{
+			name:      "hugging face repo exact match",
+			modelName: "zai-org/glm-4.7-flash",
+			expected:  200000,
+			ok:        true,
+		},
+		{
+			name:      "no boundary prefix match",
+			modelName: "glm-5x",
+			expected:  0,
+			ok:        false,
 		},
 		{
 			name:      "unknown model",
