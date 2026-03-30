@@ -86,6 +86,7 @@ func New(name string, opts ...Option) *LLMAgent {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	prepareSkillsRepository(&options)
 
 	// Validate output_schema configuration before registering tools.
 	if options.OutputSchema != nil {
@@ -330,6 +331,11 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		processor.WithTimelineFilterMode(options.messageTimelineFilterMode),
 		processor.WithBranchFilterMode(options.messageBranchFilterMode),
 		processor.WithPreloadMemory(options.PreloadMemory),
+		processor.WithEventMessageProjector(
+			processor.EventMessageProjector(
+				options.EventMessageProjector,
+			),
+		),
 		processor.WithFewShotResolver(a.fewShotForInvocation),
 	}
 	if options.ReasoningContentMode != "" {
@@ -424,6 +430,7 @@ func appendTimeProcessor(options *Options, requestProcessors []flow.RequestProce
 // buildRequestProcessorsWithAgent. Dynamic updates are not supported when using
 // this legacy function; use New() which wires the real agent for runtime getters.
 func buildRequestProcessors(name string, options *Options) []flow.RequestProcessor { // nolint:deadcode
+	prepareSkillsRepository(options)
 	dummy := &LLMAgent{
 		name:                    name,
 		instruction:             options.Instruction,
@@ -433,6 +440,18 @@ func buildRequestProcessors(name string, options *Options) []flow.RequestProcess
 		option:                  *options,
 	}
 	return buildRequestProcessorsWithAgent(dummy, options)
+}
+
+func prepareSkillsRepository(options *Options) {
+	if options == nil ||
+		options.skillsRepository == nil ||
+		options.skillFilter == nil {
+		return
+	}
+	options.skillsRepository = skill.NewFilteredRepository(
+		options.skillsRepository,
+		options.skillFilter,
+	)
 }
 
 // initializeModels initializes the models map and determines the initial

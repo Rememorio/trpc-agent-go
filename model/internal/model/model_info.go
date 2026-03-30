@@ -242,13 +242,14 @@ var ModelContextWindows = map[string]int{
 	"zai-org/glm-4.7": 131072,
 }
 
-// ResolveContextWindow returns the context window size for a given model name.
+// LookupContextWindow returns a known context window size for a given
+// model name.
 // - Exact match (case-insensitive) first
-// - Optional: longest prefix-based fallback at a model-ID boundary
-// - Fallback to defaultContextWindow
-func ResolveContextWindow(modelName string) int {
+// - Prefix-based fallback second at a model-ID boundary
+// - Returns ok=false when the model is unknown
+func LookupContextWindow(modelName string) (int, bool) {
 	if modelName == "" {
-		return defaultContextWindow
+		return 0, false
 	}
 
 	ModelMutex.RLock()
@@ -256,19 +257,33 @@ func ResolveContextWindow(modelName string) int {
 
 	key := strings.ToLower(modelName)
 	if w, ok := ModelContextWindows[key]; ok {
-		return w
+		return w, true
 	}
+
 	// Prefer the longest matching prefix so specific snapshots/variants win.
-	bestKeyLen := -1
 	bestWindow := 0
+	bestPrefixLen := 0
 	for k, w := range ModelContextWindows {
-		if isModelPrefixMatch(key, k) && len(k) > bestKeyLen {
-			bestKeyLen = len(k)
-			bestWindow = w
+		if !isModelPrefixMatch(key, k) {
+			continue
 		}
+		if len(k) <= bestPrefixLen {
+			continue
+		}
+		bestWindow = w
+		bestPrefixLen = len(k)
 	}
-	if bestKeyLen >= 0 {
-		return bestWindow
+	if bestPrefixLen > 0 {
+		return bestWindow, true
+	}
+	return 0, false
+}
+
+// ResolveContextWindow returns the context window size for a given model name.
+// It falls back to defaultContextWindow when the model is unknown.
+func ResolveContextWindow(modelName string) int {
+	if w, ok := LookupContextWindow(modelName); ok {
+		return w
 	}
 	return defaultContextWindow
 }
