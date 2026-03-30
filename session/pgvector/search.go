@@ -513,15 +513,26 @@ func mergeHybridEventResults(
 func eventSearchResultID(
 	result session.EventSearchResult,
 ) string {
-	if id := strings.TrimSpace(result.Event.InvocationID); id != "" {
-		return result.SessionKey.SessionID + "|" + id
+	keyParts := []string{
+		result.SessionKey.AppName,
+		result.SessionKey.UserID,
+		result.SessionKey.SessionID,
+	}
+	if id := strings.TrimSpace(result.Event.ID); id != "" {
+		return strings.Join(append(keyParts, id), "|")
+	}
+	if eventBytes, err := json.Marshal(result.Event); err == nil {
+		return strings.Join(
+			append(keyParts, string(eventBytes)),
+			"|",
+		)
 	}
 	return strings.Join(
-		[]string{
-			result.SessionKey.SessionID,
+		append(keyParts,
 			result.EventCreatedAt.UTC().Format(time.RFC3339Nano),
+			strings.TrimSpace(result.Role.String()),
 			strings.TrimSpace(result.Text),
-		},
+		),
 		"|",
 	)
 }

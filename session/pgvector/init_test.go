@@ -186,6 +186,22 @@ func TestCreateIndexes_Error(t *testing.T) {
 
 // --- Tests for addVectorColumns ---
 
+func expectEmbeddingColumnDimensionQuery(
+	mock sqlmock.Sqlmock,
+	dim int,
+) {
+	mock.ExpectQuery(
+		"SELECT format_type\\(a\\.atttypid, a\\.atttypmod\\)",
+	).WithArgs(
+		"session_events",
+		"",
+	).WillReturnRows(
+		sqlmock.NewRows([]string{"format_type"}).AddRow(
+			fmt.Sprintf("vector(%d)", dim),
+		),
+	)
+}
+
 func TestAddVectorColumns_Success(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()
@@ -198,6 +214,10 @@ func TestAddVectorColumns_Success(t *testing.T) {
 				sqlmock.NewResult(0, 0),
 			)
 	}
+	expectEmbeddingColumnDimensionQuery(
+		mock,
+		defaultIndexDimension,
+	)
 
 	err := s.addVectorColumns(context.Background())
 	assert.NoError(t, err)
@@ -214,6 +234,29 @@ func TestAddVectorColumns_Error(t *testing.T) {
 	err := s.addVectorColumns(context.Background())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "alter table failed")
+}
+
+func TestAddVectorColumns_DimensionMismatch(t *testing.T) {
+	s, mock, db := newTestService(t, nil)
+	defer db.Close()
+
+	s.opts.indexDimension = defaultIndexDimension
+	for i := 0; i < 4; i++ {
+		mock.ExpectExec("ALTER TABLE").
+			WillReturnResult(
+				sqlmock.NewResult(0, 0),
+			)
+	}
+	expectEmbeddingColumnDimensionQuery(mock, 768)
+
+	err := s.addVectorColumns(context.Background())
+	require.Error(t, err)
+	require.Contains(
+		t,
+		err.Error(),
+		"embedding column dimension mismatch",
+	)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 // --- Tests for createTextSearchIndex ---
@@ -310,6 +353,10 @@ func TestInitDB_Success(t *testing.T) {
 				sqlmock.NewResult(0, 0),
 			)
 	}
+	expectEmbeddingColumnDimensionQuery(
+		mock,
+		defaultIndexDimension,
+	)
 	// createTextSearchIndex.
 	mock.ExpectExec(
 		"CREATE INDEX IF NOT EXISTS.*USING gin",
@@ -359,6 +406,10 @@ func TestInitDB_HNSWIndexFailureIsNonFatal(
 				sqlmock.NewResult(0, 0),
 			)
 	}
+	expectEmbeddingColumnDimensionQuery(
+		mock,
+		defaultIndexDimension,
+	)
 	// createTextSearchIndex.
 	mock.ExpectExec(
 		"CREATE INDEX IF NOT EXISTS.*USING gin",

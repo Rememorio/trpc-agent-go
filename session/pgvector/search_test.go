@@ -768,6 +768,50 @@ func TestMergeHybridEventResults(t *testing.T) {
 	assert.InDelta(t, 0.7, results[0].SparseScore, 1e-9)
 }
 
+func TestMergeHybridEventResults_DistinctEventIDs(t *testing.T) {
+	now := time.Now()
+	results := mergeHybridEventResults(
+		[]session.EventSearchResult{
+			{
+				SessionKey: session.Key{
+					AppName:   "app",
+					UserID:    "user",
+					SessionID: "sess-a",
+				},
+				Event: event.Event{
+					ID:           "evt-user",
+					InvocationID: "inv-a",
+				},
+				Role:           model.RoleUser,
+				Text:           "user question",
+				EventCreatedAt: now,
+				DenseScore:     0.9,
+			},
+			{
+				SessionKey: session.Key{
+					AppName:   "app",
+					UserID:    "user",
+					SessionID: "sess-a",
+				},
+				Event: event.Event{
+					ID:           "evt-assistant",
+					InvocationID: "inv-a",
+				},
+				Role:           model.RoleAssistant,
+				Text:           "assistant answer",
+				EventCreatedAt: now.Add(time.Second),
+				DenseScore:     0.8,
+			},
+		},
+		nil,
+		60,
+		10,
+	)
+	require.Len(t, results, 2)
+	assert.Equal(t, "evt-user", results[0].Event.ID)
+	assert.Equal(t, "evt-assistant", results[1].Event.ID)
+}
+
 func TestCompactStrings(t *testing.T) {
 	assert.Equal(
 		t,

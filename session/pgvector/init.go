@@ -11,7 +11,10 @@ package pgvector
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/internal/session/sqldb"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -176,7 +179,106 @@ func (s *Service) addVectorColumns(
 			)
 		}
 	}
+	if err := s.validateEmbeddingColumnDimension(
+		ctx,
+	); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Service) validateEmbeddingColumnDimension(
+	ctx context.Context,
+) error {
+	tableName := sqldb.BuildTableName(
+		s.opts.tablePrefix,
+		sqldb.TableNameSessionEvents,
+	)
+	query := "SELECT format_type(a.atttypid, a.atttypmod) " +
+		"FROM pg_catalog.pg_attribute a " +
+		"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid " +
+		"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+		"WHERE c.relname = $1 " +
+		"AND n.nspname = COALESCE(NULLIF($2, ''), current_schema()) " +
+		"AND a.attname = 'embedding' " +
+		"AND a.attnum > 0 " +
+		"AND NOT a.attisdropped"
+	var typeName string
+	if err := s.pgClient.Query(
+		ctx,
+		func(rows *sql.Rows) error {
+			if !rows.Next() {
+				return fmt.Errorf(
+					"embedding column metadata not found",
+				)
+			}
+			if err := rows.Scan(&typeName); err != nil {
+				return fmt.Errorf(
+					"scan embedding column metadata: %w",
+					err,
+				)
+			}
+			return nil
+		},
+		query,
+		tableName,
+		s.opts.schema,
+	); err != nil {
+		return fmt.Errorf(
+			"query embedding column metadata: %w",
+			err,
+		)
+	}
+	dim, err := parseVectorColumnDimension(typeName)
+	if err != nil {
+		return fmt.Errorf(
+			"parse embedding column type %q: %w",
+			typeName,
+			err,
+		)
+	}
+	if dim != s.opts.indexDimension {
+		return fmt.Errorf(
+			"embedding column dimension mismatch: "+
+				"existing=%d configured=%d",
+			dim,
+			s.opts.indexDimension,
+		)
+	}
+	return nil
+}
+
+func parseVectorColumnDimension(typeName string) (int, error) {
+	const (
+		vectorTypePrefix = "vector("
+		vectorTypeSuffix = ")"
+	)
+	trimmed := strings.TrimSpace(typeName)
+	if !strings.HasPrefix(trimmed, vectorTypePrefix) ||
+		!strings.HasSuffix(trimmed, vectorTypeSuffix) {
+		return 0, fmt.Errorf(
+			"unexpected vector column type: %q",
+			trimmed,
+		)
+	}
+	dimensionText := strings.TrimSuffix(
+		strings.TrimPrefix(trimmed, vectorTypePrefix),
+		vectorTypeSuffix,
+	)
+	dim, err := strconv.Atoi(dimensionText)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"parse vector dimension: %w",
+			err,
+		)
+	}
+	if dim <= 0 {
+		return 0, fmt.Errorf(
+			"invalid vector dimension: %d",
+			dim,
+		)
+	}
+	return dim, nil
 }
 
 // createTextSearchIndex creates a GIN index on the
