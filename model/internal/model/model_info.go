@@ -31,6 +31,14 @@ var ModelContextWindows = map[string]int{
 	"o3":         200000,
 	"o4-mini":    200000,
 
+	// OpenAI GPT-5.4
+	// ref: https://platform.openai.com/docs/models/compare?model=gpt-5.4
+	// ref: https://platform.openai.com/docs/models/gpt-5.4-pro
+	"gpt-5.4":      1050000,
+	"gpt-5.4-pro":  1050000,
+	"gpt-5.4-mini": 400000,
+	"gpt-5.4-nano": 400000,
+
 	// OpenAI GPT-5.2
 	"gpt-5.2":           400000,
 	"gpt-5.2-instant":   400000,
@@ -88,12 +96,24 @@ var ModelContextWindows = map[string]int{
 	"davinci":          2049,
 
 	// Anthropic Claude
-	// ref: https://platform.claude.com/docs/en/build-with-claude/context-windows
+	// ref: https://docs.anthropic.com/en/about-claude/models/overview
+	// ref: https://docs.anthropic.com/en/docs/build-with-claude/context-windows
+
+	// Anthropic Claude 4.6
+	"claude-4.6-opus":   1000000,
+	"claude-opus-4-6":   1000000,
+	"claude-4.6-sonnet": 1000000,
+	"claude-sonnet-4-6": 1000000,
 
 	// Anthropic Claude 4.5
+	// Claude Sonnet 4.5 defaults to 200k. 1M requires the
+	// context-1m-2025-08-07 beta header.
 	"claude-4.5-opus":   200000,
+	"claude-opus-4-5":   200000,
 	"claude-4.5-sonnet": 200000,
+	"claude-sonnet-4-5": 200000,
 	"claude-4.5-haiku":  200000,
+	"claude-haiku-4-5":  200000,
 
 	// Anthropic Claude 4
 	"claude-4-opus":   200000,
@@ -224,7 +244,7 @@ var ModelContextWindows = map[string]int{
 
 // ResolveContextWindow returns the context window size for a given model name.
 // - Exact match (case-insensitive) first
-// - Optional: prefix-based fallback (simple heuristic)
+// - Optional: longest prefix-based fallback (simple heuristic)
 // - Fallback to defaultContextWindow
 func ResolveContextWindow(modelName string) int {
 	if modelName == "" {
@@ -238,11 +258,17 @@ func ResolveContextWindow(modelName string) int {
 	if w, ok := ModelContextWindows[key]; ok {
 		return w
 	}
-	// Simple prefix heuristic.
+	// Prefer the longest matching prefix so specific snapshots/variants win.
+	bestKeyLen := -1
+	bestWindow := 0
 	for k, w := range ModelContextWindows {
-		if strings.HasPrefix(key, k) {
-			return w
+		if strings.HasPrefix(key, k) && len(k) > bestKeyLen {
+			bestKeyLen = len(k)
+			bestWindow = w
 		}
+	}
+	if bestKeyLen >= 0 {
+		return bestWindow
 	}
 	return defaultContextWindow
 }

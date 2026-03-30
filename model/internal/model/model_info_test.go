@@ -47,9 +47,39 @@ func TestResolveContextWindow(t *testing.T) {
 			expected:  400000,
 		},
 		{
+			name:      "exact match - GPT-5.4",
+			modelName: "gpt-5.4",
+			expected:  1050000,
+		},
+		{
+			name:      "exact match - GPT-5.4-pro",
+			modelName: "gpt-5.4-pro",
+			expected:  1050000,
+		},
+		{
 			name:      "exact match - GPT-5.2-instant",
 			modelName: "gpt-5.2-instant",
 			expected:  400000,
+		},
+		{
+			name:      "exact match - Claude Sonnet 4.6",
+			modelName: "claude-sonnet-4-6",
+			expected:  1000000,
+		},
+		{
+			name:      "exact match - Claude Opus 4.5 alias",
+			modelName: "claude-opus-4-5",
+			expected:  200000,
+		},
+		{
+			name:      "exact match - Claude Sonnet 4.5 alias",
+			modelName: "claude-sonnet-4-5",
+			expected:  200000,
+		},
+		{
+			name:      "exact match - Claude Haiku 4.5 alias",
+			modelName: "claude-haiku-4-5",
+			expected:  200000,
 		},
 		{
 			name:      "case insensitive match",
@@ -65,6 +95,16 @@ func TestResolveContextWindow(t *testing.T) {
 			name:      "prefix match - Gemini prefix",
 			modelName: "gemini-1.5-pro",
 			expected:  2097152,
+		},
+		{
+			name:      "longest prefix match - GPT-5.4 snapshot",
+			modelName: "gpt-5.4-2026-03-05",
+			expected:  1050000,
+		},
+		{
+			name:      "longest prefix match - GPT-5.4 mini snapshot",
+			modelName: "gpt-5.4-mini-2026-03-17",
+			expected:  400000,
 		},
 		{
 			name:      "unknown model fallback",
