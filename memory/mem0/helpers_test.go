@@ -11,6 +11,7 @@ package mem0
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -85,6 +86,73 @@ func TestHelpers_ToEntry_Validation(t *testing.T) {
 
 func TestHelpers_MetadataQueryKey(t *testing.T) {
 	assert.Equal(t, "metadata[x]", metadataQueryKey("x"))
+}
+
+func TestHelpers_ListMemoriesResponseUnmarshal(t *testing.T) {
+	t.Run("bare array", func(t *testing.T) {
+		var resp listMemoriesResponse
+		err := json.Unmarshal([]byte(`[{"id":"a","memory":"m","metadata":{}}]`), &resp)
+		require.NoError(t, err)
+		require.Len(t, resp.Results, 1)
+		assert.Equal(t, "a", resp.Results[0].ID)
+	})
+
+	t.Run("paginated object", func(t *testing.T) {
+		var resp listMemoriesResponse
+		err := json.Unmarshal([]byte(`{"count":1,"next":null,"previous":null,"results":[{"id":"a","memory":"m","metadata":{}}]}`), &resp)
+		require.NoError(t, err)
+		require.Len(t, resp.Results, 1)
+		assert.Equal(t, 1, resp.Count)
+		assert.Equal(t, "a", resp.Results[0].ID)
+	})
+}
+
+func TestHelpers_CreateMemoryEventsUnmarshal(t *testing.T) {
+	t.Run("bare array", func(t *testing.T) {
+		var events createMemoryEvents
+		err := json.Unmarshal([]byte(`[{"id":"a","event":"ADD","data":{"memory":"m"}}]`), &events)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "m", events[0].Data.Memory)
+	})
+
+	t.Run("wrapped object with top-level memory", func(t *testing.T) {
+		var events createMemoryEvents
+		err := json.Unmarshal([]byte(`{"results":[{"id":"a","event":"ADD","memory":"m"}]}`), &events)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "m", events[0].Memory)
+		assert.Equal(t, "m", events[0].Data.Memory)
+	})
+}
+
+func TestHelpers_IsInvalidPageError(t *testing.T) {
+	assert.True(t, isInvalidPageError(&apiError{
+		StatusCode: http.StatusNotFound,
+		Body:       `{"detail":"Invalid page."}`,
+	}))
+	assert.False(t, isInvalidPageError(&apiError{
+		StatusCode: http.StatusNotFound,
+		Body:       `{"detail":"not found"}`,
+	}))
+}
+
+func TestHelpers_SearchV2ResponseUnmarshal(t *testing.T) {
+	t.Run("wrapped object", func(t *testing.T) {
+		var resp searchV2Response
+		err := json.Unmarshal([]byte(`{"memories":[{"id":"a","memory":"m","score":0.9,"metadata":{}}]}`), &resp)
+		require.NoError(t, err)
+		require.Len(t, resp.Memories, 1)
+		assert.Equal(t, "a", resp.Memories[0].ID)
+	})
+
+	t.Run("bare array", func(t *testing.T) {
+		var resp searchV2Response
+		err := json.Unmarshal([]byte(`[{"id":"a","memory":"m","score":0.9,"metadata":{}}]`), &resp)
+		require.NoError(t, err)
+		require.Len(t, resp.Memories, 1)
+		assert.Equal(t, "a", resp.Memories[0].ID)
+	})
 }
 
 func TestHelpers_MergeMetadata(t *testing.T) {

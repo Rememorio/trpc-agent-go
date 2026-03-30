@@ -9,7 +9,10 @@
 
 package mem0
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type apiMessage struct {
 	Role    string `json:"role"`
@@ -31,11 +34,47 @@ type createMemoryRequest struct {
 }
 
 type createMemoryEvent struct {
-	ID    string `json:"id"`
-	Event string `json:"event"`
-	Data  struct {
+	ID     string `json:"id"`
+	Event  string `json:"event"`
+	Memory string `json:"memory"`
+	Data   struct {
 		Memory string `json:"memory"`
 	} `json:"data"`
+}
+
+func (e *createMemoryEvent) UnmarshalJSON(data []byte) error {
+	type rawCreateMemoryEvent createMemoryEvent
+	var raw rawCreateMemoryEvent
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*e = createMemoryEvent(raw)
+	if e.Data.Memory == "" && e.Memory != "" {
+		e.Data.Memory = e.Memory
+	}
+	if e.Memory == "" && e.Data.Memory != "" {
+		e.Memory = e.Data.Memory
+	}
+	return nil
+}
+
+type createMemoryEvents []createMemoryEvent
+
+func (e *createMemoryEvents) UnmarshalJSON(data []byte) error {
+	var direct []createMemoryEvent
+	if err := json.Unmarshal(data, &direct); err == nil {
+		*e = direct
+		return nil
+	}
+
+	var wrapped struct {
+		Results []createMemoryEvent `json:"results"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err != nil {
+		return err
+	}
+	*e = wrapped.Results
+	return nil
 }
 
 type updateMemoryRequest struct {
@@ -53,6 +92,29 @@ type memoryRecord struct {
 	UpdatedAt string         `json:"updated_at"`
 }
 
+type listMemoriesResponse struct {
+	Count    int            `json:"count"`
+	Next     *string        `json:"next"`
+	Previous *string        `json:"previous"`
+	Results  []memoryRecord `json:"results"`
+}
+
+func (r *listMemoriesResponse) UnmarshalJSON(data []byte) error {
+	var direct []memoryRecord
+	if err := json.Unmarshal(data, &direct); err == nil {
+		r.Results = direct
+		return nil
+	}
+
+	type rawListMemoriesResponse listMemoriesResponse
+	var wrapped rawListMemoriesResponse
+	if err := json.Unmarshal(data, &wrapped); err != nil {
+		return err
+	}
+	*r = listMemoriesResponse(wrapped)
+	return nil
+}
+
 type searchV2Request struct {
 	Query   string         `json:"query"`
 	Filters map[string]any `json:"filters,omitempty"`
@@ -60,16 +122,34 @@ type searchV2Request struct {
 }
 
 type searchV2Response struct {
-	Memories []struct {
-		ID        string         `json:"id"`
-		Memory    string         `json:"memory"`
-		Metadata  map[string]any `json:"metadata"`
-		Score     float64        `json:"score"`
-		CreatedAt string         `json:"created_at"`
-		UpdatedAt *string        `json:"updated_at"`
-		UserID    string         `json:"user_id"`
-		AppID     string         `json:"app_id"`
-	} `json:"memories"`
+	Memories []searchMemoryRecord `json:"memories"`
+}
+
+type searchMemoryRecord struct {
+	ID        string         `json:"id"`
+	Memory    string         `json:"memory"`
+	Metadata  map[string]any `json:"metadata"`
+	Score     float64        `json:"score"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt *string        `json:"updated_at"`
+	UserID    string         `json:"user_id"`
+	AppID     string         `json:"app_id"`
+}
+
+func (r *searchV2Response) UnmarshalJSON(data []byte) error {
+	var direct []searchMemoryRecord
+	if err := json.Unmarshal(data, &direct); err == nil {
+		r.Memories = direct
+		return nil
+	}
+
+	type rawSearchV2Response searchV2Response
+	var wrapped rawSearchV2Response
+	if err := json.Unmarshal(data, &wrapped); err != nil {
+		return err
+	}
+	*r = searchV2Response(wrapped)
+	return nil
 }
 
 type parsedTimes struct {

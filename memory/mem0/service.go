@@ -198,7 +198,7 @@ func (s *Service) AddMemory(
 		ProjectID: s.opts.projectID,
 	}
 
-	var events []createMemoryEvent
+	var events createMemoryEvents
 	return s.c.doJSON(ctx, httpMethodPost, pathV1Memories, nil, req, &events)
 }
 
@@ -315,14 +315,17 @@ func (s *Service) ReadMemories(
 		q.Set(queryKeyPageSize, itoa(pageSize))
 		addOrgProjectQuery(q, s.opts)
 
-		var batch []memoryRecord
+		var batch listMemoriesResponse
 		if err := s.c.doJSON(ctx, httpMethodGet, pathV1Memories, q, nil, &batch); err != nil {
+			if isInvalidPageError(err) {
+				break
+			}
 			return nil, err
 		}
-		if len(batch) == 0 {
+		if len(batch.Results) == 0 {
 			break
 		}
-		all = append(all, batch...)
+		all = append(all, batch.Results...)
 		if limit > 0 && len(all) >= limit {
 			all = all[:limit]
 			break
@@ -581,14 +584,14 @@ func (s *Service) findMemoryIDByTRPCID(
 	q.Set(metadataQueryKey(metadataKeyTRPCMemoryID), trpcID)
 	addOrgProjectQuery(q, s.opts)
 
-	var out []memoryRecord
+	var out listMemoriesResponse
 	if err := s.c.doJSON(ctx, httpMethodGet, pathV1Memories, q, nil, &out); err != nil {
 		return "", err
 	}
-	if len(out) == 0 {
+	if len(out.Results) == 0 {
 		return "", nil
 	}
-	return out[0].ID, nil
+	return out.Results[0].ID, nil
 }
 
 func (s *Service) getMemory(ctx context.Context, memoryID string) (*memoryRecord, error) {
@@ -678,6 +681,15 @@ func searchCandidateLimit(opts memory.SearchOptions, maxResults int) int {
 		}
 	}
 	return limit
+}
+
+func isInvalidPageError(err error) bool {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusNotFound &&
+		strings.Contains(strings.ToLower(apiErr.Body), "invalid page")
 }
 
 func wrapMemoryNotFoundError(memoryID string, err error) error {

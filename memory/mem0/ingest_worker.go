@@ -197,7 +197,7 @@ func (w *ingestWorker) ingest(
 		ProjectID: w.projectID,
 	}
 
-	var events []createMemoryEvent
+	var events createMemoryEvents
 	return w.c.doJSON(ctx, httpMethodPost, pathV1Memories, nil, req, &events)
 }
 
