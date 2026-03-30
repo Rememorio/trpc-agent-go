@@ -222,6 +222,11 @@ memoryService := memoryinmemory.NewMemoryService(
 | `MYSQL_USER`              | MySQL user                               | `root`                      |
 | `MYSQL_PASSWORD`          | MySQL password                           | ``                          |
 | `MYSQL_DATABASE`          | MySQL database                           | `trpc_agent_go`             |
+| `MEM0_API_KEY`            | mem0 API key                             | ``                          |
+| `MEM0_HOST`               | mem0 API host                            | `https://api.mem0.ai`       |
+| `MEM0_BASE_URL`           | Alias of `MEM0_HOST`                     | `https://api.mem0.ai`       |
+| `MEM0_ORG_ID`             | mem0 organization ID                     | ``                          |
+| `MEM0_PROJECT_ID`         | mem0 project ID                          | ``                          |
 
 ## Command Line Arguments
 
@@ -229,7 +234,7 @@ memoryService := memoryinmemory.NewMemoryService(
 | ------------ | ------------------------------------------------------------------------- | ---------------- |
 | `-model`     | Name of the model for chat responses                                      | `deepseek-chat`  |
 | `-ext-model` | Name of the model for memory extraction                                   | Same as `-model` |
-| `-memory`    | Memory service type: `inmemory`, `sqlite`, `sqlitevec`, `redis`, `postgres`, `pgvector`, `mysql` | `inmemory` |
+| `-memory`    | Memory service type: `inmemory`, `sqlite`, `sqlitevec`, `redis`, `postgres`, `pgvector`, `mysql`, `mem0` | `inmemory` |
 | `-streaming` | Enable streaming mode for responses                                       | `true`           |
 | `-debug`     | Enable debug mode to print messages sent to model                         | `false`          |
 
@@ -253,6 +258,8 @@ go run . -model gpt-4o -ext-model gpt-4o-mini
 ### Memory Backend Configuration
 
 The auto memory example supports multiple memory backends. Configure the appropriate environment variables and use the `-memory` flag:
+
+When using `mem0`, this example keeps the framework extractor in the loop so auto memory behavior stays consistent with the other backends.
 
 ```bash
 # Default in-memory memory service
@@ -285,6 +292,13 @@ go run . -memory postgres
 export PGVECTOR_HOST=localhost
 export PGVECTOR_PASSWORD=password
 go run . -memory pgvector
+
+# mem0 managed memory service
+export MEM0_API_KEY=your-mem0-api-key
+export MEM0_BASE_URL=https://api.mem0.ai
+export MEM0_ORG_ID=
+export MEM0_PROJECT_ID=
+go run . -memory mem0
 ```
 
 ### Debug Mode
@@ -316,7 +330,7 @@ Usage of ./auto:
   -ext-model string
         Model for memory extraction (defaults to chat model)
   -memory string
-        Memory service type: inmemory, sqlite, sqlitevec, redis, postgres, pgvector, mysql (default "inmemory")
+        Memory service type: inmemory, sqlite, sqlitevec, redis, postgres, pgvector, mysql, mem0 (default "inmemory")
   -model string
         Model for chat responses (default "deepseek-chat")
   -streaming

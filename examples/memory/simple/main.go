@@ -57,7 +57,8 @@
 //
 //	mem0:
 //		export MEM0_API_KEY="your-mem0-api-key"
-//		export MEM0_HOST="https://api.mem0.ai"
+//		export MEM0_BASE_URL="https://api.mem0.ai"
+//		# Or: export MEM0_HOST="https://api.mem0.ai"
 //		export MEM0_ORG_ID=""
 //		export MEM0_PROJECT_ID=""
 package main

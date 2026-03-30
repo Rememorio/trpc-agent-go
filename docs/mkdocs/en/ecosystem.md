@@ -762,80 +762,65 @@ func (p *PostgreSQLMemoryService) unmarshalTopics(data []byte) []string {
 }
 ```
 
-For quick implementation, you can directly integrate with existing Memory platforms/services (such as mem0). Recommendations:
+For external Memory platforms/services such as mem0, `trpc-agent-go` already
+includes a production backend in `memory/mem0/`.
 
-- Provide implementation in `memory/mem0/`, following the `memory.Service` interface.
-- Reuse existing `memory/tool` tools (`memory_add`, `memory_search`, `memory_load`, etc.), expose through `Tools()`.
-- Map topics and search according to target service capabilities, maintain lightweight local indexes when necessary to enhance query experience.
-- Optional: Reuse `storage` module client management for unified authentication, connection and reuse.
+- It implements `memory.Service` and reuses the standard memory tools.
+- It supports agentic mode, extractor-driven auto memory, and optional mem0
+  native ingestion.
+- It persists canonical TRPC memory identity and episodic metadata inside mem0
+  record metadata so add/update/dedup flows stay aligned with other backends.
+- It uses mem0 semantic retrieval by default, and can add local keyword fusion
+  when `memory.SearchOptions.HybridSearch` is enabled.
+- It exposes the same tool controls as the other backends, including
+  `WithToolEnabled`, `WithToolExposed`, and `WithAutoMemoryExposedTools`.
 
-Example skeleton (simplified):
+Example:
 
 ```go
-package mem0
-
 import (
-    "context"
-    "net/http"
+    "os"
+    "time"
 
     "trpc.group/trpc-go/trpc-agent-go/memory"
-    memorytool "trpc.group/trpc-go/trpc-agent-go/memory/tool"
-    "trpc.group/trpc-go/trpc-agent-go/tool"
+    "trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
+    "trpc.group/trpc-go/trpc-agent-go/model/openai"
 )
 
-type Service struct {
-    client  *http.Client
-    baseURL string
-    apiKey  string
-    tools   map[string]tool.Tool
+memExtractor := extractor.NewExtractor(openai.New("gpt-4o-mini"))
+host := os.Getenv("MEM0_HOST")
+if host == "" {
+    host = os.Getenv("MEM0_BASE_URL")
 }
 
-func New(baseURL, apiKey string) *Service {
-    s := &Service{
-        client:  &http.Client{},
-        baseURL: baseURL,
-        apiKey:  apiKey,
-        tools:   make(map[string]tool.Tool),
-    }
-    s.tools[memory.AddToolName] = memorytool.NewAddTool(s)
-    s.tools[memory.SearchToolName] = memorytool.NewSearchTool(s)
-    s.tools[memory.LoadToolName] = memorytool.NewLoadTool(s)
-    return s
+memoryService, err := memorymem0.NewService(
+    memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
+    memorymem0.WithHost(host),
+    memorymem0.WithOrgProject(
+        os.Getenv("MEM0_ORG_ID"),
+        os.Getenv("MEM0_PROJECT_ID"),
+    ),
+    memorymem0.WithExtractor(memExtractor),
+    memorymem0.WithAsyncMemoryNum(3),
+    memorymem0.WithMemoryQueueSize(100),
+    memorymem0.WithMemoryJobTimeout(30*time.Second),
+    memorymem0.WithToolEnabled(memory.LoadToolName, true),
+)
+if err != nil {
+    panic(err)
 }
-
-func (s *Service) Tools() []tool.Tool {
-    var ts []tool.Tool
-    for _, t := range s.tools {
-        ts = append(ts, t)
-    }
-    return ts
-}
-
-func (s *Service) AddMemory(ctx context.Context, key memory.UserKey, m string, topics []string) error {
-    if err := key.CheckUserKey(); err != nil {
-        return err
-    }
-    // Call mem0 API to write memory.
-    return nil
-}
-
-func (s *Service) SearchMemories(ctx context.Context, key memory.UserKey, q string) ([]*memory.Entry, error) {
-    if err := key.CheckUserKey(); err != nil {
-        return nil, err
-    }
-    // Call mem0 API to search, and convert to []*memory.Entry.
-    return nil, nil
-}
-
-// Other interfaces Update/Delete/Clear/Read map according to mem0 capabilities
 ```
 
-Implementation points:
+Implementation notes:
 
-- Configure authentication and rate limiting according to target service guidelines.
-- Return values strictly align with `memory.Entry` and `memory.Memory`, use UTC for time fields.
-- Tool declarations should accurately describe input and output for frontend and model understanding.
-- Add README, examples and tests to ensure compatibility with runner-based integrations.
+- `MEM0_API_KEY` is required. `MEM0_HOST` and `MEM0_BASE_URL` are accepted as
+  host/base-URL inputs. `MEM0_ORG_ID` and `MEM0_PROJECT_ID` are optional.
+- Omit `WithExtractor(...)` for pure agentic mode.
+- Use `WithUseExtractorForAutoMemory(false)` if you want mem0 native ingestion
+  to process conversation transcripts instead of the framework extractor.
+- Search, load, update, and delete all operate through the mem0-backed service,
+  while TRPC canonical IDs are kept in metadata for idempotent upserts.
 
 **Open Source Components That Can Be Integrated:**
 

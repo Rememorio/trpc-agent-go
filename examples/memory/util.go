@@ -111,7 +111,8 @@ func DefaultRunnerConfig() RunnerConfig {
 //	postgres:   PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE
 //	pgvector:   PGVECTOR_HOST, PGVECTOR_PORT, PGVECTOR_USER, PGVECTOR_PASSWORD, PGVECTOR_DATABASE, PGVECTOR_EMBEDDER_MODEL
 //	mysql:      MYSQL_HOST, MYSQL_PORT, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
-//	mem0:       MEM0_API_KEY (required), MEM0_HOST, MEM0_ORG_ID, MEM0_PROJECT_ID
+//	mem0:       MEM0_API_KEY (required), MEM0_HOST or MEM0_BASE_URL,
+//	            MEM0_ORG_ID, MEM0_PROJECT_ID
 func NewMemoryServiceByType(memoryType MemoryType, cfg MemoryServiceConfig) (memory.Service, error) {
 	switch memoryType {
 	case MemorySQLite:
@@ -477,7 +478,7 @@ func newMem0MemoryService(cfg MemoryServiceConfig) (memory.Service, error) {
 		return nil, fmt.Errorf("MEM0_API_KEY is required")
 	}
 
-	host := GetEnvOrDefault("MEM0_HOST", "")
+	host := getMem0Host()
 	orgID := GetEnvOrDefault("MEM0_ORG_ID", "")
 	projectID := GetEnvOrDefault("MEM0_PROJECT_ID", "")
 
@@ -509,6 +510,13 @@ func newMem0MemoryService(cfg MemoryServiceConfig) (memory.Service, error) {
 	}
 
 	return memorymem0.NewService(opts...)
+}
+
+func getMem0Host() string {
+	if host := os.Getenv("MEM0_HOST"); host != "" {
+		return host
+	}
+	return GetEnvOrDefault("MEM0_BASE_URL", "")
 }
 
 // NewRunner creates a runner with the given memory service and configuration.
@@ -602,7 +610,10 @@ func PrintMemoryInfo(memoryType MemoryType, softDelete bool) {
 		fmt.Printf("MySQL: %s:%s/%s\n", host, port, database)
 		fmt.Printf("Soft delete: %t\n", softDelete)
 	case MemoryMem0:
-		host := GetEnvOrDefault("MEM0_HOST", "https://api.mem0.ai")
+		host := getMem0Host()
+		if host == "" {
+			host = "https://api.mem0.ai"
+		}
 		fmt.Printf("mem0: %s\n", host)
 	default:
 		fmt.Printf("In-memory\n")

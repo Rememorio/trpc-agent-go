@@ -105,6 +105,11 @@ runner := runner.NewRunner(
 | `MYSQL_USER`              | MySQL user                   | `root`                   |
 | `MYSQL_PASSWORD`          | MySQL password               | ``                       |
 | `MYSQL_DATABASE`          | MySQL database name          | `trpc_agent_go`          |
+| `MEM0_API_KEY`            | mem0 API key                 | ``                       |
+| `MEM0_HOST`               | mem0 API host                | `https://api.mem0.ai`    |
+| `MEM0_BASE_URL`           | Alias of `MEM0_HOST`         | `https://api.mem0.ai`    |
+| `MEM0_ORG_ID`             | mem0 organization ID         | ``                       |
+| `MEM0_PROJECT_ID`         | mem0 project ID              | ``                       |
 
 ### Embedding Environment Variables (Optional)
 
@@ -122,7 +127,7 @@ separate embedding endpoint / API key:
 | Argument       | Description                                                             | Default Value   |
 | -------------- | ----------------------------------------------------------------------- | --------------- |
 | `-model`       | Name of the model to use                                                | `deepseek-chat` |
-| `-memory`      | Memory service: `inmemory`, `sqlite`, `sqlitevec`, `redis`, `mysql`, `postgres`, or `pgvector` | `inmemory` |
+| `-memory`      | Memory service: `inmemory`, `sqlite`, `sqlitevec`, `redis`, `mysql`, `postgres`, `pgvector`, or `mem0` | `inmemory` |
 | `-soft-delete` | Enable soft delete for SQLite/SQLiteVec/MySQL/PostgreSQL/pgvector memory service  | `false`         |
 | `-streaming`   | Enable streaming mode for responses                                     | `true`          |
 
@@ -210,6 +215,13 @@ export PGVECTOR_PASSWORD=""
 export PGVECTOR_DATABASE=trpc-agent-go-pgmemory
 export PGVECTOR_EMBEDDER_MODEL=text-embedding-3-small
 go run main.go -memory pgvector
+
+# mem0 managed memory service
+export MEM0_API_KEY=your-mem0-api-key
+export MEM0_BASE_URL=https://api.mem0.ai
+export MEM0_ORG_ID=
+export MEM0_PROJECT_ID=
+go run main.go -memory mem0
 ```
 
 ## Chat Interface
@@ -304,12 +316,14 @@ The example demonstrates a custom clear tool with enhanced logging:
 
 ### Memory Service Integration
 
-- Supports multiple backends: in-memory, Redis, MySQL, PostgreSQL, and pgvector
+- Supports multiple backends: in-memory, SQLite, SQLiteVec, Redis, MySQL, PostgreSQL, pgvector, and mem0
 - Uses `memoryinmemory.NewMemoryService()` for in-memory storage
+- Uses SQLite-backed memory services for local persistence and `sqlite-vec` search
 - Uses `memoryredis.NewService()` for Redis-based storage
 - Uses `memorymysql.NewService()` for MySQL-based storage
 - Uses `memorypostgres.NewService()` for PostgreSQL-based storage
 - Uses `memorypgvector.NewService()` for pgvector-based storage with vector similarity search
+- Uses `memorymem0.NewService()` for mem0-managed remote storage
 - Memory tools directly access the memory service
 - Two-step integration: Step 1 (manual tool registration) + Step 2 (runner service setup)
 

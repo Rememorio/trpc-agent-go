@@ -756,82 +756,65 @@ func (p *PostgreSQLMemoryService) unmarshalTopics(data []byte) []string {
 }
 ```
 
-为便于快速落地，可直接对接现有 Memory 平台/服务（如 mem0）。建议：
+对于 mem0 这类外部 Memory 平台/服务，`trpc-agent-go` 已经在
+`memory/mem0/` 中提供了可直接使用的后端实现。
 
-- 在 `memory/mem0/` 提供实现，遵循 `memory.Service` 接口。
-- 复用现有 `memory/tool` 工具（`memory_add`、`memory_search`、
-  `memory_load` 等），通过 `Tools()` 暴露。
-- 主题（topics）与检索（search）按目标服务能力做映射，必要时在本地
-  维护轻量索引以增强查询体验。
-- 可选：复用 `storage` 模块的客户端管理统一鉴权、连接与复用。
+- 实现了 `memory.Service`，并复用了标准 memory tools。
+- 同时支持 Agentic Mode、基于 extractor 的 Auto Memory，以及可选的
+  mem0 原生 ingestion。
+- 会把 TRPC 的 canonical memory identity 与 episodic metadata 写入 mem0
+  记录的 metadata 中，使 add/update/dedup 流程尽量与其他后端保持一致。
+- 默认使用 mem0 的语义检索；当启用 `memory.SearchOptions.HybridSearch`
+  时，会再叠加本地关键词融合检索。
+- 暴露与其他后端一致的工具控制能力，包括 `WithToolEnabled`、
+  `WithToolExposed`、`WithAutoMemoryExposedTools` 等。
 
-示例骨架（简化）：
+示例：
 
 ```go
-package mem0
-
 import (
-    "context"
-    "net/http"
+    "os"
+    "time"
 
     "trpc.group/trpc-go/trpc-agent-go/memory"
-    memorytool "trpc.group/trpc-go/trpc-agent-go/memory/tool"
-    "trpc.group/trpc-go/trpc-agent-go/tool"
+    "trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
+    "trpc.group/trpc-go/trpc-agent-go/model/openai"
 )
 
-type Service struct {
-    client  *http.Client
-    baseURL string
-    apiKey  string
-    tools   map[string]tool.Tool
+memExtractor := extractor.NewExtractor(openai.New("gpt-4o-mini"))
+host := os.Getenv("MEM0_HOST")
+if host == "" {
+    host = os.Getenv("MEM0_BASE_URL")
 }
 
-func New(baseURL, apiKey string) *Service {
-    s := &Service{
-        client:  &http.Client{},
-        baseURL: baseURL,
-        apiKey:  apiKey,
-        tools:   make(map[string]tool.Tool),
-    }
-    s.tools[memory.AddToolName] = memorytool.NewAddTool(s)
-    s.tools[memory.SearchToolName] = memorytool.NewSearchTool(s)
-    s.tools[memory.LoadToolName] = memorytool.NewLoadTool(s)
-    return s
+memoryService, err := memorymem0.NewService(
+    memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
+    memorymem0.WithHost(host),
+    memorymem0.WithOrgProject(
+        os.Getenv("MEM0_ORG_ID"),
+        os.Getenv("MEM0_PROJECT_ID"),
+    ),
+    memorymem0.WithExtractor(memExtractor),
+    memorymem0.WithAsyncMemoryNum(3),
+    memorymem0.WithMemoryQueueSize(100),
+    memorymem0.WithMemoryJobTimeout(30*time.Second),
+    memorymem0.WithToolEnabled(memory.LoadToolName, true),
+)
+if err != nil {
+    panic(err)
 }
-
-func (s *Service) Tools() []tool.Tool {
-    var ts []tool.Tool
-    for _, t := range s.tools {
-        ts = append(ts, t)
-    }
-    return ts
-}
-
-func (s *Service) AddMemory(ctx context.Context, key memory.UserKey, m string, topics []string) error {
-    if err := key.CheckUserKey(); err != nil {
-        return err
-    }
-    // 调用 mem0 API 写入记忆
-    return nil
-}
-
-func (s *Service) SearchMemories(ctx context.Context, key memory.UserKey, q string) ([]*memory.Entry, error) {
-    if err := key.CheckUserKey(); err != nil {
-        return nil, err
-    }
-    // 调用 mem0 API 检索, 并转换为 []*memory.Entry
-    return nil, nil
-}
-
-// 其余接口 Update/Delete/Clear/Read 按 mem0 能力做映射实现
 ```
 
-实现要点：
+实现说明：
 
-- 鉴权与限流按目标服务指南配置。
-- 返回值严格对齐 `memory.Entry` 与 `memory.Memory`，时间字段使用 UTC。
-- 工具声明（Declaration）应准确描述输入输出，便于前端与模型理解。
-- 补充 README、示例与测试，确保与 runner 相关集成可用。
+- `MEM0_API_KEY` 为必填；`MEM0_HOST` 与 `MEM0_BASE_URL` 都可作为主机 /
+  Base URL 输入；`MEM0_ORG_ID`、`MEM0_PROJECT_ID` 为可选。
+- 纯 Agentic Mode 可不传 `WithExtractor(...)`。
+- 若希望由 mem0 原生 ingestion 直接处理会话转录，而不是走框架的
+  extractor，可使用 `WithUseExtractorForAutoMemory(false)`。
+- Search、load、update、delete 都通过 mem0 后端服务执行，同时在
+  metadata 中保留 TRPC canonical ID 以支持幂等 upsert。
 
 **可以集成的开源组件示例：**
 
