@@ -14,6 +14,15 @@ mock model, so it does **not** require any API key.
 When the model calls `skill_load` (and optionally `skill_select_docs`), the
 framework writes session state keys:
 
+- `temp:skill:loaded_by_agent:<agent>/<name>`
+- `temp:skill:docs_by_agent:<agent>/<name>`
+- `temp:skill:loaded_order_by_agent:<agent>`
+  This is a JSON array ordered from the oldest touched skill to the newest
+  touched skill. `WithMaxLoadedSkills(N)` uses it to keep the recent skill
+  window correct without depending on transcript order.
+
+Legacy (pre-scoping) keys are still supported and migrated when seen:
+
 - `temp:skill:loaded:<name>`
 - `temp:skill:docs:<name>`
 

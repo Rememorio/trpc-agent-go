@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	imemory "trpc.group/trpc-go/trpc-agent-go/memory/internal/memory"
@@ -24,9 +25,13 @@ import (
 )
 
 const (
-	metadataKeyTRPCTopics   = "trpc_topics"
-	metadataKeyTRPCMemoryID = "trpc_memory_id"
-	metadataKeyTRPCAppName  = "trpc_app_name"
+	metadataKeyTRPCTopics       = "trpc_topics"
+	metadataKeyTRPCMemoryID     = "trpc_memory_id"
+	metadataKeyTRPCAppName      = "trpc_app_name"
+	metadataKeyTRPCKind         = "trpc_kind"
+	metadataKeyTRPCEventTime    = "trpc_event_time"
+	metadataKeyTRPCParticipants = "trpc_participants"
+	metadataKeyTRPCLocation     = "trpc_location"
 
 	defaultListPageSize = 100
 	defaultSearchTopK   = 20
@@ -59,7 +64,7 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 	}
 
 	if opts.userExplicitlySet == nil {
-		opts.userExplicitlySet = make(map[string]bool)
+		opts.userExplicitlySet = make(map[string]struct{})
 	}
 
 	autoMode := opts.extractor != nil && opts.useExtractorForAutoMemory
@@ -95,15 +100,19 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		extForTools,
 		opts.toolCreators,
 		opts.enabledTools,
+		nil,
+		nil,
 		svc.cachedTools,
 	)
 
 	if autoMode {
+		imemory.ConfigureExtractorEnabledTools(opts.extractor, opts.enabledTools)
 		cfg := imemory.AutoMemoryConfig{
 			Extractor:        opts.extractor,
 			AsyncMemoryNum:   opts.asyncMemoryNum,
 			MemoryQueueSize:  opts.memoryQueueSize,
 			MemoryJobTimeout: opts.memoryJobTimeout,
+			EnabledTools:     opts.enabledTools,
 		}
 		svc.autoMemoryWorker = imemory.NewAutoMemoryWorker(cfg, svc)
 		svc.autoMemoryWorker.Start()
@@ -150,6 +159,7 @@ func (s *Service) AddMemory(
 	userKey memory.UserKey,
 	memoryText string,
 	topics []string,
+	opts ...memory.AddOption,
 ) error {
 	if err := userKey.CheckUserKey(); err != nil {
 		return err
@@ -159,9 +169,10 @@ func (s *Service) AddMemory(
 	}
 
 	memObj := &memory.Memory{Memory: memoryText, Topics: topics}
+	imemory.ApplyMetadata(memObj, memory.ResolveAddOptions(opts))
 	trpcID := imemory.GenerateMemoryID(memObj, userKey.AppName, userKey.UserID)
 
-	meta := s.baseMetadata(userKey.AppName, topics)
+	meta := s.baseMetadata(userKey.AppName, memObj)
 	meta[metadataKeyTRPCMemoryID] = trpcID
 
 	existingID, err := s.findMemoryIDByTRPCID(ctx, userKey, trpcID)
@@ -195,6 +206,7 @@ func (s *Service) UpdateMemory(
 	memoryKey memory.Key,
 	memoryText string,
 	topics []string,
+	opts ...memory.UpdateOption,
 ) error {
 	if err := memoryKey.CheckMemoryKey(); err != nil {
 		return err
@@ -203,8 +215,33 @@ func (s *Service) UpdateMemory(
 		return errEmptyMemory
 	}
 
-	meta := s.baseMetadata(memoryKey.AppName, topics)
-	return s.updateMemoryWithMergedMetadata(ctx, memoryKey, memoryText, meta)
+	current, err := s.getMemory(ctx, memoryKey.MemoryID)
+	if err != nil {
+		return err
+	}
+
+	updated := &memory.Memory{Memory: memoryText, Topics: topics}
+	if currentEntry := toEntry(memoryKey.AppName, memoryKey.UserID, current); currentEntry != nil &&
+		currentEntry.Memory != nil {
+		updated = currentEntry.Memory
+		updated.Memory = memoryText
+		updated.Topics = topics
+	}
+
+	imemory.ApplyMetadataPatch(updated, memory.ResolveUpdateOptions(opts))
+	meta := s.baseMetadata(memoryKey.AppName, updated)
+	meta = mergeMetadata(current.Metadata, meta)
+
+	path := buildMemoryPath(memoryKey.MemoryID)
+	body := updateMemoryRequest{Text: memoryText, Metadata: meta}
+	var out any
+	if err := s.c.doJSON(ctx, httpMethodPut, path, nil, body, &out); err != nil {
+		return err
+	}
+	if result := memory.ResolveUpdateResult(opts); result != nil {
+		result.MemoryID = memoryKey.MemoryID
+	}
+	return nil
 }
 
 // DeleteMemory deletes a memory for a user.
@@ -295,11 +332,13 @@ func (s *Service) SearchMemories(
 	ctx context.Context,
 	userKey memory.UserKey,
 	query string,
+	opts ...memory.SearchOption,
 ) ([]*memory.Entry, error) {
 	if err := userKey.CheckUserKey(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(query) == "" {
+	searchOpts := memory.ResolveSearchOptions(query, opts)
+	if strings.TrimSpace(searchOpts.Query) == "" {
 		return nil, errEmptyQuery
 	}
 
@@ -311,7 +350,15 @@ func (s *Service) SearchMemories(
 	}
 	addOrgProjectFilter(filters, s.opts)
 
-	req := searchV2Request{Query: query, Filters: filters, TopK: defaultSearchTopK}
+	topK := defaultSearchTopK
+	if searchOpts.MaxResults > 0 {
+		topK = searchOpts.MaxResults
+	}
+	req := searchV2Request{
+		Query:   searchOpts.Query,
+		Filters: filters,
+		TopK:    topK,
+	}
 
 	var resp searchV2Response
 	if err := s.c.doJSON(ctx, httpMethodPost, pathV2Search, nil, req, &resp); err != nil {
@@ -329,16 +376,34 @@ func (s *Service) SearchMemories(
 		if entry == nil {
 			continue
 		}
+		entry.Score = m.Score
 		entries = append(entries, entry)
 	}
-	return entries, nil
+	return applySearchOptions(entries, searchOpts), nil
 }
 
-func (s *Service) baseMetadata(appName string, topics []string) map[string]any {
-	meta := make(map[string]any, 3)
+func (s *Service) baseMetadata(appName string, memObj *memory.Memory) map[string]any {
+	meta := make(map[string]any, 7)
 	meta[metadataKeyTRPCAppName] = appName
-	if len(topics) > 0 {
-		meta[metadataKeyTRPCTopics] = topics
+	if memObj == nil {
+		return meta
+	}
+	if len(memObj.Topics) > 0 {
+		meta[metadataKeyTRPCTopics] = append([]string(nil), memObj.Topics...)
+	}
+	if memObj.Kind != "" {
+		meta[metadataKeyTRPCKind] = string(memObj.Kind)
+	}
+	if memObj.EventTime != nil {
+		meta[metadataKeyTRPCEventTime] = memObj.EventTime.UTC().Format(time.RFC3339Nano)
+	}
+	if len(memObj.Participants) > 0 {
+		meta[metadataKeyTRPCParticipants] = append(
+			[]string(nil), memObj.Participants...,
+		)
+	}
+	if location := strings.TrimSpace(memObj.Location); location != "" {
+		meta[metadataKeyTRPCLocation] = location
 	}
 	return meta
 }
@@ -408,7 +473,10 @@ func mergeMetadata(dst map[string]any, src map[string]any) map[string]any {
 	return out
 }
 
-func applyIngestModeDefaults(enabledTools, userExplicitlySet map[string]bool) {
+func applyIngestModeDefaults(
+	enabledTools map[string]struct{},
+	userExplicitlySet map[string]struct{},
+) {
 	if enabledTools == nil {
 		return
 	}
@@ -421,9 +489,69 @@ func applyIngestModeDefaults(enabledTools, userExplicitlySet map[string]bool) {
 		memory.LoadToolName:   false,
 	}
 	for name, v := range defaults {
-		if userExplicitlySet[name] {
+		if _, ok := userExplicitlySet[name]; ok {
 			continue
 		}
-		enabledTools[name] = v
+		if v {
+			enabledTools[name] = struct{}{}
+			continue
+		}
+		delete(enabledTools, name)
 	}
+}
+
+func applySearchOptions(
+	entries []*memory.Entry,
+	opts memory.SearchOptions,
+) []*memory.Entry {
+	results := filterSearchResults(entries, opts)
+	if opts.Kind != "" && opts.KindFallback &&
+		len(results) < imemory.MinKindFallbackResults {
+		fallbackOpts := opts
+		fallbackOpts.Kind = ""
+		fallbackOpts.KindFallback = false
+		fallback := filterSearchResults(entries, fallbackOpts)
+		results = imemory.MergeSearchResults(
+			results,
+			fallback,
+			opts.Kind,
+			opts.MaxResults,
+		)
+	}
+	if opts.Deduplicate && len(results) > 1 {
+		results = imemory.DeduplicateResults(results)
+	}
+	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
+		results = results[:opts.MaxResults]
+	}
+	return results
+}
+
+func filterSearchResults(
+	entries []*memory.Entry,
+	opts memory.SearchOptions,
+) []*memory.Entry {
+	filtered := make([]*memory.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.Memory == nil {
+			continue
+		}
+		if opts.SimilarityThreshold > 0 && entry.Score < opts.SimilarityThreshold {
+			continue
+		}
+		if opts.Kind != "" && imemory.EffectiveKind(entry.Memory) != opts.Kind {
+			continue
+		}
+		if opts.TimeAfter != nil && entry.Memory.EventTime != nil &&
+			entry.Memory.EventTime.Before(*opts.TimeAfter) {
+			continue
+		}
+		if opts.TimeBefore != nil && entry.Memory.EventTime != nil &&
+			entry.Memory.EventTime.After(*opts.TimeBefore) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	imemory.SortSearchResults(filtered, opts.OrderByEventTime)
+	return filtered
 }

@@ -14,9 +14,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	istructure "trpc.group/trpc-go/trpc-agent-go/internal/structure"
+	"trpc.group/trpc-go/trpc-agent-go/internal/teamtrace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool/agent"
@@ -33,6 +36,8 @@ type Team struct {
 	mode        Mode
 	coordinator agent.Agent
 	entryName   string
+
+	mu sync.RWMutex
 
 	members      []agent.Agent
 	memberByName map[string]agent.Agent
@@ -65,6 +70,8 @@ const (
 	// This is used to identify if a session belongs to a Swarm team.
 	SwarmTeamNameKey = "swarm_team_name"
 )
+
+const swarmTraceNodeIDKey = "__swarm_trace_node_id__"
 
 var (
 	errEmptyTeamName  = errors.New("team name is empty")
@@ -192,17 +199,58 @@ func (t *Team) runCoordinator(
 	if t.coordinator == nil {
 		return nil, errors.New("coordinator is nil")
 	}
-	return t.coordinator.Run(ctx, invocation)
+	rootNodeID := teamtrace.RootNodeID(invocation, t.name)
+	teamtrace.SetMemberTraceRootForInvocation(invocation, rootNodeID)
+	agent.SetInvocationSurfaceRootNodeID(
+		invocation,
+		teamtrace.CoordinatorNodeID(rootNodeID),
+	)
+	coordinatorEventCh, err := t.coordinator.Run(ctx, invocation)
+	if err != nil {
+		agent.ClearInvocationSurfaceRootNodeID(invocation)
+		teamtrace.ClearMemberTraceRootForInvocation(invocation)
+		return nil, err
+	}
+	return wrapCoordinatorInvocationState(
+		invocation,
+		coordinatorEventCh,
+	), nil
+}
+
+func wrapCoordinatorInvocationState(
+	invocation *agent.Invocation,
+	src <-chan *event.Event,
+) <-chan *event.Event {
+	if invocation == nil || src == nil {
+		return src
+	}
+	out := make(chan *event.Event)
+	go func() {
+		defer close(out)
+		defer teamtrace.ClearMemberTraceRootForInvocation(invocation)
+		defer agent.ClearInvocationSurfaceRootNodeID(invocation)
+		for evt := range src {
+			out <- evt
+		}
+	}()
+	return out
 }
 
 func (t *Team) runSwarm(
 	ctx context.Context,
 	invocation *agent.Invocation,
 ) (<-chan *event.Event, error) {
+	traceRootNodeID := teamtrace.TraceRootNodeID(invocation, t.name)
+	surfaceRootNodeID := teamtrace.RootNodeID(invocation, t.name)
 	// Mark this session as belonging to a Swarm team for transfer processor to detect.
 	// Only do this if cross-request transfer is enabled.
 	if t.crossRequestTransfer && invocation.Session != nil {
 		invocation.Session.SetState(SwarmTeamNameKey, []byte(t.name))
+		if invocation.RunOptions.ExecutionTraceEnabled {
+			if traceRootNodeID != "" {
+				invocation.Session.SetState(swarmTraceNodeIDKey, []byte(traceRootNodeID))
+			}
+		}
 	}
 
 	var startAgent agent.Agent
@@ -215,16 +263,41 @@ func (t *Team) runSwarm(
 	// If no active agent (either cross-request transfer disabled or no active agent stored),
 	// fall back to entry member.
 	if startAgent == nil {
+		t.mu.RLock()
 		startAgent = t.memberByName[t.entryName]
+		t.mu.RUnlock()
 		if startAgent == nil {
 			return nil, fmt.Errorf("entry member %q not found", t.entryName)
 		}
 	}
 
 	ensureSwarmRuntime(invocation, t.swarm)
-
+	memberPathAllocator := istructure.NewPathAllocator(traceRootNodeID)
+	var memberNodeID string
+	startAgentName := startAgent.Info().Name
+	t.mu.RLock()
+	for _, member := range t.members {
+		nextNodeID := memberPathAllocator.Next(member.Info().Name)
+		if member != nil && member.Info().Name == startAgentName {
+			memberNodeID = nextNodeID
+			break
+		}
+	}
+	t.mu.RUnlock()
+	if memberNodeID == "" {
+		memberNodeID = teamtrace.MemberNodeID(traceRootNodeID, startAgent.Info().Name)
+	}
+	memberSurfaceRootNodeID := teamtrace.MemberNodeID(
+		surfaceRootNodeID,
+		startAgent.Info().Name,
+	)
 	child := invocation.Clone(
 		agent.WithInvocationAgent(startAgent),
+		agent.WithInvocationTraceNodeID(memberNodeID),
+		agent.WithInvocationEntryPredecessorStepIDs(agent.NextExecutionTracePredecessors(invocation)),
+		func(inv *agent.Invocation) {
+			agent.SetInvocationSurfaceRootNodeID(inv, memberSurfaceRootNodeID)
+		},
 	)
 	childCtx := agent.NewInvocationContext(ctx, child)
 
@@ -247,7 +320,9 @@ func (t *Team) getActiveAgent(invocation *agent.Invocation) agent.Agent {
 	activeAgentName := string(agentNameBytes)
 
 	// Look up the agent in memberByName.
+	t.mu.RLock()
 	ag := t.memberByName[activeAgentName]
+	t.mu.RUnlock()
 	if ag == nil {
 		// Active agent doesn't exist, return nil to fall back to entry member.
 		return nil
@@ -265,7 +340,9 @@ func (t *Team) Tools() []tool.Tool {
 		}
 		return t.coordinator.Tools()
 	case ModeSwarm:
+		t.mu.RLock()
 		entry := t.memberByName[t.entryName]
+		t.mu.RUnlock()
 		if entry == nil {
 			return nil
 		}
@@ -285,6 +362,9 @@ func (t *Team) Info() agent.Info {
 
 // SubAgents implements agent.Agent.
 func (t *Team) SubAgents() []agent.Agent {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	if len(t.members) == 0 {
 		return nil
 	}
@@ -298,6 +378,8 @@ func (t *Team) FindSubAgent(name string) agent.Agent {
 	if name == "" {
 		return nil
 	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.memberByName[name]
 }
 
@@ -379,6 +461,7 @@ func (s *staticToolSet) Close() error { return nil }
 func (s *staticToolSet) Name() string { return s.name }
 
 func wireSwarmRoster(members []agent.Agent) error {
+	setters := make([]agent.SubAgentSetter, 0, len(members))
 	for _, m := range members {
 		setter, ok := m.(agent.SubAgentSetter)
 		if !ok {
@@ -387,18 +470,18 @@ func wireSwarmRoster(members []agent.Agent) error {
 				m.Info().Name,
 			)
 		}
+		setters = append(setters, setter)
+	}
 
+	for i := range members {
 		roster := make([]agent.Agent, 0, len(members)-1)
-		for _, other := range members {
-			if other == nil {
-				continue
-			}
-			if other.Info().Name == m.Info().Name {
+		for j, other := range members {
+			if other == nil || i == j {
 				continue
 			}
 			roster = append(roster, other)
 		}
-		setter.SetSubAgents(roster)
+		setters[i].SetSubAgents(roster)
 	}
 	return nil
 }

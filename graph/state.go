@@ -61,6 +61,8 @@ const (
 	StateKeyParentAgent = "parent_agent"
 )
 
+const currentTraceStepIDStateKey = "__current_trace_step_id__"
+
 // State represents the state that flows through the graph.
 // This is the shared data structure that flows between nodes.
 type State map[string]any
@@ -218,7 +220,10 @@ func (s State) safeClone() State {
 		if isUnsafeStateKey(k) {
 			continue
 		}
-		clone[k] = v
+		// Use jsonSafeCopy so that nested non-serializable
+		// types (chan, func, sync.Mutex, etc.) are stripped
+		// and the result is safe for json.Marshal.
+		clone[k] = jsonSafeCopy(v)
 	}
 	return clone
 }

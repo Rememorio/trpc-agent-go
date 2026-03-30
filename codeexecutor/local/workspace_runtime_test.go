@@ -13,6 +13,7 @@ package local_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -736,6 +737,24 @@ func TestRuntime_StageInputs_ArtifactAndLinks(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "AX", string(b))
 
+	// Stage artifact ref with explicit version and nested name.
+	ver, err := codeexecutor.SaveArtifactHelper(
+		actx, "uploads/b.txt", []byte("BX"), "text/plain",
+	)
+	require.NoError(t, err)
+	ref := fmt.Sprintf("artifact://uploads/b.txt@%d", ver)
+	err = rt.StageInputs(actx, ws, []codeexecutor.InputSpec{{
+		From: ref,
+		Mode: "copy",
+	}})
+	require.NoError(t, err)
+	target = filepath.Join(
+		ws.Path, codeexecutor.DirWork, "inputs", "b.txt",
+	)
+	b, err = os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "BX", string(b))
+
 	// host:// path with link mode creates a symlink.
 	src := t.TempDir()
 	require.NoError(t, os.WriteFile(
@@ -767,6 +786,23 @@ func TestRuntime_StageInputs_ArtifactAndLinks(t *testing.T) {
 	))
 	require.NoError(t, err)
 	require.Equal(t, "W", string(b))
+}
+
+func TestRuntime_StageInputs_NoSlash_DefaultNamePath(t *testing.T) {
+	rt := local.NewRuntime("")
+	ctx := context.Background()
+	ws, err := rt.CreateWorkspace(
+		ctx, "rt-stage-noslash", codeexecutor.WorkspacePolicy{},
+	)
+	require.NoError(t, err)
+	defer rt.Cleanup(ctx, ws)
+
+	err = rt.StageInputs(ctx, ws, []codeexecutor.InputSpec{{
+		From: "noslash",
+		Mode: "copy",
+	}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported input")
 }
 
 func TestRuntime_CreateWorkspace_AutoInputsHost(t *testing.T) {
@@ -823,8 +859,7 @@ func TestRuntime_CollectOutputs_SaveAndInline(t *testing.T) {
 	small := filepath.Join(ws.Path, codeexecutor.DirOut, "a.txt")
 	large := filepath.Join(ws.Path, codeexecutor.DirOut, "b.bin")
 	require.NoError(t, os.WriteFile(small, []byte("ok"), 0o644))
-	// Large file to exercise per-file cap.
-	big := bytes.Repeat([]byte{'x'}, 1024)
+	big := bytes.Repeat([]byte{'x'}, 32)
 	require.NoError(t, os.WriteFile(large, big, 0o644))
 
 	// Attach artifact service to save outputs.
@@ -839,8 +874,8 @@ func TestRuntime_CollectOutputs_SaveAndInline(t *testing.T) {
 		Save:          true,
 		NameTemplate:  "prefix-",
 		MaxFiles:      2,
-		MaxFileBytes:  16,
-		MaxTotalBytes: 64,
+		MaxFileBytes:  64,
+		MaxTotalBytes: 128,
 	})
 	require.NoError(t, err)
 	require.Len(t, mf.Files, 2)
@@ -854,7 +889,42 @@ func TestRuntime_CollectOutputs_SaveAndInline(t *testing.T) {
 		}
 	}
 	require.True(t, sawSmall)
-	require.True(t, mf.LimitsHit)
+	require.False(t, mf.LimitsHit)
+}
+
+func TestRuntime_CollectOutputs_SaveTruncatedFileErrors(t *testing.T) {
+	rt := local.NewRuntime("")
+	ctx := context.Background()
+	ws, err := rt.CreateWorkspace(
+		ctx, "rt-collect-out-truncated-save", codeexecutor.WorkspacePolicy{},
+	)
+	require.NoError(t, err)
+	defer rt.Cleanup(ctx, ws)
+
+	require.NoError(t, os.MkdirAll(
+		filepath.Join(ws.Path, codeexecutor.DirOut), 0o755,
+	))
+	large := filepath.Join(ws.Path, codeexecutor.DirOut, "b.bin")
+	require.NoError(t, os.WriteFile(
+		large,
+		bytes.Repeat([]byte{'x'}, 1024),
+		0o644,
+	))
+
+	svc := inmemory.NewService()
+	actx := codeexecutor.WithArtifactService(ctx, svc)
+	actx = codeexecutor.WithArtifactSession(
+		actx, artifact.SessionInfo{AppName: "a", UserID: "u", SessionID: "s"},
+	)
+	_, err = rt.CollectOutputs(actx, ws, codeexecutor.OutputSpec{
+		Globs:         []string{filepath.Join(codeexecutor.DirOut, "*")},
+		Save:          true,
+		MaxFiles:      1,
+		MaxFileBytes:  16,
+		MaxTotalBytes: 64,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot save truncated output file")
 }
 
 func TestRuntime_CollectOutputs_EnvPrefixes(t *testing.T) {

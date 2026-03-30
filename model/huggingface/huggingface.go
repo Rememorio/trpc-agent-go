@@ -125,6 +125,13 @@ func (m *Model) GenerateContent(ctx context.Context, request *model.Request) (<-
 		return nil, fmt.Errorf("failed to convert request: %w", err)
 	}
 
+	// Execute callback synchronously before starting the goroutine
+	// to avoid a race where the runner and HTTP handler finish
+	// (closing the SSE writer) while the callback is still running.
+	if m.chatRequestCallback != nil {
+		m.chatRequestCallback(ctx, hfRequest)
+	}
+
 	// Create response channel.
 	responseChan := make(chan *model.Response, m.channelBufferSize)
 
@@ -153,11 +160,6 @@ func (m *Model) handleNonStreamingRequest(
 	responseChan chan<- *model.Response,
 ) {
 	defer close(responseChan)
-
-	// Call request callback if provided.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, hfRequest)
-	}
 
 	// Make HTTP request.
 	hfResponse, err := m.makeRequest(ctx, hfRequest)
@@ -195,11 +197,6 @@ func (m *Model) handleStreamingRequest(
 			m.chatStreamCompleteCallback(ctx, hfRequest, streamErr)
 		}
 	}()
-
-	// Call request callback if provided.
-	if m.chatRequestCallback != nil {
-		m.chatRequestCallback(ctx, hfRequest)
-	}
 
 	// Make streaming HTTP request.
 	hfRequest.Stream = true
@@ -440,38 +437,4 @@ func (m *Model) applyTokenTailoring(ctx context.Context, request *model.Request)
 	}
 
 	request.Messages = tailored
-
-	// Calculate remaining tokens for output based on context window.
-	usedTokens, err := m.tokenCounter.CountTokensRange(ctx, request.Messages, 0, len(request.Messages))
-	if err != nil {
-		log.Warn("failed to count tokens after tailoring", err)
-		return
-	}
-
-	// Set max output tokens only if user hasn't specified it.
-	// This respects user's explicit configuration while providing a safe default.
-	if request.GenerationConfig.MaxTokens == nil {
-		contextWindow := imodel.ResolveContextWindow(m.name)
-		var maxOutputTokens int
-		if m.tokenTailoringConfig != nil &&
-			(m.tokenTailoringConfig.ProtocolOverheadTokens > 0 ||
-				m.tokenTailoringConfig.OutputTokensFloor > 0) {
-			// Use custom parameters if any are set.
-			maxOutputTokens = imodel.CalculateMaxOutputTokensWithParams(
-				contextWindow,
-				usedTokens,
-				m.tokenTailoringConfig.ProtocolOverheadTokens,
-				m.tokenTailoringConfig.OutputTokensFloor,
-				m.tokenTailoringConfig.SafetyMarginRatio,
-			)
-		} else {
-			// Use default parameters.
-			maxOutputTokens = imodel.CalculateMaxOutputTokens(contextWindow, usedTokens)
-		}
-		if maxOutputTokens > 0 {
-			request.GenerationConfig.MaxTokens = &maxOutputTokens
-			log.Debugf("token tailoring: contextWindow=%d, usedTokens=%d, maxOutputTokens=%d",
-				contextWindow, usedTokens, maxOutputTokens)
-		}
-	}
 }

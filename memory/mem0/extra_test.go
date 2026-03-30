@@ -109,12 +109,15 @@ func TestOptions_All(t *testing.T) {
 		return memorytool.NewSearchTool()
 	})(&opts)
 	require.NotNil(t, opts.toolCreators[memory.SearchToolName])
-	assert.True(t, opts.enabledTools[memory.SearchToolName])
+	_, ok := opts.enabledTools[memory.SearchToolName]
+	assert.True(t, ok)
 
 	WithToolEnabled("bad", true)(&opts)
 	WithToolEnabled(memory.LoadToolName, true)(&opts)
-	assert.True(t, opts.enabledTools[memory.LoadToolName])
-	assert.True(t, opts.userExplicitlySet[memory.LoadToolName])
+	_, ok = opts.enabledTools[memory.LoadToolName]
+	assert.True(t, ok)
+	_, ok = opts.userExplicitlySet[memory.LoadToolName]
+	assert.True(t, ok)
 
 	WithUseExtractorForAutoMemory(false)(&opts)
 	assert.False(t, opts.useExtractorForAutoMemory)
@@ -129,10 +132,11 @@ func TestOptions_All(t *testing.T) {
 }
 
 func TestApplyIngestModeDefaults_RespectsUserExplicit(t *testing.T) {
-	enabled := map[string]bool{memory.SearchToolName: false}
-	userSet := map[string]bool{memory.SearchToolName: true}
+	enabled := map[string]struct{}{}
+	userSet := map[string]struct{}{memory.SearchToolName: {}}
 	applyIngestModeDefaults(enabled, userSet)
-	assert.False(t, enabled[memory.SearchToolName])
+	_, ok := enabled[memory.SearchToolName]
+	assert.False(t, ok)
 }
 
 func TestMessageText_ContentParts(t *testing.T) {

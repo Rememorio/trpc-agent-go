@@ -12,6 +12,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -21,13 +22,51 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	ichannel "trpc.group/trpc-go/trpc-agent-go/graph/internal/channel"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	teletrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
+
+const (
+	testFatalErrCodeInt = -1
+	testFatalErrCodeStr = "-1"
+)
+
+type codedTestError struct{}
+
+func (codedTestError) Error() string { return "boom" }
+
+func (codedTestError) Code() int { return testFatalErrCodeInt }
+
+type toolCallIDCapturingTool struct {
+	name       string
+	toolCallID string
+}
+
+func (t *toolCallIDCapturingTool) Declaration() *tool.Declaration {
+	return &tool.Declaration{Name: t.name}
+}
+
+func (t *toolCallIDCapturingTool) Call(ctx context.Context, jsonArgs []byte) (any, error) {
+	t.toolCallID, _ = tool.ToolCallIDFromContext(ctx)
+	return map[string]string{"status": "ok"}, nil
+}
+
+func requireToolExecutionMetadata(t *testing.T, evt *event.Event) ToolExecutionMetadata {
+	t.Helper()
+	raw := evt.StateDelta[MetadataKeyTool]
+	require.NotEmpty(t, raw)
+	var meta ToolExecutionMetadata
+	require.NoError(t, json.Unmarshal(raw, &meta))
+	return meta
+}
 
 // TestDocumentProcessingWorkflow tests a comprehensive document processing workflow
 // that mimics real-world usage with LLM nodes, tool nodes, and conditional routing.
@@ -279,6 +318,786 @@ func TestExecutor_NodeStartEvent_UsesCustomUserInputKey(t *testing.T) {
 	require.Equal(t, testCustomInput, got)
 }
 
+func TestExecutor_EnqueueCommands_AssignsUniqueTaskIDsForSameTarget(t *testing.T) {
+	exec := &Executor{
+		graph: &Graph{
+			nodes: map[string]*Node{
+				"worker": {ID: "worker"},
+			},
+		},
+	}
+	execCtx := &ExecutionContext{State: State{}}
+	sourceTask := &Task{NodeID: "source", TaskID: "source-0", TaskPath: []string{"source"}}
+	exec.enqueueCommands(execCtx, sourceTask, []*Command{
+		{GoTo: "worker"},
+		{GoTo: "worker"},
+	}, 0, []string{"s1"})
+	require.Len(t, execCtx.pendingTasks, 2)
+	assert.NotEqual(t, execCtx.pendingTasks[0].TaskID, execCtx.pendingTasks[1].TaskID)
+	assert.Equal(t, "worker-1-source-0-0", execCtx.pendingTasks[0].TaskID)
+	assert.Equal(t, "worker-1-source-0-1", execCtx.pendingTasks[1].TaskID)
+	assert.Equal(t, []string{"s1"}, execCtx.pendingTasks[0].PredecessorStepIDs)
+	assert.Equal(t, []string{"s1"}, execCtx.pendingTasks[1].PredecessorStepIDs)
+}
+
+func TestExecutor_EnqueueCommands_AssignsUniqueTaskIDsAcrossStepsForSameTarget(t *testing.T) {
+	exec := &Executor{
+		graph: &Graph{
+			nodes: map[string]*Node{
+				"worker": {ID: "worker"},
+			},
+		},
+	}
+	execCtx := &ExecutionContext{State: State{}}
+	sourceTask := &Task{NodeID: "source", TaskID: "source-0", TaskPath: []string{"source"}}
+	exec.enqueueCommands(execCtx, sourceTask, []*Command{{GoTo: "worker"}}, 0, []string{"s1"})
+	exec.enqueueCommands(execCtx, sourceTask, []*Command{{GoTo: "worker"}}, 1, []string{"s2"})
+	require.Len(t, execCtx.pendingTasks, 2)
+	assert.Equal(t, "worker-1-source-0-0", execCtx.pendingTasks[0].TaskID)
+	assert.Equal(t, "worker-2-source-0-0", execCtx.pendingTasks[1].TaskID)
+	assert.NotEqual(t, execCtx.pendingTasks[0].TaskID, execCtx.pendingTasks[1].TaskID)
+}
+
+func TestExecutor_EnqueueCommands_AssignsUniqueTaskIDsAcrossSourceTasks(t *testing.T) {
+	exec := &Executor{
+		graph: &Graph{
+			nodes: map[string]*Node{
+				"worker": {ID: "worker"},
+			},
+		},
+	}
+	execCtx := &ExecutionContext{State: State{}}
+	firstSourceTask := &Task{NodeID: "source", TaskID: "source-a", TaskPath: []string{"source"}}
+	secondSourceTask := &Task{NodeID: "source", TaskID: "source-b", TaskPath: []string{"source"}}
+	exec.enqueueCommands(execCtx, firstSourceTask, []*Command{{GoTo: "worker"}}, 0, []string{"s1"})
+	exec.enqueueCommands(execCtx, secondSourceTask, []*Command{{GoTo: "worker"}}, 0, []string{"s2"})
+	require.Len(t, execCtx.pendingTasks, 2)
+	assert.Equal(t, "worker-1-source-a-0", execCtx.pendingTasks[0].TaskID)
+	assert.Equal(t, "worker-1-source-b-0", execCtx.pendingTasks[1].TaskID)
+	assert.NotEqual(t, execCtx.pendingTasks[0].TaskID, execCtx.pendingTasks[1].TaskID)
+}
+
+func TestExecutor_RecordTraceChannelSource_RespectsChannelBehavior(t *testing.T) {
+	exec := &Executor{}
+	channelManager := ichannel.NewChannelManager()
+	channelManager.AddChannel("last", ichannel.BehaviorLastValue)
+	channelManager.AddChannel("topic", ichannel.BehaviorTopic)
+	channelManager.AddChannel("barrier", ichannel.BehaviorBarrier)
+	execCtx := &ExecutionContext{
+		channels:                   channelManager,
+		traceChannelSources:        make(map[string][]string),
+		traceChannelSourceSteps:    make(map[string]int),
+		traceBarrierChannelSources: make(map[string]map[string]string),
+	}
+	exec.recordTraceChannelSource(execCtx, "last", "", "s1", 1)
+	exec.recordTraceChannelSource(execCtx, "last", "", "s2", 1)
+	exec.recordTraceChannelSource(execCtx, "last", "", "s3", 2)
+	exec.recordTraceChannelSource(execCtx, "topic", "", "s1", 1)
+	exec.recordTraceChannelSource(execCtx, "topic", "", "s2", 2)
+	exec.recordTraceChannelSource(execCtx, "barrier", "left", "s1", 1)
+	exec.recordTraceChannelSource(execCtx, "barrier", "left", "s2", 2)
+	exec.recordTraceChannelSource(execCtx, "barrier", "right", "s3", 2)
+	assert.Equal(t, []string{"s3"}, execCtx.traceChannelSources["last"])
+	assert.Equal(t, []string{"s1", "s2"}, execCtx.traceChannelSources["topic"])
+	assert.Equal(t, map[string]string{"left": "s2", "right": "s3"}, execCtx.traceBarrierChannelSources["barrier"])
+	assert.ElementsMatch(t, []string{"s2", "s3"}, exec.tracePredecessorsForChannels(execCtx, []string{"barrier"}))
+}
+
+func TestExecutor_RecordTraceChannelSource_LastValueKeepsSameStepFanIn(t *testing.T) {
+	exec := &Executor{}
+	channelManager := ichannel.NewChannelManager()
+	channelManager.AddChannel("last", ichannel.BehaviorLastValue)
+	execCtx := &ExecutionContext{
+		channels:                channelManager,
+		traceChannelSources:     make(map[string][]string),
+		traceChannelSourceSteps: make(map[string]int),
+	}
+	exec.recordTraceChannelSource(execCtx, "last", "", "s1", 1)
+	exec.recordTraceChannelSource(execCtx, "last", "", "s2", 1)
+	require.Equal(t, []string{"s1", "s2"}, exec.tracePredecessorsForChannels(execCtx, []string{"last"}))
+	exec.recordTraceChannelSource(execCtx, "last", "", "s3", 2)
+	require.Equal(t, []string{"s3"}, exec.tracePredecessorsForChannels(execCtx, []string{"last"}))
+}
+
+func TestExecutor_DisableGraphExecutorEvents_SuppressesEventHelpers(t *testing.T) {
+	exec := &Executor{}
+	eventCh := make(chan *event.Event, 8)
+	execCtx := &ExecutionContext{
+		InvocationID: "inv-disable-events",
+		EventChan:    eventCh,
+		State:        State{"answer": "ok"},
+	}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+
+	exec.emitExecutionStepEvent(ctx, invocation, execCtx, []*Task{{NodeID: "node-a"}}, 1)
+	exec.emitNodeStartEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now())
+	exec.emitNodeErrorEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, errors.New("boom"))
+	exec.emitChannelUpdateEvent(ctx, invocation, execCtx, "messages", ichannel.BehaviorLastValue, []string{"node-a"})
+	exec.emitNodeCompleteEvent(ctx, invocation, execCtx, "node-a", NodeTypeFunction, 1, time.Now(), false)
+	exec.emitUpdateStepEvent(ctx, invocation, execCtx, 1)
+	exec.emitStateUpdateEvent(ctx, invocation, execCtx)
+	emitModelStartEvent(ctx, invocation, invocation, eventCh, "inv-disable-events", "test-model", "node-a", "input", time.Now())
+	emitModelCompleteEvent(ctx, invocation, invocation, eventCh, "inv-disable-events", "test-model", "node-a", "input", "output", "resp-id", time.Now(), time.Now(), nil)
+	emitToolStartEvent(ctx, invocation, eventCh, "inv-disable-events", "test-tool", "tool-id", "node-a", time.Now(), []byte(`{"x":1}`), "resp-id")
+	completeEvent := emitToolCompleteEvent(ctx, invocation, toolCompleteEventConfig{
+		EventChan:    eventCh,
+		InvocationID: "inv-disable-events",
+		ToolName:     "test-tool",
+		ToolID:       "tool-id",
+		NodeID:       "node-a",
+		ResponseID:   "resp-id",
+		StartTime:    time.Now(),
+		Result:       map[string]any{"ok": true},
+		Arguments:    []byte(`{"x":1}`),
+	})
+
+	require.Nil(t, completeEvent)
+	require.Len(t, eventCh, 0)
+}
+
+func TestExecutor_DisableGraphExecutorEvents_PreservesTerminalError(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddNode("boom", func(context.Context, State) (any, error) {
+		return nil, errors.New("boom")
+	})
+	compiled := sg.SetEntryPoint("boom").SetFinishPoint("boom").MustCompile()
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-events-error"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	ch, err := exec.Execute(context.Background(), State{}, invocation)
+	require.NoError(t, err)
+	var sawTerminalError bool
+	for evt := range ch {
+		if evt == nil {
+			continue
+		}
+		require.NotEqual(t, ObjectTypeGraphPregelStep, evt.Object)
+		if evt.Object == model.ObjectTypeError &&
+			evt.Response != nil &&
+			evt.Response.Error != nil {
+			sawTerminalError = true
+			require.Contains(t, evt.Response.Error.Message, "boom")
+		}
+	}
+	require.True(t, sawTerminalError)
+}
+
+func TestExecutor_DisableGraphExecutorEvents_HidesNodeBarrierEvents(t *testing.T) {
+	sg := NewStateGraph(MessagesStateSchema())
+	sg.AddNode("done", func(context.Context, State) (any, error) {
+		return State{StateKeyLastResponse: "ok"}, nil
+	})
+	compiled := sg.SetEntryPoint("done").SetFinishPoint("done").MustCompile()
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-events-barrier"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	barrier.Enable(invocation)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	ch, err := exec.Execute(ctx, State{}, invocation)
+	require.NoError(t, err)
+	var sawCompletion bool
+	for evt := range ch {
+		require.NotNil(t, evt)
+		require.NotEqual(t, ObjectTypeGraphNodeBarrier, evt.Object)
+		if evt.Object == ObjectTypeGraphExecution {
+			sawCompletion = true
+		}
+	}
+	require.True(t, sawCompletion)
+}
+
+func TestExecuteSingleToolCall_DisableGraphExecutorEvents_FallsBackToOriginalInvocation(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-disable-events"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 0)
+}
+
+func TestExecuteSingleToolCall_UsesInvocationFromCallbackContext(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		callbackInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-callback-context"),
+			agent.WithInvocationEventFilterKey("tool-callback"),
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithDisableGraphExecutorEvents(false),
+			)),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), callbackInvocation),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-disable-events"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-callback", startEvent.FilterKey)
+	require.Equal(t, "tool-callback", completeEvent.FilterKey)
+}
+
+func TestExecuteSingleToolCall_UsesLatestToolCallbackInvocationForEvents(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-before-context"),
+			agent.WithInvocationEventFilterKey("tool-before"),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		afterInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-after-context"),
+			agent.WithInvocationEventFilterKey("tool-after"),
+		)
+		return &tool.AfterToolResult{
+			Context: agent.NewInvocationContext(context.Background(), afterInvocation),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-after", startEvent.FilterKey)
+	require.Equal(t, "tool-after", completeEvent.FilterKey)
+	require.Equal(t, "inv-tool-after-context", startEvent.InvocationID)
+	require.Equal(t, "inv-tool-after-context", completeEvent.InvocationID)
+	require.Equal(t, startEvent.InvocationID, requireToolExecutionMetadata(t, startEvent).InvocationID)
+	require.Equal(t, completeEvent.InvocationID, requireToolExecutionMetadata(t, completeEvent).InvocationID)
+}
+
+func TestExecuteSingleToolCall_CompleteEventFallsBackToBeforeToolInvocation(t *testing.T) {
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-tool-before-context"),
+			agent.WithInvocationEventFilterKey("tool-before"),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		return &tool.AfterToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-before", startEvent.FilterKey)
+	require.Equal(t, "tool-before", completeEvent.FilterKey)
+	require.Equal(t, startEvent.InvocationID, requireToolExecutionMetadata(t, startEvent).InvocationID)
+	require.Equal(t, completeEvent.InvocationID, requireToolExecutionMetadata(t, completeEvent).InvocationID)
+}
+
+func TestExecuteSingleToolCall_UsesLatestBareCallbackContextAsIs(t *testing.T) {
+	pluginCallbacks := tool.NewCallbacks()
+	pluginManager := &toolCallbacksPluginManager{callbacks: pluginCallbacks}
+	pluginCallbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-plugin-before-context"),
+			agent.WithInvocationEventFilterKey("tool-plugin-before"),
+			agent.WithInvocationPlugins(pluginManager),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	pluginCallbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		afterInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-plugin-after-context"),
+			agent.WithInvocationEventFilterKey("tool-plugin-after"),
+		)
+		return &tool.AfterToolResult{
+			Context: agent.NewInvocationContext(context.Background(), afterInvocation),
+		}, nil
+	})
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		return &tool.AfterToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+		agent.WithInvocationPlugins(pluginManager),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": &dummyTool{name: "echo"}},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Len(t, eventCh, 2)
+	startEvent := <-eventCh
+	completeEvent := <-eventCh
+	require.Equal(t, "tool-plugin-before", startEvent.FilterKey)
+	require.Equal(t, "tool-plugin-before", completeEvent.FilterKey)
+}
+
+func TestExecuteSingleToolCall_BareCallbackContextsCanClearToolCallID(t *testing.T) {
+	pluginCallbacks := tool.NewCallbacks()
+	pluginManager := &toolCallbacksPluginManager{callbacks: pluginCallbacks}
+	pluginCallbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeInvocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-plugin-before-context"),
+			agent.WithInvocationEventFilterKey("tool-plugin-before"),
+			agent.WithInvocationPlugins(pluginManager),
+		)
+		return &tool.BeforeToolResult{
+			Context: agent.NewInvocationContext(context.Background(), beforeInvocation),
+		}, nil
+	})
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		return &tool.BeforeToolResult{
+			Context: context.Background(),
+		}, nil
+	})
+	tl := &toolCallIDCapturingTool{name: "echo"}
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-tool-original-context"),
+		agent.WithInvocationEventFilterKey("tool-original"),
+		agent.WithInvocationPlugins(pluginManager),
+	)
+	ctx := agent.NewInvocationContext(context.Background(), invocation)
+	eventCh := make(chan *event.Event, 4)
+	toolCall := model.ToolCall{
+		ID: "tool-call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "echo",
+			Arguments: []byte(`{"value":"ok"}`),
+		},
+	}
+	msg, err := executeSingleToolCall(ctx, singleToolCallConfig{
+		ToolCall:     toolCall,
+		Tools:        map[string]tool.Tool{"echo": tl},
+		InvocationID: invocation.InvocationID,
+		EventChan:    eventCh,
+		Span:         noop.Span{},
+		State: State{
+			StateKeyCurrentNodeID: "node-a",
+		},
+		ToolCallbacks: callbacks,
+	})
+	require.NoError(t, err)
+	require.Equal(t, model.RoleTool, msg.Role)
+	require.Empty(t, tl.toolCallID)
+}
+
+func TestExecutor_CompletionEmitErrorDoesNotFailExecution(t *testing.T) {
+	stateGraph := NewStateGraph(NewStateSchema())
+	stateGraph.AddNode("noop", func(context.Context, State) (any, error) {
+		return State{}, nil
+	})
+	stateGraph.SetEntryPoint("noop")
+	stateGraph.SetFinishPoint("noop")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(g)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- exec.executeGraph(ctx, State{}, invocation, make(chan *event.Event), time.Now())
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-errCh)
+}
+
+func TestExecutor_DisableGraphCompletionEvent_SuppressesOutput(t *testing.T) {
+	stateGraph := NewStateGraph(MessagesStateSchema())
+	stateGraph.AddNode("noop", func(context.Context, State) (any, error) {
+		return State{StateKeyLastResponse: "done"}, nil
+	})
+	stateGraph.SetEntryPoint("noop")
+	stateGraph.SetFinishPoint("noop")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(g)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+
+	eventCh, err := exec.Execute(context.Background(), State{}, invocation)
+	require.NoError(t, err)
+
+	for evt := range eventCh {
+		require.False(t, isGraphCompletionEvent(evt))
+	}
+}
+
+func TestForwardExecutionEvents_DrainsQueuedEventsAfterContextCancellation(t *testing.T) {
+	exec := &Executor{}
+	src := make(chan *event.Event, 2)
+	dst := make(chan *event.Event, 2)
+	src <- event.New("inv", "author", event.WithObject(ObjectTypeGraphStateUpdate))
+	src <- NewGraphCompletionEvent(WithCompletionEventInvocationID("inv"))
+	close(src)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	exec.forwardExecutionEvents(ctx, invocation, src, dst)
+
+	evt, ok := <-dst
+	require.True(t, ok)
+	require.Equal(t, ObjectTypeGraphStateUpdate, evt.Object)
+
+	_, ok = <-dst
+	require.False(t, ok)
+}
+
+func TestForwardExecutionEvents_DoesNotBlockOnBackpressuredOutputAfterCancellation(t *testing.T) {
+	exec := &Executor{}
+	src := make(chan *event.Event, 2)
+	dst := make(chan *event.Event, 1)
+	first := event.New("inv", "author", event.WithObject(ObjectTypeGraphStateUpdate))
+	second := event.New("inv", "author", event.WithObject(ObjectTypeGraphChannelUpdate))
+	src <- first
+	src <- second
+	close(src)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		exec.forwardExecutionEvents(ctx, nil, src, dst)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		require.FailNow(t, "forwardExecutionEvents blocked after cancellation with a full output channel")
+	}
+
+	evt, ok := <-dst
+	require.True(t, ok)
+	require.Equal(t, ObjectTypeGraphStateUpdate, evt.Object)
+
+	_, ok = <-dst
+	require.False(t, ok)
+}
+
+func TestExecutorExecute_TracingBranches(t *testing.T) {
+	newExecutor := func(t *testing.T, fn NodeFunc) *Executor {
+		sg := NewStateGraph(NewStateSchema())
+		sg.AddNode("n", fn)
+		sg.SetEntryPoint("n")
+		sg.SetFinishPoint("n")
+
+		g, err := sg.Compile()
+		require.NoError(t, err)
+
+		exec, err := NewExecutor(g)
+		require.NoError(t, err)
+		return exec
+	}
+
+	setupRecordingTracer := func(t *testing.T) {
+		originalProvider := teletrace.TracerProvider
+		originalTracer := teletrace.Tracer
+
+		provider := sdktrace.NewTracerProvider()
+		teletrace.TracerProvider = provider
+		teletrace.Tracer = provider.Tracer("executor-test")
+
+		t.Cleanup(func() {
+			_ = provider.Shutdown(context.Background())
+			teletrace.TracerProvider = originalProvider
+			teletrace.Tracer = originalTracer
+		})
+	}
+
+	drainEvents := func(ch <-chan *event.Event) (sawError bool) {
+		for evt := range ch {
+			if evt != nil && evt.Error != nil {
+				sawError = true
+			}
+		}
+		return sawError
+	}
+
+	t.Run("disable tracing uses context span path", func(t *testing.T) {
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			return State{"ok": true}, nil
+		})
+		invocation := agent.NewInvocation(
+			agent.WithInvocationID("inv-disable-tracing"),
+			agent.WithInvocationRunOptions(agent.RunOptions{DisableTracing: true}),
+		)
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.False(t, drainEvents(ch))
+	})
+
+	t.Run("recording span success traces workflow", func(t *testing.T) {
+		setupRecordingTracer(t)
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			return State{"ok": true}, nil
+		})
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-success"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.False(t, drainEvents(ch))
+	})
+
+	t.Run("recording span error stores workflow error", func(t *testing.T) {
+		setupRecordingTracer(t)
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			return nil, errors.New("boom")
+		})
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-error"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.True(t, drainEvents(ch))
+	})
+
+	t.Run("recording span panic stores workflow panic", func(t *testing.T) {
+		setupRecordingTracer(t)
+		exec := newExecutor(t, func(context.Context, State) (any, error) {
+			panic("kaboom")
+		})
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-panic"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.True(t, drainEvents(ch))
+	})
+
+	t.Run("checkpoint restore panic stores workflow panic", func(t *testing.T) {
+		setupRecordingTracer(t)
+		sg := NewStateGraph(NewStateSchema())
+		sg.AddNode("a", func(context.Context, State) (any, error) {
+			return State{}, nil
+		})
+		sg.SetEntryPoint("a")
+		sg.SetFinishPoint("a")
+
+		g, err := sg.Compile()
+		require.NoError(t, err)
+
+		saver := &panicGetTupleSaver{mockSaver: newMockSaver()}
+		exec, err := NewExecutor(g, WithCheckpointSaver(saver))
+		require.NoError(t, err)
+
+		invocation := agent.NewInvocation(agent.WithInvocationID("inv-trace-checkpoint"))
+		invocation.AgentName = "trace-agent"
+
+		ch, err := exec.Execute(context.Background(), State{}, invocation)
+		require.NoError(t, err)
+		require.True(t, drainEvents(ch))
+	})
+}
+
 // Ensure handleInterrupt still emits the interrupt event even when
 // the provided context is canceled, because it uses a fresh background
 // context with a timeout for emission.
@@ -313,6 +1132,29 @@ func TestHandleInterrupt_EmitsEvent_WithCanceledContext(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("expected interrupt event emission")
+	}
+}
+
+func TestHandleInterrupt_DisableGraphExecutorEvents_SuppressesInterruptEvent(t *testing.T) {
+	exec := &Executor{}
+	ch := make(chan *event.Event, 1)
+	inv := agent.NewInvocation(
+		agent.WithInvocationID("inv-int-disabled"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	execCtx := &ExecutionContext{InvocationID: "inv-int-disabled", EventChan: ch}
+	intr := &InterruptError{NodeID: "N1", Value: "ask"}
+
+	err := exec.handleInterrupt(context.Background(), inv, execCtx, intr, 7, nil, nil)
+	require.True(t, IsInterruptError(err))
+	require.Same(t, intr, err)
+
+	select {
+	case evt := <-ch:
+		require.FailNowf(t, "unexpected interrupt event", "%#v", evt)
+	default:
 	}
 }
 
@@ -1232,6 +2074,279 @@ func TestAfterCallbackOverride(t *testing.T) {
 	require.Equal(t, "override", rv)
 }
 
+func TestAfterCallbackRunsOnNodeError(t *testing.T) {
+	boom := errors.New("boom")
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode("N", func(ctx context.Context, s State) (any, error) {
+		return nil, boom
+	})
+	g.SetEntryPoint("N").SetFinishPoint("N")
+
+	var afterCalls int32
+	var afterSawNilResult int32
+	var afterSawErr atomic.Value
+	cbs := NewNodeCallbacks().RegisterAfterNode(func(
+		ctx context.Context,
+		cb *NodeCallbackContext,
+		st State,
+		result any,
+		nodeErr error,
+	) (any, error) {
+		atomic.AddInt32(&afterCalls, 1)
+		if result == nil {
+			atomic.StoreInt32(&afterSawNilResult, 1)
+		}
+		if nodeErr != nil {
+			afterSawErr.Store(nodeErr)
+		}
+		return nil, nil
+	})
+	g.WithNodeCallbacks(cbs)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: "inv-after-on-error"},
+	)
+	require.NoError(t, err)
+
+	var sawPregelError bool
+	for evt := range ch {
+		if evt.Object != ObjectTypeGraphPregelStep {
+			continue
+		}
+		if evt.Response == nil || evt.Response.Error == nil {
+			continue
+		}
+		sawPregelError = true
+	}
+
+	require.True(t, sawPregelError)
+	require.Equal(t, int32(1), atomic.LoadInt32(&afterCalls))
+	require.Equal(t, int32(1), atomic.LoadInt32(&afterSawNilResult))
+
+	got, ok := afterSawErr.Load().(error)
+	require.True(t, ok)
+	require.ErrorIs(t, got, boom)
+}
+
+func TestFatalErrorEvents_PropagateErrorCode(t *testing.T) {
+	const nodeID = "N"
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode(nodeID, func(ctx context.Context, s State) (any, error) {
+		return nil, codedTestError{}
+	})
+	g.SetEntryPoint(nodeID).SetFinishPoint(nodeID)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: "inv-coded-fatal"},
+	)
+	require.NoError(t, err)
+
+	var gotNodeCode string
+	var gotPregelCode string
+	for evt := range ch {
+		if evt.Response == nil || evt.Response.Error == nil {
+			continue
+		}
+		if evt.Response.Error.Code == nil {
+			continue
+		}
+		switch evt.Author {
+		case nodeID:
+			gotNodeCode = *evt.Response.Error.Code
+		case AuthorGraphPregel:
+			if evt.Object != ObjectTypeGraphPregelStep {
+				continue
+			}
+			gotPregelCode = *evt.Response.Error.Code
+		}
+	}
+
+	require.Equal(t, testFatalErrCodeStr, gotNodeCode)
+	require.Equal(t, testFatalErrCodeStr, gotPregelCode)
+}
+
+func TestAfterCallbackCanRecoverNodeError(t *testing.T) {
+	boom := errors.New("boom")
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode("N", func(ctx context.Context, s State) (any, error) {
+		return nil, boom
+	})
+	g.SetEntryPoint("N").SetFinishPoint("N")
+
+	var afterCalls int32
+	var afterSawErr atomic.Value
+	cbs := NewNodeCallbacks().RegisterAfterNode(func(
+		ctx context.Context,
+		cb *NodeCallbackContext,
+		st State,
+		result any,
+		nodeErr error,
+	) (any, error) {
+		atomic.AddInt32(&afterCalls, 1)
+		if nodeErr != nil {
+			afterSawErr.Store(nodeErr)
+		}
+		return State{"ok": true}, nil
+	})
+	g.WithNodeCallbacks(cbs)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: "inv-after-recover"},
+	)
+	require.NoError(t, err)
+
+	var sawPregelError bool
+	final := make(State)
+	for ev := range ch {
+		if ev.Object == ObjectTypeGraphPregelStep &&
+			ev.Response != nil &&
+			ev.Response.Error != nil {
+			sawPregelError = true
+		}
+		if ev.Done && ev.StateDelta != nil {
+			for k, vb := range ev.StateDelta {
+				switch k {
+				case MetadataKeyNode, MetadataKeyPregel,
+					MetadataKeyChannel, MetadataKeyState,
+					MetadataKeyCompletion:
+					continue
+				default:
+				}
+				var v any
+				if err := json.Unmarshal(vb, &v); err == nil {
+					final[k] = v
+				}
+			}
+		}
+	}
+
+	require.False(t, sawPregelError)
+	require.Equal(t, int32(1), atomic.LoadInt32(&afterCalls))
+
+	got, ok := afterSawErr.Load().(error)
+	require.True(t, ok)
+	require.ErrorIs(t, got, boom)
+
+	okv, ok := final["ok"].(bool)
+	require.True(t, ok)
+	require.True(t, okv)
+}
+
+func TestAfterCallbackCanRecoverWithOriginalResult(t *testing.T) {
+	const (
+		nodeID       = "N"
+		invocationID = "inv-after-recover-original"
+
+		stateKeyPartial = "partial"
+	)
+
+	boom := errors.New("boom")
+
+	g := NewStateGraph(NewStateSchema())
+	g.AddNode(nodeID, func(ctx context.Context, s State) (any, error) {
+		return State{stateKeyPartial: true}, boom
+	})
+	g.SetEntryPoint(nodeID).SetFinishPoint(nodeID)
+
+	type afterSeen struct {
+		result any
+		err    error
+	}
+
+	var seen atomic.Value
+	seen.Store(afterSeen{})
+
+	cbs := NewNodeCallbacks().RegisterAfterNode(func(
+		ctx context.Context,
+		cb *NodeCallbackContext,
+		st State,
+		result any,
+		nodeErr error,
+	) (any, error) {
+		seen.Store(afterSeen{result: result, err: nodeErr})
+		return result, nil
+	})
+	g.WithNodeCallbacks(cbs)
+
+	compiled, err := g.Compile()
+	require.NoError(t, err)
+	exec, err := NewExecutor(compiled)
+	require.NoError(t, err)
+
+	ch, err := exec.Execute(
+		context.Background(),
+		State{},
+		&agent.Invocation{InvocationID: invocationID},
+	)
+	require.NoError(t, err)
+
+	var sawPregelError bool
+	final := make(State)
+	for ev := range ch {
+		if ev.Object == ObjectTypeGraphPregelStep &&
+			ev.Response != nil &&
+			ev.Response.Error != nil {
+			sawPregelError = true
+		}
+		if ev.Done && ev.StateDelta != nil {
+			for k, vb := range ev.StateDelta {
+				switch k {
+				case MetadataKeyNode, MetadataKeyPregel,
+					MetadataKeyChannel, MetadataKeyState,
+					MetadataKeyCompletion:
+					continue
+				default:
+				}
+				var v any
+				if err := json.Unmarshal(vb, &v); err == nil {
+					final[k] = v
+				}
+			}
+		}
+	}
+
+	require.False(t, sawPregelError)
+
+	got := seen.Load().(afterSeen)
+	require.ErrorIs(t, got.err, boom)
+	require.NotNil(t, got.result)
+
+	partial, ok := got.result.(State)
+	require.True(t, ok)
+
+	gotPartial, ok := partial[stateKeyPartial].(bool)
+	require.True(t, ok)
+	require.True(t, gotPartial)
+
+	statePartial, ok := final[stateKeyPartial].(bool)
+	require.True(t, ok)
+	require.True(t, statePartial)
+}
+
 func TestBeforeCallbackError_BarrierWaitsForCompletion(t *testing.T) {
 	var nodeRuns int32
 	var onErrCalls int32
@@ -1280,7 +2395,7 @@ func TestBeforeCallbackError_BarrierWaitsForCompletion(t *testing.T) {
 				return
 			}
 			require.NotNil(t, evt)
-			if evt.Object == model.ObjectTypeError && evt.Response != nil && evt.Response.Error != nil {
+			if evt.Object == ObjectTypeGraphNodeError && evt.Response != nil && evt.Response.Error != nil {
 				sawNodeError = true
 			}
 			if evt.Object != ObjectTypeGraphNodeBarrier {
@@ -1352,7 +2467,7 @@ func TestAfterCallbackError_BarrierWaitsForCompletion(t *testing.T) {
 				return
 			}
 			require.NotNil(t, evt)
-			if evt.Object == model.ObjectTypeError && evt.Response != nil && evt.Response.Error != nil {
+			if evt.Object == ObjectTypeGraphNodeError && evt.Response != nil && evt.Response.Error != nil {
 				sawNodeError = true
 			}
 			if evt.Object != ObjectTypeGraphNodeBarrier {
@@ -2159,7 +3274,7 @@ func TestProcessConditionalEdgesConcurrency(t *testing.T) {
 
 	// Repeatedly process conditional edges; should not panic.
 	for i := 0; i < 200; i++ {
-		require.NoError(t, exec.processConditionalEdges(context.Background(), nil, execCtx, "start", i), "conditional processing failed.")
+		require.NoError(t, exec.processConditionalEdges(context.Background(), nil, execCtx, &Task{NodeID: "start", TaskID: fmt.Sprintf("start-%d", i)}, i), "conditional processing failed.")
 	}
 	close(stopCh)
 }
@@ -2192,7 +3307,7 @@ func TestProcessConditionalEdges_DedupMulti(t *testing.T) {
 	)
 
 	// Process and verify only one update per target channel.
-	require.NoError(t, exec.processConditionalEdges(context.Background(), nil, execCtx, "start", 0))
+	require.NoError(t, exec.processConditionalEdges(context.Background(), nil, execCtx, &Task{NodeID: "start", TaskID: "start-0"}, 0))
 	// The dynamic branch channels should exist only on the per-execution
 	// channel manager and each receive a single update.
 	chB, okB := execCtx.channels.GetChannel(ChannelBranchPrefix + "B")
@@ -2240,7 +3355,7 @@ func TestProcessConditionalEdges_Multi_Error(t *testing.T) {
 	}
 
 	err = exec.processConditionalEdges(
-		context.Background(), nil, execCtx, nodeStart, 0,
+		context.Background(), nil, execCtx, &Task{NodeID: nodeStart, TaskID: nodeStart + "-0"}, 0,
 	)
 	require.Error(t, err)
 	// Wrapped error should include the node id and original message.
@@ -2283,7 +3398,7 @@ func TestProcessConditionalEdges_Condition_Error(t *testing.T) {
 	}
 
 	err = exec.processConditionalEdges(
-		context.Background(), nil, execCtx, nodeStart, 0,
+		context.Background(), nil, execCtx, &Task{NodeID: nodeStart, TaskID: nodeStart + "-0"}, 0,
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), msgPrefix+nodeStart)
@@ -2329,7 +3444,7 @@ func TestProcessConditionalEdges_Multi_SkipEmpty(t *testing.T) {
 	)
 
 	require.NoError(t, exec.processConditionalEdges(
-		context.Background(), nil, execCtx, nodeStart, 0,
+		context.Background(), nil, execCtx, &Task{NodeID: nodeStart, TaskID: nodeStart + "-0"}, 0,
 	))
 
 	// Expect channels only for B and C, one update each.
@@ -3136,6 +4251,13 @@ func TestExecutor_taskInvocationContext_CoversBranches(t *testing.T) {
 		parentBranch+agent.BranchDelimiter+nodeID,
 		gotInv.Branch,
 	)
+
+	inv = &agent.Invocation{InvocationID: invocationID, AgentName: "graph", RunOptions: agent.RunOptions{ExecutionTraceEnabled: true}}
+	require.Equal(t, "graph", agent.InvocationTraceNodeID(inv))
+	gotInv, gotCtx = exec.taskInvocationContext(ctx, inv, task)
+	require.NotNil(t, gotInv)
+	require.NotNil(t, gotCtx)
+	require.Equal(t, "graph", agent.InvocationTraceNodeID(gotInv))
 }
 
 func TestExecutor_executeStepTask_RecoversFromPanic(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,21 +23,110 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	atrace "trpc.group/trpc-go/trpc-agent-go/agent/trace"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/session/summary"
+	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
+
+type staticGraphAgentModel struct {
+	name    string
+	content string
+}
+
+type emptyIDGraphAgentModel struct {
+	name    string
+	content string
+}
+
+func (m *staticGraphAgentModel) GenerateContent(
+	_ context.Context,
+	_ *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		ID:   "graphagent-response-" + m.name,
+		Done: true,
+		Choices: []model.Choice{{
+			Index:   0,
+			Message: model.NewAssistantMessage(m.content),
+		}},
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *staticGraphAgentModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
+func (m *emptyIDGraphAgentModel) GenerateContent(
+	_ context.Context,
+	_ *model.Request,
+) (<-chan *model.Response, error) {
+	ch := make(chan *model.Response, 1)
+	ch <- &model.Response{
+		ID:   "",
+		Done: true,
+		Choices: []model.Choice{{
+			Index:   0,
+			Message: model.NewAssistantMessage(m.content),
+		}},
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (m *emptyIDGraphAgentModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
+type disableTracingModel struct{}
+
+func (m *disableTracingModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	out := make(chan *model.Response, 1)
+	out <- &model.Response{
+		Choices: []model.Choice{
+			{Message: model.NewAssistantMessage("ok")},
+		},
+	}
+	close(out)
+	return out, nil
+}
+
+func (m *disableTracingModel) Info() model.Info {
+	return model.Info{Name: "disable-tracing-model"}
+}
+
+func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
+	recorder := tracetest.NewSpanRecorder()
+	provider := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(recorder))
+	originalProvider := trace.TracerProvider
+	originalTracer := trace.Tracer
+	trace.TracerProvider = provider
+	trace.Tracer = provider.Tracer("graph-agent-disable-tracing-test")
+	t.Cleanup(func() {
+		_ = provider.Shutdown(context.Background())
+		trace.TracerProvider = originalProvider
+		trace.Tracer = originalTracer
+	})
+	return recorder
+}
 
 func TestNewGraphAgent(t *testing.T) {
 	// Create a simple graph using the new API.
@@ -143,6 +233,194 @@ func TestGraphAgentRun_NilInvocation(t *testing.T) {
 	require.Equal(t, invocationNilErrMsg, err.Error())
 }
 
+func TestGraphAgentRun_UsesInvocationEventChannelBufferSize(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.NewStateSchema())
+	stateGraph.AddNode("noop", func(context.Context, graph.State) (any, error) {
+		return nil, nil
+	})
+	stateGraph.SetEntryPoint("noop")
+	stateGraph.SetFinishPoint("noop")
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New("test-agent", g, WithChannelBufferSize(1))
+	require.NoError(t, err)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithEventChannelBufferSize(7),
+		)),
+	)
+
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 7, cap(events))
+	for range events {
+	}
+}
+
+func TestGraphAgentRun_DisableTracingFastPath(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddLLMNode("llm", &disableTracingModel{}, "analyze", nil)
+	stateGraph.SetEntryPoint("llm")
+	stateGraph.SetFinishPoint("llm")
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New("test-agent", g)
+	require.NoError(t, err)
+
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var sawResponse bool
+	for evt := range events {
+		if evt != nil && evt.Response != nil {
+			sawResponse = true
+		}
+	}
+
+	require.True(t, sawResponse)
+}
+
+func TestGraphAgentRun_DisableTracingFastPathKeepsOuterBufferSize(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "ok"}, nil
+	})
+	stateGraph.SetEntryPoint("done")
+	stateGraph.SetFinishPoint("done")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	graphAgent, err := New(
+		"test-agent",
+		g,
+		WithChannelBufferSize(1),
+		WithExecutorOptions(graph.WithChannelBufferSize(8)),
+	)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-buffer"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	require.Equal(t, 1, cap(events))
+	for range events {
+	}
+}
+
+func TestGraphAgentRun_DisableTracingFastPath_PreservesVisibleCompletion(t *testing.T) {
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{
+			graph.StateKeyLastResponse: "ok",
+		}, nil
+	})
+	stateGraph.SetEntryPoint("done")
+	stateGraph.SetFinishPoint("done")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	graphAgent, err := New("test-agent", g)
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-hidden"),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableTracing(true),
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	var sawRawCompletion bool
+	var sawVisibleCompletion bool
+	for evt := range events {
+		if evt != nil && evt.Done && evt.Object == graph.ObjectTypeGraphExecution {
+			sawRawCompletion = true
+		}
+		if evt != nil && evt.Done && evt.Object == model.ObjectTypeChatCompletion &&
+			len(evt.StateDelta) > 0 {
+			sawVisibleCompletion = true
+		}
+	}
+	require.False(t, sawRawCompletion)
+	require.True(t, sawVisibleCompletion)
+}
+
+func TestGraphAgentRun_DisableTracingWithCallbacksSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	stateGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	stateGraph.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "ok"}, nil
+	})
+	stateGraph.SetEntryPoint("done")
+	stateGraph.SetFinishPoint("done")
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks().RegisterBeforeAgent(func(
+		ctx context.Context,
+		args *agent.BeforeAgentArgs,
+	) (*agent.BeforeAgentResult, error) {
+		return &agent.BeforeAgentResult{}, nil
+	})
+	graphAgent, err := New("test-agent", g, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-callbacks"),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	events, err := graphAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Empty(t, recorder.Ended())
+}
+
+func TestGraphAgentRun_DisableTracingSubAgentSkipsSpanCreation(t *testing.T) {
+	recorder := useSpanRecorder(t)
+	childGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	childGraph.AddNode("child_done", func(context.Context, graph.State) (any, error) {
+		return graph.State{graph.StateKeyLastResponse: "child ok"}, nil
+	})
+	childGraph.SetEntryPoint("child_done")
+	childGraph.SetFinishPoint("child_done")
+	compiledChild, err := childGraph.Compile()
+	require.NoError(t, err)
+	childAgent, err := New("child", compiledChild)
+	require.NoError(t, err)
+	parentGraph := graph.NewStateGraph(graph.MessagesStateSchema())
+	parentGraph.AddAgentNode("child")
+	parentGraph.SetEntryPoint("child")
+	parentGraph.SetFinishPoint("child")
+	compiledParent, err := parentGraph.Compile()
+	require.NoError(t, err)
+	parentAgent, err := New("parent", compiledParent, WithSubAgents([]agent.Agent{childAgent}))
+	require.NoError(t, err)
+	invocation := agent.NewInvocation(
+		agent.WithInvocationID("inv-disable-tracing-subagent"),
+		agent.WithInvocationMessage(model.NewUserMessage("hi")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			DisableTracing: true,
+		}),
+	)
+	events, err := parentAgent.Run(context.Background(), invocation)
+	require.NoError(t, err)
+	for range events {
+	}
+	require.Empty(t, recorder.Ended())
+}
 func TestGraphAgent_WithMaxConcurrency(t *testing.T) {
 	const (
 		nodeRoot       = "root"
@@ -220,6 +498,105 @@ func TestGraphAgent_WithMaxConcurrency(t *testing.T) {
 	}
 
 	require.LessOrEqual(t, maxActive.Load(), int64(maxConcurrency))
+}
+
+func TestGraphAgent_WithExecutionEngine_DagSchedulesEagerly(t *testing.T) {
+	const (
+		nodeEntry      = "preprocess"
+		nodeSlow       = "slow"
+		nodeFast       = "fast"
+		nodeDownstream = "downstream"
+		waitTimeout    = 2 * time.Second
+	)
+
+	slowRelease := make(chan struct{})
+	slowStarted := make(chan struct{}, 1)
+	fastDone := make(chan struct{}, 1)
+	downStarted := make(chan struct{}, 1)
+
+	notify := func(ch chan<- struct{}) {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+
+	stateGraph := graph.NewStateGraph(graph.NewStateSchema())
+	stateGraph.AddNode(nodeEntry, func(context.Context, graph.State) (any, error) {
+		return nil, nil
+	})
+	stateGraph.AddNode(
+		nodeSlow,
+		func(ctx context.Context, state graph.State) (any, error) {
+			notify(slowStarted)
+			select {
+			case <-slowRelease:
+				return nil, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	)
+	stateGraph.AddNode(
+		nodeFast,
+		func(context.Context, graph.State) (any, error) {
+			notify(fastDone)
+			return nil, nil
+		},
+	)
+	stateGraph.AddNode(
+		nodeDownstream,
+		func(context.Context, graph.State) (any, error) {
+			notify(downStarted)
+			return nil, nil
+		},
+	)
+	stateGraph.SetEntryPoint(nodeEntry)
+	stateGraph.AddEdge(nodeEntry, nodeSlow)
+	stateGraph.AddEdge(nodeEntry, nodeFast)
+	stateGraph.AddEdge(nodeFast, nodeDownstream)
+
+	g, err := stateGraph.Compile()
+	require.NoError(t, err)
+
+	graphAgent, err := New(
+		"test-agent",
+		g,
+		WithExecutionEngine(graph.ExecutionEngineDAG),
+		WithMaxConcurrency(2),
+	)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+
+	invocation := &agent.Invocation{
+		Agent:        graphAgent,
+		AgentName:    "test-agent",
+		InvocationID: "inv-dag-engine",
+	}
+
+	events, err := graphAgent.Run(ctx, invocation)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		for range events {
+		}
+		close(done)
+	}()
+
+	waitForNSignals(t, slowStarted, 1, waitTimeout)
+	waitForNSignals(t, fastDone, 1, waitTimeout)
+	waitForNSignals(t, downStarted, 1, waitTimeout)
+
+	close(slowRelease)
+
+	select {
+	case <-done:
+	case <-time.After(waitTimeout):
+		t.Fatal("timeout waiting for graphagent to complete")
+	}
 }
 
 func updateMaxInt64(max *atomic.Int64, value int64) {
@@ -1395,6 +1772,380 @@ func TestGraphAgent_AfterCallbackReceivesExecutionError(t *testing.T) {
 	require.Contains(t, callbackErr.Error(), "flow_error:")
 }
 
+func TestGraphAgent_DisableGraphCompletionEvent_PreservesAfterAgentResponse(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	var fullRespEvent *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		fullRespEvent = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New(
+		"test-after-hidden-completion",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+	}
+	require.NotNil(t, fullRespEvent)
+	require.NotNil(t, fullRespEvent.Response)
+	require.Len(t, fullRespEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", fullRespEvent.Response.Choices[0].Message.Content)
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_PreservesOutputWithCaptureContext(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return nil, nil
+	})
+	ga, err := New(
+		"test-after-hidden-completion-capture",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
+	require.NoError(t, err)
+	var sawGraphCompletion bool
+	for evt := range events {
+		if evt.Done && evt.Object == graph.ObjectTypeGraphExecution {
+			sawGraphCompletion = true
+		}
+	}
+	require.True(t, sawGraphCompletion)
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_WithCaptureContext_AfterCallbackSeesVisibleCompletion(
+	t *testing.T,
+) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{graph.StateKeyLastResponse: "child-final"}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	var fullRespEvent *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		fullRespEvent = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New(
+		"test-after-hidden-completion-capture-visible",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := ga.Run(graph.WithGraphCompletionCapture(context.Background()), inv)
+	require.NoError(t, err)
+	for range events {
+	}
+	require.NotNil(t, fullRespEvent)
+	require.True(t, graph.IsVisibleGraphCompletionEvent(fullRespEvent))
+	require.Len(t, fullRespEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", fullRespEvent.Response.Choices[0].Message.Content)
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_PreservesVisibleResponseWithoutCallbacks(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{
+				graph.StateKeyLastResponse: "child-final",
+				"child_state":              "child-state",
+			}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("test-hidden-completion-visible-response", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Response != nil && !evt.Response.IsPartial && len(evt.StateDelta) > 0 {
+			visibleEvent = evt
+		}
+	}
+	require.NotNil(t, visibleEvent)
+	require.Equal(t, model.ObjectTypeChatCompletion, visibleEvent.Object)
+	require.Equal(t, "test-hidden-completion-visible-response", visibleEvent.Author)
+	require.Len(t, visibleEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
+	require.Equal(t, []byte(`"child-final"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_PreservesStateOnlyVisibleResponse(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{
+				"child_state": "child-state",
+			}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("test-hidden-completion-state-only", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Object == model.ObjectTypeChatCompletion && len(evt.StateDelta) > 0 {
+			visibleEvent = evt
+		}
+	}
+	require.NotNil(t, visibleEvent)
+	require.Empty(t, visibleEvent.Response.Choices)
+	require.Equal(t, []byte(`"child-state"`), visibleEvent.StateDelta["child_state"])
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_DedupsVisibleCompletion(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddLLMNode(
+			"n1",
+			&staticGraphAgentModel{name: "m1", content: "answer"},
+			"i1",
+			nil,
+		).
+		SetEntryPoint("n1").
+		SetFinishPoint("n1").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("test-hidden-completion-dedup", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	var assistantResponses int
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Response != nil && len(evt.Response.Choices) > 0 {
+			require.Equal(t, "answer", evt.Response.Choices[0].Message.Content)
+			assistantResponses++
+		}
+		if evt != nil && evt.Object == model.ObjectTypeChatCompletion && len(evt.StateDelta) > 0 {
+			visibleEvent = evt
+		}
+	}
+	require.Equal(t, 1, assistantResponses)
+	require.NotNil(t, visibleEvent)
+	require.Empty(t, visibleEvent.Response.Choices)
+	require.Equal(t, []byte(`"answer"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_DedupsVisibleCompletionWhenResponseIDEmpty(
+	t *testing.T,
+) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddLLMNode(
+			"n1",
+			&emptyIDGraphAgentModel{name: "m-empty", content: "answer"},
+			"i1",
+			nil,
+		).
+		SetEntryPoint("n1").
+		SetFinishPoint("n1").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("test-hidden-completion-dedup-empty-id", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+
+	var assistantResponses int
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		if evt != nil && evt.Response != nil && len(evt.Response.Choices) > 0 && len(evt.StateDelta) == 0 {
+			require.Len(t, evt.Response.Choices, 1)
+			require.Equal(t, "answer", evt.Response.Choices[0].Message.Content)
+			assistantResponses++
+		}
+		if graph.IsVisibleGraphCompletionEvent(evt) {
+			visibleEvent = evt
+		}
+	}
+
+	require.Equal(t, 1, assistantResponses)
+	require.NotNil(t, visibleEvent)
+	require.Empty(t, visibleEvent.Response.Choices)
+	require.Equal(t, []byte(`"answer"`), visibleEvent.StateDelta[graph.StateKeyLastResponse])
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_GraphEmitFinalModelResponses_AfterCallbackSeesFullVisibleCompletion(
+	t *testing.T,
+) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddLLMNode(
+			"n1",
+			&staticGraphAgentModel{name: "m1", content: "answer"},
+			"i1",
+			nil,
+		).
+		SetEntryPoint("n1").
+		SetFinishPoint("n1").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	var fullRespEvent *event.Event
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		fullRespEvent = args.FullResponseEvent
+		return nil, nil
+	})
+	ga, err := New(
+		"test-hidden-completion-dedup-after-callback",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+			agent.WithGraphEmitFinalModelResponses(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	for range events {
+	}
+
+	require.NotNil(t, fullRespEvent)
+	require.True(t, graph.IsVisibleGraphCompletionEvent(fullRespEvent))
+	require.Len(t, fullRespEvent.Response.Choices, 1)
+	require.Equal(t, "answer", fullRespEvent.Response.Choices[0].Message.Content)
+}
+
+func TestGraphAgent_DisableGraphCompletionEvent_WithAfterCallbackCustomResponse(t *testing.T) {
+	g, err := graph.NewStateGraph(graph.MessagesStateSchema()).
+		AddNode("done", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{
+				graph.StateKeyLastResponse: "child-final",
+			}, nil
+		}).
+		SetEntryPoint("done").
+		SetFinishPoint("done").
+		Compile()
+	require.NoError(t, err)
+	callbacks := agent.NewCallbacks()
+	callbacks.RegisterAfterAgent(func(ctx context.Context, args *agent.AfterAgentArgs) (*agent.AfterAgentResult, error) {
+		return &agent.AfterAgentResult{
+			CustomResponse: &model.Response{
+				Object: "after.custom",
+				Done:   true,
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:    model.RoleAssistant,
+						Content: "after callback",
+					},
+				}},
+			},
+		}, nil
+	})
+	ga, err := New(
+		"test-hidden-completion-with-after-custom-response",
+		g,
+		WithAgentCallbacks(callbacks),
+	)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationMessage(model.NewUserMessage("test")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphCompletionEvent(true),
+		)),
+	)
+	events, err := ga.Run(context.Background(), inv)
+	require.NoError(t, err)
+	var collected []*event.Event
+	var visibleEvent *event.Event
+	for evt := range events {
+		require.False(t, evt.Done && evt.Object == graph.ObjectTypeGraphExecution)
+		collected = append(collected, evt)
+		if evt != nil && evt.Object == model.ObjectTypeChatCompletion && len(evt.StateDelta) > 0 {
+			visibleEvent = evt
+		}
+	}
+	require.NotNil(t, visibleEvent)
+	require.Len(t, visibleEvent.Response.Choices, 1)
+	require.Equal(t, "child-final", visibleEvent.Response.Choices[0].Message.Content)
+	require.NotEmpty(t, collected)
+	last := collected[len(collected)-1]
+	require.Equal(t, "after.custom", last.Object)
+	require.Len(t, last.Response.Choices, 1)
+	require.Equal(t, "after callback", last.Response.Choices[0].Message.Content)
+}
+
 func TestGraphAgent_BarrierWaitsForCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -1518,6 +2269,47 @@ func TestGraphAgent_RunWithBarrierEmitError(t *testing.T) {
 	require.Contains(t, events[0].Response.Error.Message, "add notice channel")
 }
 
+func TestGraphAgent_RunWithBarrier_DisableGraphExecutorEventsHidesBarrierEvents(
+	t *testing.T,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	schema := graph.NewStateSchema().
+		AddField("done", graph.StateField{
+			Type:    reflect.TypeOf(""),
+			Reducer: graph.DefaultReducer,
+		})
+	g, err := graph.NewStateGraph(schema).
+		AddNode("finish", func(ctx context.Context, state graph.State) (any, error) {
+			return graph.State{"done": "ok"}, nil
+		}).
+		SetEntryPoint("finish").
+		SetFinishPoint("finish").
+		Compile()
+	require.NoError(t, err)
+	ga, err := New("barrier-hidden", g)
+	require.NoError(t, err)
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(session.NewSession("app", "u", "s")),
+		agent.WithInvocationRunOptions(agent.NewRunOptions(
+			agent.WithDisableGraphExecutorEvents(true),
+		)),
+	)
+	barrier.Enable(inv)
+	ch, err := ga.Run(ctx, inv)
+	require.NoError(t, err)
+	var sawCompletion bool
+	for evt := range ch {
+		require.NotNil(t, evt)
+		require.NotEqual(t, graph.ObjectTypeGraphBarrier, evt.Object)
+		require.NotEqual(t, graph.ObjectTypeGraphNodeBarrier, evt.Object)
+		if evt.Object == graph.ObjectTypeGraphExecution {
+			sawCompletion = true
+		}
+	}
+	require.True(t, sawCompletion)
+}
+
 func TestGraphAgent_WithExecutorOptions(t *testing.T) {
 	// Create a simple graph
 	schema := graph.NewStateSchema().
@@ -1632,6 +2424,7 @@ func TestGraphAgent_WithExecutorOptions_OverrideMappedOptions(t *testing.T) {
 type recordingSpanForEmitError struct {
 	oteltrace.Span
 	mu         sync.Mutex
+	name       string
 	statusCode codes.Code
 	statusDesc string
 	attributes []attribute.KeyValue
@@ -1650,6 +2443,10 @@ func (s *recordingSpanForEmitError) SetAttributes(kv ...attribute.KeyValue) {
 	defer s.mu.Unlock()
 	s.attributes = append(s.attributes, kv...)
 	s.Span.SetAttributes(kv...)
+}
+
+func (s *recordingSpanForEmitError) IsRecording() bool {
+	return true
 }
 
 func (s *recordingSpanForEmitError) getStatus() (codes.Code, string) {
@@ -1682,9 +2479,147 @@ func (t *recordingTracerForEmitError) Start(ctx context.Context, spanName string
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	_, baseSpan := t.Tracer.Start(ctx, spanName, opts...)
-	recordingSpan := &recordingSpanForEmitError{Span: baseSpan}
+	recordingSpan := &recordingSpanForEmitError{Span: baseSpan, name: spanName}
 	t.spans = append(t.spans, recordingSpan)
 	return ctx, recordingSpan
+}
+
+func findRecordingSpanForEmitErrorByName(spans []*recordingSpanForEmitError, spanName string) *recordingSpanForEmitError {
+	for _, span := range spans {
+		if span.name == spanName {
+			return span
+		}
+	}
+	return nil
+}
+
+func TestRecordTraceEvent(t *testing.T) {
+	newTracker := func() *itelemetry.InvokeAgentTracker {
+		var trackerErr error
+		return itelemetry.NewInvokeAgentTracker(
+			context.Background(),
+			&agent.Invocation{AgentName: "trace-agent"},
+			true,
+			&trackerErr,
+		)
+	}
+	newUsage := func() *model.Usage {
+		return &model.Usage{
+			PromptTokens:     1,
+			CompletionTokens: 2,
+			TotalTokens:      3,
+		}
+	}
+
+	tests := []struct {
+		name           string
+		buildEvent     func() *event.Event
+		sleepBefore    time.Duration
+		wantUpdate     bool
+		wantTokenUsage itelemetry.TokenUsage
+		wantFirstToken bool
+	}{
+		{
+			name:           "ignores nil event",
+			buildEvent:     func() *event.Event { return nil },
+			wantTokenUsage: itelemetry.TokenUsage{},
+		},
+		{
+			name: "ignores event without response",
+			buildEvent: func() *event.Event {
+				return &event.Event{InvocationID: "inv", Author: "graph-agent"}
+			},
+			wantTokenUsage: itelemetry.TokenUsage{},
+		},
+		{
+			name: "tracks partial response without updating final event",
+			buildEvent: func() *event.Event {
+				return event.NewResponseEvent("inv", "graph-agent", &model.Response{
+					IsPartial: true,
+					Choices: []model.Choice{{
+						Delta: model.Message{
+							Role:    model.RoleAssistant,
+							Content: "chunk",
+						},
+					}},
+					Usage: newUsage(),
+				})
+			},
+			sleepBefore:    time.Millisecond,
+			wantTokenUsage: itelemetry.TokenUsage{},
+			wantFirstToken: true,
+		},
+		{
+			name: "ignores invalid non terminal response",
+			buildEvent: func() *event.Event {
+				return event.NewResponseEvent("inv", "graph-agent", &model.Response{
+					Usage: newUsage(),
+				})
+			},
+			wantTokenUsage: itelemetry.TokenUsage{},
+		},
+		{
+			name: "records graph execution completion response",
+			buildEvent: func() *event.Event {
+				return event.NewResponseEvent("inv", "graph-agent", &model.Response{
+					Object: graph.ObjectTypeGraphExecution,
+					Done:   true,
+					Usage:  newUsage(),
+				})
+			},
+			wantUpdate: true,
+			wantTokenUsage: itelemetry.TokenUsage{
+				PromptTokens:     1,
+				CompletionTokens: 2,
+				TotalTokens:      3,
+			},
+		},
+		{
+			name: "records error response",
+			buildEvent: func() *event.Event {
+				evt := event.NewErrorEvent("inv", "graph-agent", model.ErrorTypeFlowError, "boom")
+				evt.Usage = newUsage()
+				return evt
+			},
+			wantUpdate: true,
+			wantTokenUsage: itelemetry.TokenUsage{
+				PromptTokens:     1,
+				CompletionTokens: 2,
+				TotalTokens:      3,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := newTracker()
+			tokenUsage := &itelemetry.TokenUsage{}
+			initialFullRespEvent := event.NewResponseEvent("inv", "graph-agent", &model.Response{
+				Choices: []model.Choice{{
+					Message: model.NewAssistantMessage("existing"),
+				}},
+			})
+
+			if tt.sleepBefore > 0 {
+				time.Sleep(tt.sleepBefore)
+			}
+			evt := tt.buildEvent()
+			got := recordTraceEvent(tracker, tokenUsage, initialFullRespEvent, evt)
+
+			if tt.wantUpdate {
+				require.Same(t, evt, got)
+			} else {
+				require.Same(t, initialFullRespEvent, got)
+			}
+			require.Equal(t, tt.wantTokenUsage, *tokenUsage)
+
+			if tt.wantFirstToken {
+				require.Greater(t, tracker.FirstTokenTimeDuration(), time.Duration(0))
+			} else {
+				require.Zero(t, tracker.FirstTokenTimeDuration())
+			}
+		})
+	}
 }
 
 func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
@@ -1723,7 +2658,7 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 	}
 
 	// Create output channel with buffer size 0 to make EmitEvent block
-	out := make(chan *event.Event, 0)
+	out := make(chan *event.Event)
 
 	// Create a context that will be canceled to cause EmitEvent to fail
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1757,14 +2692,8 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 
 	require.NotEmpty(t, spans, "expected at least one span to be created")
 
-	// Find the span for the agent invocation
-	var agentSpan *recordingSpanForEmitError
-	for _, span := range spans {
-		// The span name should contain the operation and agent name
-		agentSpan = span
-		break
-	}
-
+	expectedSpanName := fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, inv.AgentName)
+	agentSpan := findRecordingSpanForEmitErrorByName(spans, expectedSpanName)
 	require.NotNil(t, agentSpan, "expected agent span to be created")
 
 	// Verify SetStatus was called with Error code
@@ -1776,7 +2705,7 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 	attrs := agentSpan.getAttributes()
 	var errorTypeAttr *attribute.KeyValue
 	for i := range attrs {
-		if string(attrs[i].Key) == string(itelemetry.KeyErrorType) {
+		if string(attrs[i].Key) == string(semconvtrace.KeyErrorType) {
 			errorTypeAttr = &attrs[i]
 			break
 		}
@@ -1785,3 +2714,497 @@ func TestGraphAgent_RunWithBarrier_EmitEventError(t *testing.T) {
 	errorTypeValue := errorTypeAttr.Value.AsString()
 	require.Equal(t, model.ErrorTypeFlowError, errorTypeValue, "expected error type to be FlowError")
 }
+
+func TestGraphAgent_Run_RecordsStreamTraceAttribute(t *testing.T) {
+	boolPtr := func(v bool) *bool {
+		return &v
+	}
+
+	testCases := []struct {
+		name   string
+		stream *bool
+		want   bool
+	}{
+		{
+			name: "defaults to stream when unset",
+			want: true,
+		},
+		{
+			name:   "honors explicit stream true",
+			stream: boolPtr(true),
+			want:   true,
+		},
+		{
+			name:   "honors explicit stream false",
+			stream: boolPtr(false),
+			want:   false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			originalTracer := trace.Tracer
+			defer func() {
+				trace.Tracer = originalTracer
+			}()
+
+			spanRecorder := tracetest.NewSpanRecorder()
+			tp := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(spanRecorder))
+			defer func() {
+				_ = tp.Shutdown(context.Background())
+			}()
+			trace.Tracer = tp.Tracer("test")
+
+			schema := graph.NewStateSchema().
+				AddField("output", graph.StateField{
+					Type:    reflect.TypeOf(""),
+					Reducer: graph.DefaultReducer,
+				})
+			g, err := graph.NewStateGraph(schema).
+				AddNode("process", func(ctx context.Context, state graph.State) (any, error) {
+					return graph.State{"output": "result"}, nil
+				}).
+				SetEntryPoint("process").
+				SetFinishPoint("process").
+				Compile()
+			require.NoError(t, err)
+
+			ga, err := New("stream-trace-test", g)
+			require.NoError(t, err)
+
+			invocation := &agent.Invocation{
+				InvocationID: "test-invocation",
+				AgentName:    "stream-trace-test",
+				Message:      model.Message{Role: model.RoleUser, Content: "hello"},
+				RunOptions: agent.RunOptions{
+					Stream: tc.stream,
+				},
+			}
+
+			events, err := ga.Run(context.Background(), invocation)
+			require.NoError(t, err)
+			for range events {
+			}
+
+			var agentSpan tracesdk.ReadOnlySpan
+			expectedSpanName := fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, invocation.AgentName)
+			for _, span := range spanRecorder.Ended() {
+				if span.Name() == expectedSpanName {
+					agentSpan = span
+					break
+				}
+			}
+			require.NotNil(t, agentSpan, "expected invoke_agent span to be created")
+
+			found := false
+			for _, attr := range agentSpan.Attributes() {
+				if string(attr.Key) == semconvtrace.KeyGenAIRequestIsStream {
+					found = true
+					require.Equal(t, tc.want, attr.Value.AsBool())
+					break
+				}
+			}
+			require.True(t, found, "expected stream trace attribute to be recorded")
+		})
+	}
+}
+
+func TestGraphAgent_Run_TraceAfterInvokeAgent(t *testing.T) {
+	originalTracer := trace.Tracer
+	defer func() {
+		trace.Tracer = originalTracer
+	}()
+
+	recordingTracer := newRecordingTracerForEmitError()
+	trace.Tracer = recordingTracer
+
+	g := buildTrivialGraph(t)
+	callbacks := agent.NewCallbacks().
+		RegisterBeforeAgent(func(ctx context.Context, inv *agent.Invocation) (*model.Response, error) {
+			return &model.Response{
+				Choices: []model.Choice{{
+					Message: model.NewAssistantMessage("graph result"),
+				}},
+			}, nil
+		})
+
+	ga, err := New("trace-after-test", g, WithAgentCallbacks(callbacks))
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	stream := true
+	eventChan, err := ga.Run(ctx, &agent.Invocation{
+		InvocationID: "inv-trace-after",
+		Message:      model.NewUserMessage("test"),
+		RunOptions:   agent.RunOptions{Stream: &stream},
+	})
+	require.NoError(t, err)
+
+	for range eventChan {
+	}
+
+	recordingTracer.mu.Lock()
+	spans := recordingTracer.spans
+	recordingTracer.mu.Unlock()
+
+	require.NotEmpty(t, spans, "expected at least one span to be created")
+
+	expectedSpanName := fmt.Sprintf("%s %s", itelemetry.OperationInvokeAgent, ga.Info().Name)
+	agentSpan := findRecordingSpanForEmitErrorByName(spans, expectedSpanName)
+	require.NotNil(t, agentSpan, "expected invoke_agent span to be created")
+
+	attrs := agentSpan.getAttributes()
+	var requestIsStream bool
+	var foundRequestIsStream bool
+	for _, attr := range attrs {
+		if string(attr.Key) == string(semconvtrace.KeyGenAIRequestIsStream) {
+			requestIsStream = attr.Value.AsBool()
+			foundRequestIsStream = true
+			break
+		}
+	}
+	require.True(t, foundRequestIsStream, "expected request stream attribute to be set")
+	require.True(t, requestIsStream, "expected request stream attribute to be true")
+	var outputMessages string
+	for _, attr := range attrs {
+		if string(attr.Key) == string(semconvtrace.KeyGenAIOutputMessages) {
+			outputMessages = attr.Value.AsString()
+			break
+		}
+	}
+	require.NotEmpty(t, outputMessages, "expected output messages attribute to be set")
+	require.Contains(t, outputMessages, "graph result")
+}
+
+func TestGraphAgent_Run_ExecutionTraceCapturesComplexGraph(t *testing.T) {
+	schema := graph.NewStateSchema().
+		AddField("route_count", graph.StateField{
+			Type:    reflect.TypeOf(0),
+			Reducer: graph.DefaultReducer,
+			Default: func() any { return 0 },
+		}).
+		AddField("visited", graph.StateField{
+			Type:    reflect.TypeOf([]string{}),
+			Reducer: graph.StringSliceReducer,
+			Default: func() any { return []string{} },
+		})
+	builder := graph.NewStateGraph(schema)
+	builder.AddNode("start", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"start"}}, nil
+	})
+	builder.AddNode("prepare", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"prepare"}}, nil
+	})
+	builder.AddNode("route", func(_ context.Context, state graph.State) (any, error) {
+		count, _ := state["route_count"].(int)
+		return graph.State{
+			"route_count": count + 1,
+			"visited":     []string{"route"},
+		}, nil
+	})
+	builder.AddNode("tools", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"tools"}}, nil
+	})
+	builder.AddNode("branch_a", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"branch_a"}}, nil
+	})
+	builder.AddNode("branch_b", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"branch_b"}}, nil
+	})
+	builder.AddNode("branch_never", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"branch_never"}}, nil
+	})
+	builder.AddNode("join", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"join"}}, nil
+	})
+	builder.AddNode("done", func(context.Context, graph.State) (any, error) {
+		return graph.State{"visited": []string{"done"}}, nil
+	})
+	builder.SetEntryPoint("start")
+	builder.AddEdge("start", "route")
+	builder.AddEdge("start", "prepare")
+	builder.AddConditionalEdges("route", func(_ context.Context, state graph.State) (string, error) {
+		count, _ := state["route_count"].(int)
+		if count == 1 {
+			return "tools", nil
+		}
+		return "branch_a", nil
+	}, map[string]string{
+		"tools":    "tools",
+		"branch_a": "branch_a",
+	})
+	builder.AddEdge("tools", "route")
+	builder.AddEdge("prepare", "branch_b")
+	builder.AddJoinEdge([]string{"branch_a", "branch_b"}, "join")
+	builder.AddConditionalEdges("join", func(context.Context, graph.State) (string, error) {
+		return "done", nil
+	}, map[string]string{
+		"done":         "done",
+		"branch_never": "branch_never",
+	})
+	builder.SetFinishPoint("done")
+	compiled := builder.MustCompile()
+	ag, err := New("assistant", compiled, WithMaxConcurrency(1))
+	require.NoError(t, err)
+	r := runner.NewRunner("app", ag, runner.WithSessionService(inmemory.NewSessionService()))
+	eventCh, err := r.Run(
+		context.Background(),
+		"user-1",
+		"session-1",
+		model.NewUserMessage("hello graph trace"),
+		agent.WithExecutionTraceEnabled(true),
+	)
+	require.NoError(t, err)
+	var completion *event.Event
+	for evt := range eventCh {
+		if evt != nil && evt.IsRunnerCompletion() {
+			completion = evt
+		}
+	}
+	require.NotNil(t, completion)
+	require.NotNil(t, completion.ExecutionTrace)
+	executionTrace := completion.ExecutionTrace
+	require.Equal(t, atrace.Trace{
+		RootAgentName:    "assistant",
+		RootInvocationID: "root-invocation",
+		SessionID:        "session-1",
+		StartedAt:        graphAgentTraceAssertionStartTime,
+		EndedAt:          graphAgentTraceAssertionEndTime,
+		Status:           atrace.TraceStatusCompleted,
+		Steps: []atrace.Step{
+			{
+				StepID:             "assistant/branch_a#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/branch_a",
+				NodeID:             "assistant/branch_a",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/route#2"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":2,\"user_input\":\"hello graph trace\",\"visited\":[\"start\",\"prepare\",\"route\",\"branch_b\",\"tools\",\"route\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"branch_a\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/branch_b#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/branch_b",
+				NodeID:             "assistant/branch_b",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/prepare#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":1,\"user_input\":\"hello graph trace\",\"visited\":[\"start\",\"prepare\",\"route\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"branch_b\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/done#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/done",
+				NodeID:             "assistant/done",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/join#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":2,\"user_input\":\"hello graph trace\",\"visited\":[\"start\",\"prepare\",\"route\",\"branch_b\",\"tools\",\"route\",\"branch_a\",\"join\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"done\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/join#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/join",
+				NodeID:             "assistant/join",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/branch_a#1", "assistant/branch_b#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":2,\"user_input\":\"hello graph trace\",\"visited\":[\"start\",\"prepare\",\"route\",\"branch_b\",\"tools\",\"route\",\"branch_a\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"join\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/prepare#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/prepare",
+				NodeID:             "assistant/prepare",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/start#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":0,\"user_input\":\"hello graph trace\",\"visited\":[\"start\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"prepare\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/route#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/route",
+				NodeID:             "assistant/route",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/start#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":0,\"user_input\":\"hello graph trace\",\"visited\":[\"start\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"route_count\":1,\"visited\":[\"route\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/route#2",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/route",
+				NodeID:             "assistant/route",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/tools#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":1,\"user_input\":\"hello graph trace\",\"visited\":[\"start\",\"prepare\",\"route\",\"branch_b\",\"tools\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"route_count\":2,\"visited\":[\"route\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/start#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/start",
+				NodeID:             "assistant/start",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":0,\"user_input\":\"hello graph trace\",\"visited\":[]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"start\"]}"},
+				Error:              "",
+			},
+			{
+				StepID:             "assistant/tools#1",
+				InvocationID:       "root-invocation",
+				ParentInvocationID: "",
+				AgentName:          "assistant",
+				Branch:             "assistant/tools",
+				NodeID:             "assistant/tools",
+				StartedAt:          graphAgentTraceAssertionStartTime,
+				EndedAt:            graphAgentTraceAssertionEndTime,
+				PredecessorStepIDs: []string{"assistant/route#1"},
+				Input:              &atrace.Snapshot{Text: "{\"checkpoint_ns\":\"assistant\",\"messages\":[{\"role\":\"user\",\"content\":\"hello graph trace\"}],\"route_count\":1,\"user_input\":\"hello graph trace\",\"visited\":[\"start\",\"prepare\",\"route\"]}"},
+				Output:             &atrace.Snapshot{Text: "{\"visited\":[\"tools\"]}"},
+				Error:              "",
+			},
+		},
+	}, normalizeGraphAgentTraceForAssertion(executionTrace))
+}
+
+func TestResolveGraphAgentErrorType(t *testing.T) {
+	testCases := []struct {
+		name               string
+		fullRespEvent      *event.Event
+		operationErrorType string
+		want               string
+	}{
+		{
+			name: "operation error wins over final success",
+			fullRespEvent: event.NewResponseEvent(
+				"inv",
+				"graph-agent",
+				&model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("ok")}}},
+			),
+			operationErrorType: model.ErrorTypeFlowError,
+			want:               model.ErrorTypeFlowError,
+		},
+		{
+			name: "final success clears prior response errors",
+			fullRespEvent: event.NewResponseEvent(
+				"inv",
+				"graph-agent",
+				&model.Response{Choices: []model.Choice{{Message: model.NewAssistantMessage("ok")}}},
+			),
+			want: "",
+		},
+		{
+			name: "final error response is reported when no operation error",
+			fullRespEvent: event.NewErrorEvent(
+				"inv",
+				"graph-agent",
+				agent.ErrorTypeAgentCallbackError,
+				"callback failed",
+			),
+			want: agent.ErrorTypeAgentCallbackError,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveGraphAgentErrorType(tc.fullRespEvent, tc.operationErrorType)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func normalizeGraphAgentTraceForAssertion(executionTrace *atrace.Trace) atrace.Trace {
+	if executionTrace == nil {
+		return atrace.Trace{}
+	}
+	normalized := atrace.Trace{
+		RootAgentName:    executionTrace.RootAgentName,
+		RootInvocationID: "root-invocation",
+		SessionID:        executionTrace.SessionID,
+		StartedAt:        graphAgentTraceAssertionStartTime,
+		EndedAt:          graphAgentTraceAssertionEndTime,
+		Status:           executionTrace.Status,
+		Steps:            make([]atrace.Step, 0, len(executionTrace.Steps)),
+	}
+	stepLabels := make(map[string]string, len(executionTrace.Steps))
+	nodeCounts := make(map[string]int)
+	for _, step := range executionTrace.Steps {
+		nodeCounts[step.NodeID]++
+		stepLabels[step.StepID] = fmt.Sprintf("%s#%d", step.NodeID, nodeCounts[step.NodeID])
+	}
+	for _, step := range executionTrace.Steps {
+		predecessors := make([]string, 0, len(step.PredecessorStepIDs))
+		for _, predecessorStepID := range step.PredecessorStepIDs {
+			predecessors = append(predecessors, stepLabels[predecessorStepID])
+		}
+		sort.Strings(predecessors)
+		var input *atrace.Snapshot
+		if step.Input != nil {
+			input = &atrace.Snapshot{Text: step.Input.Text}
+		}
+		var output *atrace.Snapshot
+		if step.Output != nil {
+			output = &atrace.Snapshot{Text: step.Output.Text}
+		}
+		normalized.Steps = append(normalized.Steps, atrace.Step{
+			StepID:             stepLabels[step.StepID],
+			InvocationID:       "root-invocation",
+			ParentInvocationID: "",
+			AgentName:          step.AgentName,
+			Branch:             step.Branch,
+			NodeID:             step.NodeID,
+			StartedAt:          graphAgentTraceAssertionStartTime,
+			EndedAt:            graphAgentTraceAssertionEndTime,
+			PredecessorStepIDs: predecessors,
+			Input:              input,
+			Output:             output,
+			Error:              step.Error,
+		})
+	}
+	sort.Slice(normalized.Steps, func(i, j int) bool {
+		return normalized.Steps[i].StepID < normalized.Steps[j].StepID
+	})
+	return normalized
+}
+
+var (
+	graphAgentTraceAssertionStartTime = time.Unix(1, 0).UTC()
+	graphAgentTraceAssertionEndTime   = time.Unix(2, 0).UTC()
+)

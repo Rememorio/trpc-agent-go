@@ -184,6 +184,9 @@ func (p *InstructionRequestProcessor) ProcessRequest(
 		ctx,
 		invocation,
 	)
+	if processedInstruction == "" && processedSystemPrompt == "" {
+		return
+	}
 
 	// Update the request messages with processed instructions.
 	p.updateRequestMessages(req, processedInstruction, processedSystemPrompt)
@@ -218,22 +221,25 @@ func (p *InstructionRequestProcessor) processInstructionsWithState(
 		processedSystemPrompt = p.SystemPrompt
 	}
 
-	if invocation != nil {
-		if invocation.RunOptions.Instruction != "" {
-			processedInstruction = invocation.RunOptions.Instruction
-		}
-		if invocation.RunOptions.GlobalInstruction != "" {
-			processedSystemPrompt =
-				invocation.RunOptions.GlobalInstruction
-		}
+	if invocation != nil &&
+		p.InstructionResolver == nil &&
+		p.InstructionGetter == nil &&
+		invocation.RunOptions.Instruction != "" {
+		processedInstruction = invocation.RunOptions.Instruction
+	}
+	if invocation != nil &&
+		p.SystemPromptResolver == nil &&
+		p.SystemPromptGetter == nil &&
+		invocation.RunOptions.GlobalInstruction != "" {
+		processedSystemPrompt = invocation.RunOptions.GlobalInstruction
 	}
 
 	// Automatically inject JSON output instructions.
-	// Precedence: StructuredOutputSchema > OutputSchema.
-	if p.StructuredOutputSchema != nil {
+	// Precedence: invocation.StructuredOutputSchema > StructuredOutputSchema > OutputSchema.
+	if structuredOutputSchema := p.resolveStructuredOutputSchema(invocation); structuredOutputSchema != nil {
 		jsonInstructions := p.generateStructuredOutputJSONInstructions(
 			invocation,
-			p.StructuredOutputSchema,
+			structuredOutputSchema,
 		)
 		processedInstruction = p.combineInstructions(
 			processedInstruction,
@@ -263,6 +269,16 @@ func (p *InstructionRequestProcessor) processInstructionsWithState(
 	}
 
 	return processedInstruction, processedSystemPrompt
+}
+
+func (p *InstructionRequestProcessor) resolveStructuredOutputSchema(invocation *agent.Invocation) map[string]any {
+	if invocation != nil &&
+		invocation.StructuredOutput != nil &&
+		invocation.StructuredOutput.JSONSchema != nil &&
+		invocation.StructuredOutput.JSONSchema.Schema != nil {
+		return invocation.StructuredOutput.JSONSchema.Schema
+	}
+	return p.StructuredOutputSchema
 }
 
 // combineInstructions combines existing instruction with new JSON

@@ -50,16 +50,30 @@ func setupMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 func setupMockService(_ *testing.T, db *sql.DB) *Service {
 	return &Service{
 		opts: ServiceOpts{
-			memoryLimit:  100,
-			toolCreators: make(map[string]memory.ToolCreator),
-			enabledTools: make(map[string]bool),
-			tableName:    "memories",
-			softDelete:   true,
+			memoryLimit:      100,
+			searchMinScore:   imemory.DefaultSearchMinScore,
+			maxSearchResults: imemory.DefaultMaxSearchResults,
+			toolCreators:     make(map[string]memory.ToolCreator),
+			enabledTools:     make(map[string]struct{}),
+			tableName:        "memories",
+			softDelete:       true,
 		},
 		db:          storage.WrapSQLDB(db),
 		tableName:   "memories",
 		cachedTools: make(map[string]tool.Tool),
 	}
+}
+
+func TestServiceOpts_SearchOptions(t *testing.T) {
+	opts := ServiceOpts{}
+
+	WithMinSearchScore(0.6)(&opts)
+	WithMaxResults(25)(&opts)
+	WithMinSearchScore(-1)(&opts)
+	WithMaxResults(-1)(&opts)
+
+	assert.Equal(t, 0.6, opts.searchMinScore)
+	assert.Equal(t, 25, opts.maxSearchResults)
 }
 
 // mockTool is a mock implementation of tool.Tool for testing.
@@ -206,6 +220,34 @@ func TestNewService_WithSkipDBInit(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestNewService_WithExtractor tests that the auto memory worker is
+// initialized when an extractor implementing EnabledToolsConfigurer
+// is provided.
+func TestNewService_WithExtractor(t *testing.T) {
+	mockDB, _ := setupMockDB(t)
+	defer mockDB.Close()
+
+	originalBuilder := storage.GetClientBuilder()
+	storage.SetClientBuilder(func(builderOpts ...storage.ClientBuilderOpt) (storage.Client, error) {
+		return storage.WrapSQLDB(mockDB), nil
+	})
+	defer storage.SetClientBuilder(originalBuilder)
+
+	ext := &mockExtractor{}
+	service, err := NewService(
+		WithMySQLClientDSN(
+			"user:password@tcp(localhost:3306)/testdb",
+		),
+		WithSkipDBInit(true),
+		WithExtractor(ext),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, service)
+	defer service.Close()
+
+	assert.NotNil(t, service.autoMemoryWorker)
+}
+
 // TestNewService_InitDBError tests that service creation fails when initDB fails.
 func TestNewService_InitDBError(t *testing.T) {
 	mockDB, mock := setupMockDB(t)
@@ -252,7 +294,7 @@ func TestServiceOpts(t *testing.T) {
 func TestWithCustomTool(t *testing.T) {
 	opts := ServiceOpts{
 		toolCreators: make(map[string]memory.ToolCreator),
-		enabledTools: make(map[string]bool),
+		enabledTools: make(map[string]struct{}),
 	}
 
 	customCreator := func() tool.Tool {
@@ -261,7 +303,10 @@ func TestWithCustomTool(t *testing.T) {
 
 	WithCustomTool(memory.AddToolName, customCreator)(&opts)
 	assert.Contains(t, opts.toolCreators, memory.AddToolName)
-	assert.True(t, opts.enabledTools[memory.AddToolName])
+	_, hasAdd := opts.enabledTools[memory.AddToolName]
+	assert.True(t, hasAdd)
+	_, explicitlySet := opts.userExplicitlySet[memory.AddToolName]
+	assert.True(t, explicitlySet)
 
 	// Test with invalid tool name (should do nothing).
 	WithCustomTool("invalid_tool_name", customCreator)(&opts)
@@ -270,26 +315,51 @@ func TestWithCustomTool(t *testing.T) {
 	// Test with nil creator (should do nothing).
 	WithCustomTool(memory.SearchToolName, nil)(&opts)
 	assert.NotContains(t, opts.toolCreators, memory.SearchToolName)
-	assert.False(t, opts.enabledTools[memory.SearchToolName])
+	_, hasSearch := opts.enabledTools[memory.SearchToolName]
+	assert.False(t, hasSearch)
 }
 
 // TestWithToolEnabled tests enabling and disabling tools.
 // It verifies that valid tool names can be toggled and invalid ones are ignored.
 func TestWithToolEnabled(t *testing.T) {
-	opts := ServiceOpts{
-		toolCreators: make(map[string]memory.ToolCreator),
-		enabledTools: make(map[string]bool),
-	}
+	opts := ServiceOpts{}
 
 	WithToolEnabled(memory.AddToolName, true)(&opts)
-	assert.True(t, opts.enabledTools[memory.AddToolName])
+	_, hasAdd := opts.enabledTools[memory.AddToolName]
+	assert.True(t, hasAdd)
+	_, explicitlySet := opts.userExplicitlySet[memory.AddToolName]
+	assert.True(t, explicitlySet)
 
 	WithToolEnabled(memory.AddToolName, false)(&opts)
-	assert.False(t, opts.enabledTools[memory.AddToolName])
+	_, hasAdd = opts.enabledTools[memory.AddToolName]
+	assert.False(t, hasAdd)
+	_, explicitlySet = opts.userExplicitlySet[memory.AddToolName]
+	assert.True(t, explicitlySet)
 
 	// Test with invalid tool name (should do nothing).
 	WithToolEnabled("invalid_tool_name", true)(&opts)
 	assert.NotContains(t, opts.enabledTools, "invalid_tool_name")
+	assert.NotContains(t, opts.userExplicitlySet, "invalid_tool_name")
+}
+
+func TestWithAutoMemoryExposedTools(t *testing.T) {
+	opts := ServiceOpts{}
+
+	WithAutoMemoryExposedTools(memory.AddToolName)(&opts)
+	_, exposed := opts.toolExposed[memory.AddToolName]
+	_, hidden := opts.toolHidden[memory.AddToolName]
+	assert.True(t, exposed)
+	assert.False(t, hidden)
+
+	WithToolExposed(memory.AddToolName, false)(&opts)
+	_, exposed = opts.toolExposed[memory.AddToolName]
+	_, hidden = opts.toolHidden[memory.AddToolName]
+	assert.False(t, exposed)
+	assert.True(t, hidden)
+
+	WithAutoMemoryExposedTools("invalid_tool_name")(&opts)
+	_, exposed = opts.toolExposed["invalid_tool_name"]
+	assert.False(t, exposed)
 }
 
 func TestWithExtraOptions(t *testing.T) {
@@ -621,7 +691,7 @@ func TestUpdateMemory_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(entryJSON))
 
 	mock.ExpectExec("UPDATE").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err := s.UpdateMemory(ctx, memKey, "updated memory", []string{"new"})
@@ -660,8 +730,8 @@ func TestUpdateMemory_SoftDeleteFalse(t *testing.T) {
 		WithArgs("app", "user", "mem123").
 		WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(existingJSON))
 
-	mock.ExpectExec("UPDATE.*SET memory_data").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
+	mock.ExpectExec("UPDATE.*SET memory_id = .*memory_data").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := s.UpdateMemory(ctx, memKey, "new memory", []string{"new"})
@@ -740,7 +810,7 @@ func TestUpdateMemory_UpdateError(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"memory_data"}).AddRow(entryJSON))
 
 	mock.ExpectExec("UPDATE").
-		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), "app", "user", "mem123").
 		WillReturnError(errors.New("update error"))
 
 	err := s.UpdateMemory(ctx, memKey, "updated memory", []string{"new"})
@@ -1205,9 +1275,9 @@ func TestService_Tools(t *testing.T) {
 				"tool1": func() tool.Tool { return mockTool1 },
 				"tool2": func() tool.Tool { return mockTool2 },
 			},
-			enabledTools: map[string]bool{
-				"tool1": true,
-				"tool2": true,
+			enabledTools: map[string]struct{}{
+				"tool1": {},
+				"tool2": {},
 			},
 		},
 		db:          storage.WrapSQLDB(db),
@@ -1219,6 +1289,8 @@ func TestService_Tools(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposed,
+		s.opts.toolHidden,
 		s.cachedTools,
 	)
 
@@ -1497,6 +1569,8 @@ func (m *mockExtractor) SetPrompt(prompt string) {}
 
 func (m *mockExtractor) SetModel(mdl model.Model) {}
 
+func (m *mockExtractor) SetEnabledTools(enabled map[string]struct{}) {}
+
 func (m *mockExtractor) Metadata() map[string]any {
 	return map[string]any{}
 }
@@ -1581,6 +1655,8 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposed,
+		s.opts.toolHidden,
 		s.cachedTools,
 	)
 
@@ -1595,11 +1671,13 @@ func TestTools_AutoMemoryMode(t *testing.T) {
 	assert.True(t, toolNames[memory.SearchToolName], "Search tool should be returned by default")
 
 	// Enable Load tool explicitly.
-	s.opts.enabledTools[memory.LoadToolName] = true
+	s.opts.enabledTools[memory.LoadToolName] = struct{}{}
 	s.precomputedTools = imemory.BuildToolsList(
 		s.opts.extractor,
 		s.opts.toolCreators,
 		s.opts.enabledTools,
+		s.opts.toolExposed,
+		s.opts.toolHidden,
 		s.cachedTools,
 	)
 

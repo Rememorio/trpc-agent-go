@@ -137,6 +137,17 @@ tools := []tool.Tool{
 `.tar.gz` archive). The payload is downloaded and cached locally (set
 `SKILLS_CACHE_DIR` to override the cache location).
 
+`NewFSRepository` also accepts multiple roots, which is useful for
+combining shared skills with user-private skills. In a long-lived
+process, call `repo.Refresh()` after installing, deleting, or renaming a
+skill so the next turn sees the updated skill set.
+
+If you wire Skills through `LLMAgent` with `llmagent.WithCodeExecutor(...)`,
+consider also setting
+`llmagent.WithEnableCodeExecutionResponseProcessor(false)` so Markdown fenced
+code blocks embedded in assistant text do not auto-execute while `skill_run` is
+enabled.
+
 </td>
 <td valign="top">
 
@@ -185,6 +196,7 @@ _ = result.OverallStatus
     - [11. Agent Skills](#11-agent-skills)
     - [12. Artifacts](#12-artifacts)
     - [13. A2A Interop](#13-a2a-interop)
+    - [14. Gateway Server](#14-gateway-server)
   - [Architecture Overview](#architecture-overview)
     - [**Execution Flow**](#execution-flow)
   - [Using Built-in Agents](#using-built-in-agents)
@@ -260,7 +272,9 @@ import (
 
 func main() {
     // Create model.
-    modelInstance := openai.New("deepseek-chat")
+    modelInstance := openai.New("deepseek-chat",
+        openai.WithVariant(openai.VariantDeepSeek),
+    )
 
     // Create tool.
     calculatorTool := function.NewFunctionTool(
@@ -539,13 +553,39 @@ Example: [examples/evaluation](examples/evaluation)
 
 ### 11. Agent Skills
 
-Example: [examples/skillrun](examples/skillrun)
+Examples: [examples/skillrun](examples/skillrun),
+[examples/skillfind](examples/skillfind)
 
 - Skills are folders with a `SKILL.md` spec + optional docs/scripts.
 - Built-in tools: `skill_load`, `skill_list_docs`, `skill_select_docs`,
-  `skill_run` (runs commands in an isolated workspace).
+  `skill_run`, and (when the executor supports interactive sessions)
+  `skill_exec`, `skill_write_stdin`, `skill_poll_session`,
+  `skill_kill_session`.
+- `skill_run` is the default one-shot command runner in an isolated
+  workspace.
+- `skill_exec` and the session tools cover interactive stdin/TTY flows
+  without inlining full scripts into the prompt. They are registered
+  only when the code executor exposes `InteractiveProgramRunner`
+  (or falls back to a local engine that does).
+- `skill.NewFSRepository(...)` can scan multiple roots, such as a shared
+  skills directory plus a user-private directory. Use
+  `(*skill.FSRepository).Refresh()` after skill installation or removal
+  in long-lived processes.
 - Prefer using `skill_run` only for commands required by the selected skill
   docs, not for generic shell exploration.
+- When `LLMAgent` uses `WithCodeExecutor(...)` only to support `skill_run`,
+  disable the response code execution processor with
+  `llmagent.WithEnableCodeExecutionResponseProcessor(false)`. The
+  skill-focused examples (`examples/skill`, `examples/skillrun`,
+  `examples/skilldynamicschema`, and
+  `examples/structuredoutputskills`) follow this pattern so fenced code
+  blocks embedded in assistant text do not auto-execute.
+- `examples/skillfind` demonstrates a real end-to-end discovery flow:
+  the model uses a built-in `skill-find` skill to search the public web,
+  install a public GitHub skill into a user-private directory, refresh
+  the repository, and use the new skill in the same conversation.
+  Local execution stays off by default and can be enabled explicitly
+  when you want to run an installed skill.
 
 ### 12. Artifacts
 
@@ -560,6 +600,15 @@ Example: [examples/a2aadk](examples/a2aadk)
 
 - Agent-to-Agent (A2A) interop with an ADK Python A2A server.
 - Demonstrates streaming, tool calls, and code execution across runtimes.
+
+### 14. Gateway Server
+
+Example: [openclaw](openclaw)
+
+- A minimal OpenClaw-like gateway server.
+- Stable session ids and per-session serialization.
+- Basic safety controls: allowlist + mention gating.
+- OpenClaw-like implementation (Telegram + gateway): [openclaw](openclaw)
 
 Other notable examples:
 
@@ -599,7 +648,7 @@ Key packages:
 | `skill`     | Loads and executes reusable Agent Skills defined by `SKILL.md`.                                             |
 | `event`     | Defines event types and streaming payloads used across Runner and servers.                                  |
 | `evaluation` | Evaluates agents on eval sets using pluggable metrics and stores results.                                  |
-| `server`    | Exposes HTTP servers (AG-UI, A2A) for integration and UIs.                                                  |
+| `server`    | Exposes HTTP servers (Gateway, AG-UI, A2A) for integration and UIs.                                         |
 | `telemetry` | OpenTelemetry tracing and metrics instrumentation.                                                          |
 
 

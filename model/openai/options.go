@@ -79,6 +79,8 @@ type options struct {
 	ExtraFields map[string]any
 	// Variant for model-specific behavior.
 	Variant Variant
+	// variantSet tracks whether WithVariant was explicitly provided.
+	variantSet bool
 	// Batch completion window for batch processing.
 	BatchCompletionWindow openai.BatchNewParamsCompletionWindow
 	// Batch metadata for batch processing.
@@ -108,6 +110,13 @@ type options struct {
 	// but message ordering affects cache effectiveness.
 	OptimizeForCache    bool
 	optimizeForCacheSet bool
+
+	// OmitFileContentParts controls whether file content parts are removed
+	// from requests sent to the model provider.
+	//
+	// This can be useful when a provider rejects file inputs in chat messages,
+	// while still keeping the file parts in-memory for downstream tools.
+	OmitFileContentParts bool
 }
 
 var (
@@ -121,7 +130,6 @@ var (
 			ReserveOutputTokens:    imodel.DefaultReserveOutputTokens,
 			SafetyMarginRatio:      imodel.DefaultSafetyMarginRatio,
 			InputTokensFloor:       imodel.DefaultInputTokensFloor,
-			OutputTokensFloor:      imodel.DefaultOutputTokensFloor,
 			MaxInputTokensRatio:    imodel.DefaultMaxInputTokensRatio,
 		},
 		OptimizeForCache: false,
@@ -155,7 +163,10 @@ func WithChannelBufferSize(size int) Option {
 	}
 }
 
-// WithChatRequestCallback sets the function to be called before sending a chat request.
+// WithChatRequestCallback sets the function to be called before sending a
+// chat request. The callback runs synchronously in GenerateContent before
+// the response goroutine starts. Start your own goroutine in the callback
+// if asynchronous behavior is needed.
 func WithChatRequestCallback(fn ChatRequestCallbackFunc) Option {
 	return func(opts *options) {
 		opts.ChatRequestCallback = fn
@@ -254,6 +265,15 @@ func WithExtraFields(extraFields map[string]any) Option {
 func WithVariant(variant Variant) Option {
 	return func(opts *options) {
 		opts.Variant = variant
+		opts.variantSet = true
+	}
+}
+
+// WithOmitFileContentParts controls whether file content parts are removed
+// from requests sent to the model provider.
+func WithOmitFileContentParts(omit bool) Option {
+	return func(opts *options) {
+		opts.OmitFileContentParts = omit
 	}
 }
 
@@ -316,6 +336,9 @@ func inverseOpenAISDKAddChunkUsage(u model.Usage, delta model.Usage) model.Usage
 		PromptTokens:     u.PromptTokens - delta.PromptTokens,
 		CompletionTokens: u.CompletionTokens - delta.CompletionTokens,
 		TotalTokens:      u.TotalTokens - delta.TotalTokens,
+		PromptTokensDetails: model.PromptTokensDetails{
+			CachedTokens: int(u.PromptTokensDetails.CachedTokens - delta.PromptTokensDetails.CachedTokens),
+		},
 	}
 }
 
@@ -391,9 +414,6 @@ func WithTokenTailoringConfig(config *model.TokenTailoringConfig) Option {
 		}
 		if config.InputTokensFloor <= 0 {
 			config.InputTokensFloor = imodel.DefaultInputTokensFloor
-		}
-		if config.OutputTokensFloor <= 0 {
-			config.OutputTokensFloor = imodel.DefaultOutputTokensFloor
 		}
 		if config.MaxInputTokensRatio <= 0 {
 			config.MaxInputTokensRatio = imodel.DefaultMaxInputTokensRatio

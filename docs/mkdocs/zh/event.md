@@ -38,6 +38,9 @@ type Event struct {
     // Branch 是分支标识符，用于多 Agent 协作
     Branch string `json:"branch,omitempty"`
 
+    // Tag 使用 tags 为事件打业务标签
+    Tag string `json:"tag,omitempty"`
+
     // RequiresCompletion 表示此事件是否需要完成信号
     RequiresCompletion bool `json:"requiresCompletion,omitempty"`
 
@@ -54,6 +57,9 @@ type Event struct {
 
     // Actions 携带对 Flow 的行为提示（例如：跳过工具后的总结）
     Actions *EventActions `json:"actions,omitempty"`
+
+    // FilterKey 是用于事件层级过滤的标识
+    FilterKey string `json:"filterKey,omitempty"`
 }
 
 // EventActions 为事件附带的可选行为提示
@@ -62,6 +68,29 @@ type EventActions struct {
     SkipSummarization bool `json:"skipSummarization,omitempty"`
 }
 ```
+
+`SkipSummarization` 是一个流程控制提示，不表示当前这条
+`tool.response` 已经变成 assistant final response。若你需要整次运行真正的
+终止事件，仍应持续消费直到 `runner.completion`。
+
+#### FilterKey（层级作用域 key）
+
+`FilterKey` 是每条事件上的可选字段。你可以把它理解成“像路径一样的标签”，主要用在：
+
+- 构建下一次 Prompt 时，筛选哪些历史事件允许进入上下文（`WithMessageBranchFilterMode`）。
+- 生成/读取按作用域拆分的会话摘要（`WithSummaryFilterKey`）。
+
+FilterKey 通过 `/` 做层级分隔，例如：
+
+- `my-app/user-messages`
+- `my-app/auth/role_admin`
+
+在 `prefix` 模式下，匹配规则是**层级匹配**：只要两者存在祖先/后代关系就算匹配
+（例如 `my-app` 会匹配 `my-app/auth/...`）。
+
+如果你需要严格隔离（不希望继承父级内容），请使用 `BranchFilterModeSubtree`。
+更详细的入门说明见 Session 文档：
+`FilterKey、EventFilterKey 与 BranchFilterMode`。
 
 `model.Response` 是 Event 的基础响应结构，承载了 LLM 的响应、工具调用以及错误等信息，定义如下：
 
@@ -254,6 +283,22 @@ if e.IsRunnerCompletion() {
     // 可安全停止读取事件通道的时机
 }
 ```
+
+不要混淆 `event.IsFinalResponse()` 与 `event.IsRunnerCompletion()`：
+
+- `event.IsFinalResponse()` 复用的是嵌入 `Response` 的判断逻辑。它只说明
+  当前这条响应已经结束：不是 partial、不是 tool-call response，且
+  `Response.Done == true`。这可能对应 assistant 文本、`tool.response`，
+  也可能是终止错误响应。
+- `event.IsRunnerCompletion()` 判断的是 Runner 是否发出了终止
+  `runner.completion` 事件。只有它返回 true，才表示整次 `Runner.Run`
+  已真正结束，后续不会再有新的运行事件。
+
+经验上：
+
+- 想判断“当前这条输出是否已经完整”，可使用 `IsFinalResponse()`
+- 想停止消费事件流、读取最终状态或把本次运行视为结束，应使用
+  `IsRunnerCompletion()`
 
 ### Event 创建
 
@@ -485,8 +530,8 @@ func (c *multiTurnChat) processResponse(eventChan <-chan *event.Event) error {
             return err
         }
 
-        // 检查是否为最终事件
-        if event.IsFinalResponse() {
+        // 检查是否为整次运行完成事件
+        if event.IsRunnerCompletion() {
             fmt.Printf("\n")
             break
         }

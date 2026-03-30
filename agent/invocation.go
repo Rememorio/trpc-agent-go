@@ -19,8 +19,11 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
+	"trpc.group/trpc-go/trpc-agent-go/internal/tracecapture"
 	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/searchfilter"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -50,6 +53,20 @@ const (
 	// appenderStateKey is the invocation state key used by internal appender
 	// attachment (see internal/state/appender).
 	appenderStateKey = "__append_event__"
+
+	// streamHubStateKey is the invocation state key used by the graph to
+	// share ephemeral streams across node invocations within the same run.
+	streamHubStateKey = "__graph_stream_hub__"
+	// surfaceRootNodeIDStateKey stores one invocation's mounted surface root node id.
+	surfaceRootNodeIDStateKey = "__trpc_agent_internal_surface_root_node_id_state__"
+	// teamMemberTraceRootStateKey stores one invocation's mounted team member trace root.
+	teamMemberTraceRootStateKey = "__trpc_agent_internal_team_member_trace_root_state__"
+
+	// SyncSummaryIntraRunStateKey is set on the invocation by the
+	// flow when sync intra-run summary is active.
+	// Runner checks this key to skip redundant async summary
+	// enqueue during the same run.
+	SyncSummaryIntraRunStateKey = "__sync_summary_intra_run__"
 )
 
 // TransferInfo contains information about a pending agent transfer.
@@ -75,6 +92,8 @@ type Invocation struct {
 	EndInvocation bool
 	// Session is the session that is being used for the invocation.
 	Session *session.Session
+	// SessionService is the session service used by this invocation.
+	SessionService session.Service
 	// Model is the model that is being used for the invocation.
 	Model model.Model
 	// Message is the message that is being sent to the agent.
@@ -106,6 +125,12 @@ type Invocation struct {
 
 	// parent is the parent invocation, if any
 	parent *Invocation
+	// traceCapture stores the shared execution trace capture for one root run.
+	traceCapture *tracecapture.Capture
+	// entryPredecessorStepIDs stores the predecessor step ids passed to this invocation entry.
+	entryPredecessorStepIDs []string
+	// traceNodeID stores the mounted static root node id for this invocation.
+	traceNodeID string
 
 	// state stores invocation-scoped state data (lazy initialized).
 	// Can be used by callbacks, middleware, or any invocation-scoped logic.
@@ -176,10 +201,51 @@ func NewWaitNoticeTimeoutError(message string) *WaitNoticeTimeoutError {
 // RunOption is a function that configures a RunOptions.
 type RunOption func(*RunOptions)
 
+type runControlConfig struct {
+	DisableGraphCompletionEvent bool
+	DisableGraphExecutorEvents  bool
+	EventChannelBufferSize      int
+	PropagateChildAgentErrors   bool
+}
+
+// NewRunOptions builds a RunOptions value from RunOption functions.
+func NewRunOptions(opts ...RunOption) RunOptions {
+	var runOpts RunOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&runOpts)
+		}
+	}
+	return runOpts
+}
+
+// TraceStartedCallback receives the root span context for a run.
+type TraceStartedCallback func(oteltrace.SpanContext)
+
 // WithRuntimeState sets the runtime state for the RunOptions.
 func WithRuntimeState(state map[string]any) RunOption {
 	return func(opts *RunOptions) {
 		opts.RuntimeState = state
+	}
+}
+
+// MergeRuntimeState merges runtime state into existing RunOptions state.
+//
+// When a key already exists, the new value replaces the old one.
+func MergeRuntimeState(state map[string]any) RunOption {
+	return func(opts *RunOptions) {
+		if len(state) == 0 {
+			return
+		}
+		if opts.RuntimeState == nil {
+			opts.RuntimeState = make(
+				map[string]any,
+				len(state),
+			)
+		}
+		for key, value := range state {
+			opts.RuntimeState[key] = value
+		}
 	}
 }
 
@@ -306,10 +372,100 @@ func WithStreamMode(modes ...StreamMode) RunOption {
 	}
 }
 
+// WithDisableGraphCompletionEvent disables emitting the final graph completion event.
+func WithDisableGraphCompletionEvent(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		cfg := getRunControlConfig(opts)
+		cfg.DisableGraphCompletionEvent = disable
+		setRunControlConfig(opts, cfg)
+	}
+}
+
+// WithDisableGraphExecutorEvents disables emitting graph executor lifecycle events.
+func WithDisableGraphExecutorEvents(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		cfg := getRunControlConfig(opts)
+		cfg.DisableGraphExecutorEvents = disable
+		setRunControlConfig(opts, cfg)
+	}
+}
+
+// WithEventChannelBufferSize overrides the event channel buffer size for this run
+// on supported flow and agent implementations.
+//
+// When size <= 0, supported implementations use their configured default.
+func WithEventChannelBufferSize(size int) RunOption {
+	return func(opts *RunOptions) {
+		cfg := getRunControlConfig(opts)
+		cfg.EventChannelBufferSize = size
+		setRunControlConfig(opts, cfg)
+	}
+}
+
+// WithPropagateChildAgentErrors enables strict propagation for terminal child
+// agent errors observed through agent-node event streams.
+//
+// When disabled (default), agent nodes preserve the legacy compatibility
+// behavior: child error events remain observable in the stream but do not
+// automatically fail the parent graph.
+func WithPropagateChildAgentErrors(enabled bool) RunOption {
+	return func(opts *RunOptions) {
+		cfg := getRunControlConfig(opts)
+		cfg.PropagateChildAgentErrors = enabled
+		setRunControlConfig(opts, cfg)
+	}
+}
+
+// WithDisableTracing requests supported agent and flow execution paths to skip
+// creating OpenTelemetry spans for this run.
+func WithDisableTracing(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableTracing = disable
+	}
+}
+
+// WithDisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
+func WithDisableResponseUsageTracking(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableResponseUsageTracking = disable
+	}
+}
+
+// WithDisableModelExecutionEvents disables emitting model execution events for this run.
+func WithDisableModelExecutionEvents(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisableModelExecutionEvents = disable
+	}
+}
+
+// WithDisablePartialEventIDs disables generating IDs for partial response events.
+func WithDisablePartialEventIDs(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisablePartialEventIDs = disable
+	}
+}
+
+// WithDisablePartialEventTimestamps disables generating timestamps for partial response events.
+func WithDisablePartialEventTimestamps(disable bool) RunOption {
+	return func(opts *RunOptions) {
+		opts.DisablePartialEventTimestamps = disable
+	}
+}
+
 // WithRequestID sets the request id for the RunOptions.
 func WithRequestID(requestID string) RunOption {
 	return func(opts *RunOptions) {
 		opts.RequestID = requestID
+	}
+}
+
+// WithEventFilterKey sets the invocation event filter key for this run.
+//
+// This controls the FilterKey injected into emitted events and the default
+// filter prefix used by ContentRequestProcessor when building LLM context.
+func WithEventFilterKey(filterKey string) RunOption {
+	return func(opts *RunOptions) {
+		opts.EventFilterKey = filterKey
 	}
 }
 
@@ -344,6 +500,21 @@ func WithSpanAttributes(attrs ...attribute.KeyValue) RunOption {
 			return
 		}
 		opts.SpanAttributes = append([]attribute.KeyValue(nil), attrs...)
+	}
+}
+
+// WithTraceStartedCallback registers a callback for the run root span.
+func WithTraceStartedCallback(
+	callback TraceStartedCallback,
+) RunOption {
+	return func(opts *RunOptions) {
+		if callback == nil {
+			return
+		}
+		opts.TraceStartedCallbacks = append(
+			opts.TraceStartedCallbacks,
+			callback,
+		)
 	}
 }
 
@@ -402,6 +573,60 @@ func WithInstruction(instruction string) RunOption {
 func WithGlobalInstruction(instruction string) RunOption {
 	return func(opts *RunOptions) {
 		opts.GlobalInstruction = instruction
+	}
+}
+
+// WithStructuredOutputJSONSchema sets a JSON schema structured output for this run.
+func WithStructuredOutputJSONSchema(name string, schema map[string]any, strict bool, description string) RunOption {
+	return func(opts *RunOptions) {
+		if schema == nil {
+			return
+		}
+		if name == "" {
+			name = "output"
+		}
+		opts.StructuredOutput = &model.StructuredOutput{
+			Type: model.StructuredOutputJSONSchema,
+			JSONSchema: &model.JSONSchemaConfig{
+				Name:        name,
+				Schema:      schema,
+				Strict:      strict,
+				Description: description,
+			},
+		}
+	}
+}
+
+// WithStructuredOutputJSON sets a JSON schema structured output for this run.
+// The schema is constructed automatically from the provided example type.
+func WithStructuredOutputJSON(examplePtr any, strict bool, description string) RunOption {
+	return func(opts *RunOptions) {
+		// Infer reflect.Type from examplePtr.
+		var t reflect.Type
+		if examplePtr == nil {
+			return
+		}
+		if rt := reflect.TypeOf(examplePtr); rt.Kind() == reflect.Pointer {
+			t = rt
+		} else {
+			t = reflect.PointerTo(rt)
+		}
+		gen := jsonschema.New()
+		schema := gen.Generate(t.Elem())
+		name := t.Elem().Name()
+		if name == "" {
+			name = "output"
+		}
+		opts.StructuredOutput = &model.StructuredOutput{
+			Type: model.StructuredOutputJSONSchema,
+			JSONSchema: &model.JSONSchemaConfig{
+				Name:        name,
+				Schema:      schema,
+				Strict:      strict,
+				Description: description,
+			},
+		}
+		opts.StructuredOutputType = t
 	}
 }
 
@@ -533,12 +758,35 @@ func WithCustomAgentConfigs(configs map[string]any) RunOption {
 	}
 }
 
+func getRunControlConfig(opts *RunOptions) runControlConfig {
+	if opts == nil {
+		return runControlConfig{}
+	}
+	return opts.runControlConfig
+}
+
+func setRunControlConfig(opts *RunOptions, cfg runControlConfig) {
+	if opts == nil {
+		return
+	}
+	opts.runControlConfig = cfg
+}
+
 // RunOptions is the options for the Run method.
 type RunOptions struct {
 	// RuntimeState contains key-value pairs that will be merged into the initial state
 	// for this specific run. This allows callers to pass dynamic parameters
 	// (e.g., room ID, user context) without modifying the agent's base initial state.
 	RuntimeState map[string]any
+
+	// EventFilterKey overrides the invocation's event filter key used for
+	// scoping session events (event.FilterKey) included in LLM context.
+	//
+	// Runner applies this value via WithInvocationEventFilterKey when it
+	// constructs the invocation. When using Runner, the value should
+	// typically start with the runner app name (e.g., "<appName>/...") so
+	// sessions hooks and summaries continue to work as expected.
+	EventFilterKey string
 
 	// KnowledgeFilter contains metadata key-value pairs for the knowledge filter
 	KnowledgeFilter map[string]any
@@ -589,6 +837,25 @@ type RunOptions struct {
 	// filtering and preserve the existing behavior.
 	StreamModes []StreamMode
 
+	// DisableTracing requests supported agent and flow execution paths to skip
+	// creating OpenTelemetry spans for this run.
+	DisableTracing bool
+
+	// DisableResponseUsageTracking disables attaching usage and timing info to streaming responses.
+	DisableResponseUsageTracking bool
+
+	// DisableModelExecutionEvents disables emitting model execution start/complete events.
+	DisableModelExecutionEvents bool
+
+	// DisablePartialEventIDs disables generating IDs for partial response events.
+	DisablePartialEventIDs bool
+
+	// DisablePartialEventTimestamps disables generating timestamps for partial response events.
+	DisablePartialEventTimestamps bool
+
+	// ExecutionTraceEnabled enables in-process execution trace recording for this run.
+	ExecutionTraceEnabled bool
+
 	// RequestID is the request id of the request.
 	RequestID string
 
@@ -604,6 +871,9 @@ type RunOptions struct {
 
 	// SpanAttributes carries custom span attributes for this run.
 	SpanAttributes []attribute.KeyValue
+
+	// TraceStartedCallbacks run when the root span starts for this run.
+	TraceStartedCallbacks []TraceStartedCallback
 
 	// A2ARequestOptions contains A2A client request options that will be passed to
 	// A2A agent's SendMessage and StreamMessage calls. This allows callers to pass
@@ -651,6 +921,12 @@ type RunOptions struct {
 	// this request only.
 	GlobalInstruction string
 
+	// StructuredOutput defines how the model should produce structured output for this run.
+	StructuredOutput *model.StructuredOutput
+
+	// StructuredOutputType is the Go type to unmarshal the final JSON into for this run.
+	StructuredOutputType reflect.Type
+
 	// ToolFilter is a custom function to filter tools for this run.
 	// If set, only tools for which the filter returns true will be available to the model.
 	// If nil, all registered tools will be available (default behavior).
@@ -689,6 +965,42 @@ type RunOptions struct {
 	// ToolCallArgumentsJSONRepairEnabled enables best-effort JSON repair for tool call arguments.
 	// When nil, JSON repair is disabled by default.
 	ToolCallArgumentsJSONRepairEnabled *bool
+
+	// runControlConfig stores internal event and buffering controls.
+	runControlConfig runControlConfig
+}
+
+// IsGraphCompletionEventDisabled reports whether this invocation hides terminal graph completion events.
+func IsGraphCompletionEventDisabled(inv *Invocation) bool {
+	if inv == nil {
+		return false
+	}
+	return getRunControlConfig(&inv.RunOptions).DisableGraphCompletionEvent
+}
+
+// IsGraphExecutorEventsDisabled reports whether this invocation hides graph executor lifecycle events.
+func IsGraphExecutorEventsDisabled(inv *Invocation) bool {
+	if inv == nil {
+		return false
+	}
+	return getRunControlConfig(&inv.RunOptions).DisableGraphExecutorEvents
+}
+
+// GetEventChannelBufferSize returns the invocation-specific event channel buffer size override.
+func GetEventChannelBufferSize(inv *Invocation) int {
+	if inv == nil {
+		return 0
+	}
+	return getRunControlConfig(&inv.RunOptions).EventChannelBufferSize
+}
+
+// ShouldPropagateChildAgentErrors reports whether terminal child agent errors
+// should fail the parent graph by default.
+func ShouldPropagateChildAgentErrors(inv *Invocation) bool {
+	if inv == nil {
+		return false
+	}
+	return getRunControlConfig(&inv.RunOptions).PropagateChildAgentErrors
 }
 
 // NewInvocation create a new invocation
@@ -703,6 +1015,13 @@ func NewInvocation(invocationOpts ...InvocationOptions) *Invocation {
 		opt(inv)
 	}
 
+	if inv.Message.Role == "" && model.HasPayload(inv.Message) {
+		log.Warnf(
+			"agent.NewInvocation received a message with empty role; defaulting to user",
+		)
+		inv.Message.Role = model.RoleUser
+	}
+
 	if inv.Branch == "" {
 		inv.Branch = inv.AgentName
 	}
@@ -710,6 +1029,7 @@ func NewInvocation(invocationOpts ...InvocationOptions) *Invocation {
 	if inv.eventFilterKey == "" && inv.AgentName != "" {
 		inv.eventFilterKey = inv.AgentName
 	}
+	inv.initializeExecutionTrace()
 
 	return inv
 }
@@ -722,6 +1042,7 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 	newInv := &Invocation{
 		InvocationID:    uuid.NewString(),
 		Session:         inv.Session,
+		SessionService:  inv.SessionService,
 		Message:         inv.Message,
 		RunOptions:      inv.RunOptions,
 		MemoryService:   inv.MemoryService,
@@ -731,6 +1052,7 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 		noticeChannels:  inv.noticeChannels,
 		eventFilterKey:  inv.eventFilterKey,
 		parent:          inv,
+		traceCapture:    inv.traceCapture,
 		state:           inv.cloneState(),
 	}
 
@@ -751,8 +1073,98 @@ func (inv *Invocation) Clone(invocationOpts ...InvocationOptions) *Invocation {
 	if newInv.eventFilterKey == "" && newInv.AgentName != "" {
 		newInv.eventFilterKey = newInv.AgentName
 	}
+	if newInv.traceCapture == nil {
+		newInv.initializeExecutionTrace()
+	}
+	if newInv.traceCapture != nil {
+		newInv.traceCapture.RegisterInvocation(inv.InvocationID, newInv.InvocationID)
+		newInv.ensureTraceCaptureMetadata()
+	}
 
 	return newInv
+}
+
+// View returns an isolated invocation view that preserves identity.
+func (inv *Invocation) View(invocationOpts ...InvocationOptions) *Invocation {
+	if inv == nil {
+		return nil
+	}
+	view := &Invocation{
+		Agent:                inv.Agent,
+		AgentName:            inv.AgentName,
+		InvocationID:         inv.InvocationID,
+		Branch:               inv.Branch,
+		EndInvocation:        inv.EndInvocation,
+		Session:              inv.Session,
+		SessionService:       inv.SessionService,
+		Model:                inv.Model,
+		Message:              inv.Message,
+		RunOptions:           inv.RunOptions,
+		TransferInfo:         inv.TransferInfo,
+		Plugins:              inv.Plugins,
+		StructuredOutput:     inv.StructuredOutput,
+		StructuredOutputType: inv.StructuredOutputType,
+		MemoryService:        inv.MemoryService,
+		ArtifactService:      inv.ArtifactService,
+		noticeChannels:       inv.noticeChannels,
+		noticeMu:             inv.noticeMu,
+		eventFilterKey:       inv.eventFilterKey,
+		parent:               inv.parent,
+		traceCapture:         inv.traceCapture,
+		entryPredecessorStepIDs: cloneStringSlice(
+			inv.entryPredecessorStepIDs,
+		),
+		traceNodeID:        inv.traceNodeID,
+		state:              inv.cloneState(),
+		MaxLLMCalls:        inv.MaxLLMCalls,
+		MaxToolIterations:  inv.MaxToolIterations,
+		timingInfo:         inv.timingInfo,
+		llmCallCount:       inv.llmCallCount,
+		toolIterationCount: inv.toolIterationCount,
+	}
+	for _, opt := range invocationOpts {
+		opt(view)
+	}
+	return view
+}
+
+// SyncView copies execution-visible state from a view while preserving RunOptions.
+func (inv *Invocation) SyncView(view *Invocation) {
+	if inv == nil || view == nil || inv == view {
+		return
+	}
+	inv.Agent = view.Agent
+	inv.AgentName = view.AgentName
+	inv.InvocationID = view.InvocationID
+	inv.Branch = view.Branch
+	inv.EndInvocation = view.EndInvocation
+	inv.Session = view.Session
+	inv.SessionService = view.SessionService
+	inv.Model = view.Model
+	inv.Message = view.Message
+	inv.TransferInfo = view.TransferInfo
+	inv.Plugins = view.Plugins
+	inv.StructuredOutput = view.StructuredOutput
+	inv.StructuredOutputType = view.StructuredOutputType
+	inv.MemoryService = view.MemoryService
+	inv.ArtifactService = view.ArtifactService
+	inv.noticeChannels = view.noticeChannels
+	inv.noticeMu = view.noticeMu
+	inv.eventFilterKey = view.eventFilterKey
+	inv.parent = view.parent
+	inv.traceCapture = view.traceCapture
+	inv.entryPredecessorStepIDs = cloneStringSlice(
+		view.entryPredecessorStepIDs,
+	)
+	inv.traceNodeID = view.traceNodeID
+	inv.MaxLLMCalls = view.MaxLLMCalls
+	inv.MaxToolIterations = view.MaxToolIterations
+	inv.timingInfo = view.timingInfo
+	inv.llmCallCount = view.llmCallCount
+	inv.toolIterationCount = view.toolIterationCount
+	inv.stateMu.Lock()
+	inv.state = view.cloneState()
+	inv.stateMu.Unlock()
 }
 
 func (inv *Invocation) cloneState() map[string]any {
@@ -770,6 +1182,15 @@ func (inv *Invocation) cloneState() map[string]any {
 	}
 	if holder, ok := inv.state[appenderStateKey]; ok {
 		copied[appenderStateKey] = holder
+	}
+	if hub, ok := inv.state[streamHubStateKey]; ok {
+		copied[streamHubStateKey] = hub
+	}
+	if nodeID, ok := inv.state[surfaceRootNodeIDStateKey]; ok {
+		copied[surfaceRootNodeIDStateKey] = nodeID
+	}
+	if rootNodeID, ok := inv.state[teamMemberTraceRootStateKey]; ok {
+		copied[teamMemberTraceRootStateKey] = rootNodeID
 	}
 	return copied
 }

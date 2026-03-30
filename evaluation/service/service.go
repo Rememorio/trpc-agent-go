@@ -13,6 +13,7 @@ package service
 import (
 	"context"
 
+	"trpc.group/trpc-go/trpc-agent-go/agent/trace"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/metric"
@@ -24,9 +25,9 @@ import (
 // score those responses with the configured metrics.
 type Service interface {
 	// Inference runs the agent for the requested eval cases and returns the inference results for each case.
-	Inference(ctx context.Context, request *InferenceRequest) ([]*InferenceResult, error)
+	Inference(ctx context.Context, request *InferenceRequest, opt ...Option) ([]*InferenceResult, error)
 	// Evaluate runs the evaluation on the inference results and returns the eval set run result.
-	Evaluate(ctx context.Context, request *EvaluateRequest) (*EvalSetRunResult, error)
+	Evaluate(ctx context.Context, request *EvaluateRequest, opt ...Option) (*EvalSetRunResult, error)
 	// Close releases resources owned by the service.
 	Close() error
 }
@@ -54,6 +55,8 @@ type InferenceResult struct {
 	EvalMode evalset.EvalMode `json:"evalMode,omitempty"`
 	// Inferences are the inference results.
 	Inferences []*evalset.Invocation `json:"inferences,omitempty"`
+	// ExpectedInferences are precomputed expected invocations captured during inference when available.
+	ExpectedInferences []*evalset.Invocation `json:"expectedInferences,omitempty"`
 	// SessionID is the ID of the inference session.
 	SessionID string `json:"sessionId,omitempty"`
 	// UserID is the user id used during inferencing stage of the eval.
@@ -62,6 +65,8 @@ type InferenceResult struct {
 	Status status.EvalStatus `json:"status,omitempty"`
 	// ErrorMessage contains the error message if inference failed.
 	ErrorMessage string `json:"errorMessage,omitempty"`
+	// ExecutionTraces contains the per-run execution traces collected during inference.
+	ExecutionTraces []*trace.Trace `json:"-"`
 }
 
 // EvaluateRequest represents a request for running the evaluation on the inference results.

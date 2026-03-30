@@ -24,7 +24,7 @@ A simple example that demonstrates manual memory tool integration where LLM agen
   delete, clear)
 - Custom tool implementations
 - Streaming and non-streaming response modes
-- Multiple storage backends (in-memory, Redis, MySQL, PostgreSQL)
+- Multiple storage backends (in-memory, SQLite, Redis, MySQL, PostgreSQL, pgvector)
 
 **Use Cases:**
 
@@ -72,9 +72,26 @@ go run main.go
 
 [Read full documentation →](./auto/README.md)
 
+### 📁 compare/
+
+**Retrieval Comparison - SQLite vs SQLiteVec**
+
+A small example that compares keyword-based SQLite memory (`sqlite`) with
+semantic vector memory (`sqlitevec`) powered by `sqlite-vec`.
+
+**Getting Started:**
+
+```bash
+cd examples/memory/compare
+export OPENAI_API_KEY="your-api-key"
+go run .
+```
+
+[Read full documentation →](./compare/README.md)
+
 ## Common Features
 
-Both examples share the following capabilities:
+The chat examples (`simple/` and `auto/`) share the following capabilities:
 
 ### Memory Services
 
@@ -83,6 +100,8 @@ All examples support multiple storage backends:
 | Backend    | Description                                 | Usage              |
 | ---------- | ------------------------------------------- | ------------------ |
 | `inmemory` | In-memory storage (default)                 | `-memory=inmemory` |
+| `sqlite`   | SQLite file storage                         | `-memory=sqlite`   |
+| `sqlitevec` | SQLite + sqlite-vec vector search (embeddings) | `-memory=sqlitevec` |
 | `redis`    | Redis-based storage                         | `-memory=redis`    |
 | `mysql`    | MySQL-based storage                         | `-memory=mysql`    |
 | `postgres` | PostgreSQL-based storage                    | `-memory=postgres` |
@@ -112,7 +131,7 @@ All examples support multiple storage backends:
 | ----------------- | ----------------------------------- | ------------------------------- |
 | Tool Registration | Manual (`WithTools`)                | Automatic (`WithExtractor`)     |
 | Memory Extraction | Agent calls tools directly          | Background extraction           |
-| Tools Available   | 6 tools (4 default, 2 configurable) | Limited (search, optional load) |
+| Tools Available   | 6 tools (4 default, 2 configurable) | `memory_search` by default; configurable `memory_load`; enabled write tools exposable |
 | Control Level     | High (explicit)                     | Medium (background)             |
 | Setup Complexity  | Simple                              | Complex                         |
 | Best For          | Fine-grained control needs          | Transparent memory needs        |
@@ -123,12 +142,12 @@ Memory provides 6 tools with different availability in each mode:
 
 | Tool            | Function       | Agentic Mode (Simple) | Auto Extraction Mode (Auto) | Description             |
 | --------------- | -------------- | --------------------- | --------------------------- | ----------------------- |
-| `memory_add`    | Add new memory | ✅ Default            | ❌ Unavailable              | Create new memory entry |
-| `memory_update` | Update memory  | ✅ Default            | ❌ Unavailable              | Modify existing memory  |
-| `memory_search` | Search memory  | ✅ Default            | ✅ Default                  | Find by keywords        |
+| `memory_add`    | Add new memory | ✅ Default            | ⚙️ Hidden by default        | Create new memory entry |
+| `memory_update` | Update memory  | ✅ Default            | ⚙️ Hidden by default        | Modify existing memory  |
+| `memory_search` | Search memory  | ✅ Default            | ✅ Default                  | Search relevant memories |
 | `memory_load`   | Load memories  | ✅ Default            | ⚙️ Configurable             | Load recent memories    |
-| `memory_delete` | Delete memory  | ⚙️ Configurable       | ❌ Unavailable              | Delete single memory    |
-| `memory_clear`  | Clear memories | ⚙️ Configurable       | ❌ Unavailable              | Delete all memories     |
+| `memory_delete` | Delete memory  | ⚙️ Configurable       | ⚙️ Hidden by default        | Delete single memory    |
+| `memory_clear`  | Clear memories | ⚙️ Configurable       | ⚙️ Disabled by default      | Delete all memories     |
 
 **Notes:**
 
@@ -136,11 +155,11 @@ Memory provides 6 tools with different availability in each mode:
   - Default enabled: `memory_add`, `memory_update`, `memory_search`, `memory_load`
   - Default disabled: `memory_delete`, `memory_clear`
   - Can be enabled/disabled via `WithToolEnabled()`
-- **Auto Mode**: LLM extractor handles write operations in background, only read tools are available
-  - Default enabled: `memory_search`
-  - Default disabled: `memory_load`
-  - Not exposed: `memory_add`, `memory_update`, `memory_delete`, `memory_clear` (extractor handles writes)
-  - `WithToolEnabled()` only affects `memory_search` and `memory_load` availability
+- **Auto Mode**: LLM extractor handles write operations in background; `memory_search` is exposed by default, `memory_load` is configurable, and enabled write tools can be exposed with `WithAutoMemoryExposedTools()`
+  - Default enabled: `memory_add`, `memory_update`, `memory_delete`, `memory_search`
+  - Default disabled: `memory_load`, `memory_clear`
+  - Hidden by default: `memory_add`, `memory_update`, `memory_delete`
+  - Use `WithAutoMemoryExposedTools()` to selectively expose enabled write tools such as `memory_add`
 
 ## Prerequisites
 
@@ -160,6 +179,12 @@ Memory provides 6 tools with different availability in each mode:
 | Variable                  | Description                  | Default                     |
 | ------------------------- | ---------------------------- | --------------------------- |
 | `OPENAI_BASE_URL`         | Base URL for model API       | `https://api.openai.com/v1` |
+| `SQLITE_MEMORY_DSN`       | SQLite DSN for memory store  | `file:memories.db?_busy_timeout=5000` |
+| `SQLITEVEC_MEMORY_DSN`    | SQLiteVec DSN for memory store | `file:memories_vec.db?_busy_timeout=5000` |
+| `SQLITEVEC_EMBEDDER_MODEL` | Embedder model for SQLiteVec | `text-embedding-3-small` |
+| `OPENAI_EMBEDDING_API_KEY` | API key for embedding model (optional) | (empty) |
+| `OPENAI_EMBEDDING_BASE_URL` | Base URL for embedding API (optional) | (empty) |
+| `OPENAI_EMBEDDING_MODEL`  | Override embedding model name (optional) | (empty) |
 | `REDIS_ADDR`              | Redis server address         | `localhost:6379`            |
 | `PG_HOST`                 | PostgreSQL host              | `localhost`                 |
 | `PG_PORT`                 | PostgreSQL port              | `5432`                      |
@@ -266,19 +291,24 @@ go run main.go -streaming=false
 
 ### Memory Integration Pattern
 
-Both examples follow a two-step memory integration pattern:
+Both examples follow a three-step memory integration pattern:
 
 ```go
-// Step 1: Register memory tools (agentic) or setup extractor (auto)
+// Step 1: Create the memory service.
+// Auto mode must be enabled here with an extractor.
+memoryService := memoryinmemory.NewMemoryService(
+    // memoryinmemory.WithExtractor(memExtractor), // Enable auto mode.
+)
+
+// Step 2: Wire memory into the agent and runner.
 llmAgent := llmagent.New(
     agentName,
     llmagent.WithModel(modelInstance),
-    llmagent.WithTools(memoryService.Tools()), // Agentic mode
-    // OR
-    llmagent.WithPreloadMemory(-1), // Auto mode
+    llmagent.WithTools(memoryService.Tools()), // Optional for agentic or hybrid mode.
+    llmagent.WithPreloadMemory(-1),            // Optional preload enhancement.
 )
 
-// Step 2: Set memory service in runner
+// Step 3: Set memory service in runner.
 runner := runner.NewRunner(
     appName,
     llmAgent,

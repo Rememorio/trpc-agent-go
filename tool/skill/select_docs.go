@@ -131,28 +131,59 @@ func (t *SelectDocsTool) Call(
 
 // StateDelta writes the selection using the tool result JSON.
 func (t *SelectDocsTool) StateDelta(
-	_ []byte, resultJSON []byte,
+	_ string, _ []byte, resultJSON []byte,
 ) map[string][]byte {
+	delta, _ := t.stateDelta("", resultJSON)
+	return delta
+}
+
+// StateDeltaForInvocation writes agent-scoped state for the invocation.
+func (t *SelectDocsTool) StateDeltaForInvocation(
+	inv *agent.Invocation,
+	toolCallID string,
+	args []byte,
+	resultJSON []byte,
+) map[string][]byte {
+	_ = toolCallID
+	_ = args
+
+	var agentName string
+	if inv != nil {
+		agentName = inv.AgentName
+	}
+	delta, skillName := t.stateDelta(agentName, resultJSON)
+	return appendLoadedOrderStateDelta(
+		inv,
+		agentName,
+		delta,
+		skillName,
+	)
+}
+
+func (t *SelectDocsTool) stateDelta(
+	agentName string,
+	resultJSON []byte,
+) (map[string][]byte, string) {
 	var out selectDocsOutput
 	if err := json.Unmarshal(resultJSON, &out); err != nil {
-		return nil
+		return nil, ""
 	}
 	if out.Skill == "" {
-		return nil
+		return nil, ""
 	}
-	dk := skill.StateKeyDocsPrefix + out.Skill
+	dk := skill.DocsKey(agentName, out.Skill)
 	if out.IncludeAllDocs {
-		return map[string][]byte{dk: []byte("*")}
+		return map[string][]byte{dk: []byte("*")}, out.Skill
 	}
 	// Ensure empty slice encodes to [] rather than null.
 	if out.Selected == nil && !out.IncludeAllDocs {
-		return map[string][]byte{dk: []byte("[]")}
+		return map[string][]byte{dk: []byte("[]")}, out.Skill
 	}
 	b, err := json.Marshal(out.Selected)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
-	return map[string][]byte{dk: b}
+	return map[string][]byte{dk: b}, out.Skill
 }
 
 var _ tool.Tool = (*SelectDocsTool)(nil)
@@ -198,7 +229,7 @@ func (t *SelectDocsTool) previousSelection(
 	if !ok || inv == nil || inv.Session == nil {
 		return nil, false
 	}
-	key := skill.StateKeyDocsPrefix + skillName
+	key := skill.DocsKey(inv.AgentName, skillName)
 	v, found := inv.Session.GetState(key)
 	if !found || len(v) == 0 {
 		return nil, false

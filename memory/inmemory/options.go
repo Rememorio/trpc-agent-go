@@ -11,6 +11,7 @@
 package inmemory
 
 import (
+	"maps"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
@@ -20,10 +21,12 @@ import (
 
 var (
 	defaultOptions = serviceOpts{
-		memoryLimit:    imemory.DefaultMemoryLimit,
-		toolCreators:   imemory.AllToolCreators,
-		enabledTools:   imemory.DefaultEnabledTools,
-		asyncMemoryNum: imemory.DefaultAsyncMemoryNum,
+		memoryLimit:      imemory.DefaultMemoryLimit,
+		searchMinScore:   imemory.DefaultSearchMinScore,
+		maxSearchResults: imemory.DefaultMaxSearchResults,
+		toolCreators:     imemory.AllToolCreators,
+		enabledTools:     imemory.DefaultEnabledTools,
+		asyncMemoryNum:   imemory.DefaultAsyncMemoryNum,
 	}
 )
 
@@ -31,15 +34,23 @@ var (
 type serviceOpts struct {
 	// memoryLimit is the limit of memories per user.
 	memoryLimit int
+	// searchMinScore is the minimum keyword-search score.
+	searchMinScore float64
+	// maxSearchResults limits keyword-search results. Zero disables the cap.
+	maxSearchResults int
 	// toolCreators are functions to build tools after service creation.
 	toolCreators map[string]memory.ToolCreator
 	// enabledTools are the names of tools to enable.
-	enabledTools map[string]bool
-	// userExplicitlySet tracks which tools were explicitly set by user via WithToolEnabled.
-	userExplicitlySet map[string]bool
+	enabledTools map[string]struct{}
+	// toolExposed tracks tools explicitly exposed via Tools().
+	toolExposed map[string]struct{}
+	// toolHidden tracks tools explicitly hidden from Tools().
+	toolHidden map[string]struct{}
+	// userExplicitlySet tracks which tools were explicitly overridden by user options.
+	userExplicitlySet map[string]struct{}
 
 	// Memory extractor for auto memory mode.
-	// When set, write tools (add/update/delete) are not exposed to agent.
+	// When set, write tools are hidden from agent by default unless exposed explicitly.
 	extractor extractor.MemoryExtractor
 
 	// Async memory worker configuration.
@@ -56,13 +67,12 @@ func (o serviceOpts) clone() serviceOpts {
 		opts.toolCreators[name] = toolCreator
 	}
 
-	opts.enabledTools = make(map[string]bool, len(o.enabledTools))
-	for name, enabled := range o.enabledTools {
-		opts.enabledTools[name] = enabled
-	}
+	opts.enabledTools = maps.Clone(o.enabledTools)
+	opts.toolExposed = maps.Clone(o.toolExposed)
+	opts.toolHidden = maps.Clone(o.toolHidden)
 
 	// Initialize userExplicitlySet map (empty for new clone).
-	opts.userExplicitlySet = make(map[string]bool)
+	opts.userExplicitlySet = make(map[string]struct{})
 
 	return opts
 }
@@ -77,6 +87,28 @@ func WithMemoryLimit(limit int) ServiceOpt {
 	}
 }
 
+// WithMinSearchScore sets the minimum keyword-search score. Scores below
+// this value are filtered out. Default is 0.3.
+func WithMinSearchScore(score float64) ServiceOpt {
+	return func(opts *serviceOpts) {
+		if score < 0 {
+			return
+		}
+		opts.searchMinScore = score
+	}
+}
+
+// WithMaxResults sets the maximum number of keyword-search results.
+// Default is 10. Use 0 to disable truncation.
+func WithMaxResults(maxResults int) ServiceOpt {
+	return func(opts *serviceOpts) {
+		if maxResults < 0 {
+			return
+		}
+		opts.maxSearchResults = maxResults
+	}
+}
+
 // WithCustomTool sets a custom memory tool implementation.
 // The tool will be enabled by default.
 // If the tool name is invalid or creator is nil, this option will do nothing.
@@ -86,23 +118,76 @@ func WithCustomTool(toolName string, creator memory.ToolCreator) ServiceOpt {
 		if !imemory.IsValidToolName(toolName) || creator == nil {
 			return
 		}
+		if opts.toolCreators == nil {
+			opts.toolCreators = make(map[string]memory.ToolCreator)
+		}
+		if opts.enabledTools == nil {
+			opts.enabledTools = make(map[string]struct{})
+		}
+		if opts.userExplicitlySet == nil {
+			opts.userExplicitlySet = make(map[string]struct{})
+		}
 		opts.toolCreators[toolName] = creator
-		opts.enabledTools[toolName] = true
+		opts.enabledTools[toolName] = struct{}{}
+		opts.userExplicitlySet[toolName] = struct{}{}
 	}
 }
 
 // WithToolEnabled sets which tool is enabled.
 // If the tool name is invalid, this option will do nothing.
-// User settings via WithToolEnabled take precedence over auto mode defaults,
-// regardless of option order.
+// User settings via WithToolEnabled take precedence over auto mode
+// defaults, regardless of option order.
 func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 	return func(opts *serviceOpts) {
 		// If the tool name is invalid, do nothing.
 		if !imemory.IsValidToolName(toolName) {
 			return
 		}
-		opts.enabledTools[toolName] = enabled
-		opts.userExplicitlySet[toolName] = true
+		if opts.enabledTools == nil {
+			opts.enabledTools = make(map[string]struct{})
+		}
+		if opts.userExplicitlySet == nil {
+			opts.userExplicitlySet = make(map[string]struct{})
+		}
+		if enabled {
+			opts.enabledTools[toolName] = struct{}{}
+		} else {
+			delete(opts.enabledTools, toolName)
+		}
+		opts.userExplicitlySet[toolName] = struct{}{}
+	}
+}
+
+// WithAutoMemoryExposedTools exposes enabled tools via Tools() in auto memory
+// mode so the agent can call them directly. Invalid tool names are ignored.
+func WithAutoMemoryExposedTools(toolNames ...string) ServiceOpt {
+	return func(opts *serviceOpts) {
+		for _, toolName := range toolNames {
+			WithToolExposed(toolName, true)(opts)
+		}
+	}
+}
+
+// WithToolExposed controls whether an enabled memory tool is exposed via
+// Tools(). Use WithAutoMemoryExposedTools for the common auto memory case.
+func WithToolExposed(toolName string, exposed bool) ServiceOpt {
+	return func(opts *serviceOpts) {
+		if !imemory.IsValidToolName(toolName) {
+			return
+		}
+		if exposed {
+			if opts.toolExposed == nil {
+				opts.toolExposed = make(map[string]struct{})
+			}
+			opts.toolExposed[toolName] = struct{}{}
+			delete(opts.toolHidden, toolName)
+			return
+		}
+		if opts.toolHidden == nil {
+			opts.toolHidden = make(map[string]struct{})
+		}
+		opts.toolHidden[toolName] = struct{}{}
+		delete(opts.toolExposed, toolName)
 	}
 }
 

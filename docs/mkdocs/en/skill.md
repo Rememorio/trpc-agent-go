@@ -15,12 +15,15 @@ Background references:
 
 ### 🎯 What You Get
 
+- 🧭 Built-in tool profiles: `full` (default) or `knowledge_only`
 - 🔎 Overview injection (name + description) to guide selection
 - 📥 `skill_load` to pull `SKILL.md` body and selected docs on demand
 - 📚 `skill_select_docs` to add/replace/clear docs
 - 🧾 `skill_list_docs` to list available docs
-- 🏃 `skill_run` to execute commands, returning stdout/stderr and
+- 🏃 `skill_run` to execute commands in the `full` profile, returning stdout/stderr and
   output files
+- ⌨️ `skill_exec` plus session tools for interactive stdin/TTY flows in the
+  `full` profile
 - 🗂️ Output file collection via glob patterns with MIME detection
 - 🧩 Pluggable local or container workspace executors (local by default)
 - 🧱 Declarative `inputs`/`outputs`: map inputs and collect/inline/
@@ -49,7 +52,7 @@ the prompt up-front, it can dominate your prompt-token budget and even
 exceed the model context window.
 
 For a reproducible, **runtime** token comparison (progressive disclosure
-vs full injection), see `benchmark/anthropic_skills/README.md` and run
+vs full injection), see [trpc-agent-go-benchmark/anthropic_skills/README.md](https://github.com/trpc-group/trpc-agent-go-benchmark/blob/main/anthropic_skills/README.md) and run
 the `token-report` suite described there.
 
 ### Prompt Cache
@@ -73,15 +76,25 @@ sequence affects how long the shared prefix is:
     likely to shift, and prompt caching can often reuse a longer prefix.
 
 Fallback: if the matching tool result message is not present in the
-request history (for example, history suppression), the framework falls
-back to a dedicated system message so the model still sees the loaded
-content.
+request history (for example, history suppression), the framework can
+fall back to a dedicated system message so the model still sees the
+loaded content.
+
+Session summary note: if you enable session summary injection
+(`WithAddSessionSummary(true)`) and a summary is present, the framework
+prefers to **skip** this fallback to avoid re-inflating the prompt with
+summarized content. If the matching tool result messages are still
+available, the fallback stays suppressed; if summary compaction removes
+them, the fallback is re-enabled so the model still sees the full
+body/docs.
 
 Enable tool-result materialization with:
 `llmagent.WithSkillsLoadedContentInToolResults(true)`.
+To restore the legacy fallback behavior in summary mode:
+`llmagent.WithSkipSkillsFallbackOnSessionSummary(false)`.
 
 To measure the impact in a real tool-using flow, run the
-`benchmark/anthropic_skills` `prompt-cache` suite.
+[trpc-agent-go-benchmark/anthropic_skills](https://github.com/trpc-group/trpc-agent-go-benchmark/tree/main/anthropic_skills) `prompt-cache` suite.
 
 How this relates to `SkillLoadMode` (common pitfall):
 
@@ -90,8 +103,10 @@ How this relates to `SkillLoadMode` (common pitfall):
   loop).
 - If you want loaded skill bodies/docs to persist across **multiple
   conversation turns**, set `SkillLoadMode` to `session`. The default
-  `turn` mode clears `temp:skill:loaded:*` / `temp:skill:docs:*` before
-  the next run starts. As a result, even if your history still contains
+  `turn` mode clears the agent-scoped skill keys
+  (`temp:skill:loaded_by_agent:<agent>/<name>` and
+  `temp:skill:docs_by_agent:<agent>/<name>`) before the next run starts.
+  As a result, even if your history still contains
   the previous `skill_load` tool result (typically a short `loaded:
   <name>` stub), the framework will not materialize the body/docs again.
 
@@ -145,10 +160,11 @@ Stability across calls:
   on every model call, so later requests see the same skill content as
   long as the skills repo and selection state are unchanged.
 - If the relevant tool result message is missing from the request history
-  (for example, history suppression or truncation), the framework falls
-  back to a dedicated system message (`Loaded skill context:`) to preserve
-  correctness. This fallback may reduce prompt-cache benefits because it
-  changes the system content.
+  (for example, history suppression or truncation), the framework can
+  fall back to a dedicated system message (`Loaded skill context:`) to
+  preserve correctness. This fallback may reduce prompt-cache benefits
+  because it changes the system content. If a session summary is present,
+  this fallback is skipped by default (see above).
 
 ### Industry Comparison
 
@@ -207,8 +223,7 @@ export SKILLS_ROOT=/path/to/skills
 
 ### 2) Enable Skills in an Agent
 
-Provide a repository and an executor. If not set, a local executor is
-used for convenience during development.
+Provide a repository to `LLMAgent`.
 
 ```go
 import (
@@ -224,8 +239,36 @@ agent := llmagent.New(
     "skills-assistant",
     llmagent.WithSkills(repo),
     llmagent.WithCodeExecutor(exec),
+    llmagent.WithEnableCodeExecutionResponseProcessor(false),
     // Optional: keep the system prompt stable for prompt caching.
     llmagent.WithSkillsLoadedContentInToolResults(true),
+)
+```
+
+`NewFSRepository` can scan multiple roots. A common pattern is one
+shared skills directory plus one user-private skills directory:
+
+```go
+repo, _ := skill.NewFSRepository(
+    "./skills/common",
+    "./skills/users/alice",
+)
+```
+
+If a long-lived process installs, deletes, or renames skills after
+startup, call `repo.Refresh()` after the filesystem update is committed.
+`Refresh()` is meant for repository structure changes, not for every
+request.
+
+Knowledge-only mode:
+
+```go
+agent := llmagent.New(
+    "skills-assistant",
+    llmagent.WithSkills(repo),
+    llmagent.WithSkillToolProfile(
+        llmagent.SkillToolProfileKnowledgeOnly,
+    ),
 )
 ```
 
@@ -233,9 +276,20 @@ Key points:
 - Request processor injects overview and on‑demand content:
   [internal/flow/processor/skills.go]
   (https://github.com/trpc-group/trpc-agent-go/blob/main/internal/flow/processor/skills.go)
-- Tools are auto‑registered with `WithSkills`: `skill_load`,
-  `skill_select_docs`, `skill_list_docs`, and `skill_run` show up
-  automatically; no manual wiring required.
+- `WithSkills` auto-registers built-in skill tools; no manual wiring is
+  required.
+  - Default `full` profile: `skill_load`, `skill_select_docs`,
+    `skill_list_docs`, `skill_run`, and — when the executor supports
+    interactive sessions — `skill_exec`, `skill_write_stdin`,
+    `skill_poll_session`, `skill_kill_session`.  If the executor does
+    not implement `InteractiveProgramRunner` (and no local fallback
+    applies), these session tools are omitted and the corresponding
+    prompt guidance is suppressed.
+  - `knowledge_only` profile: only `skill_load`, `skill_select_docs`,
+    and `skill_list_docs`.
+  - Executor requirement follows the profile:
+    `full` usually also needs `WithCodeExecutor(...)`;
+    `knowledge_only` does not.
 - Note: when `WithCodeExecutor` is set, LLMAgent will (by default) try to
   execute Markdown fenced code blocks in model responses. If you only need
   the executor for `skill_run`, disable this behavior with
@@ -244,8 +298,8 @@ Key points:
   block after the `Available skills:` list in the system message.
   - Disable it (to save prompt tokens): `llmagent.WithSkillsToolingGuidance("")`.
   - Or replace it with your own text: `llmagent.WithSkillsToolingGuidance("...")`.
-  - If you disable it, make sure your instruction tells the model when to use
-    `skill_load`, `skill_select_docs`, and `skill_run`.
+  - If you disable it, make sure your instruction tells the model which
+    skill tools are available in your chosen profile.
   - Loader: [tool/skill/load.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/load.go)
   - Runner: [tool/skill/run.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/run.go)
 
@@ -253,6 +307,11 @@ Key points:
 
 Interactive demo:
 [examples/skillrun/main.go](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillrun/main.go)
+
+This demo and the related skill-focused examples ( `skill`, `skilldynamicschema` and
+`structuredoutputskills`) explicitly set
+`llmagent.WithEnableCodeExecutionResponseProcessor(false)` so fenced code
+blocks in assistant text do not auto-execute while `skill_run` is enabled.
 
 ```bash
 cd examples/skillrun
@@ -266,8 +325,23 @@ GAIA benchmark demo (skills + file tools):
 It includes a dataset downloader script and notes on Python dependencies
 for skills like `whisper` (audio) and `ocr` (images).
 
+Real discovery/install demo (real model + real web/GitHub):
+[examples/skillfind/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillfind/README.md)
+
+It starts with a built-in `skill-find` skill, searches the public web for
+candidate skills, installs a public skill from GitHub into a user-private
+directory, refreshes the repository, and uses the new skill in the same
+conversation. Local execution stays disabled by default and is only
+enabled when you opt in.
+
 SkillLoadMode demo (no API key required):
 [examples/skillloadmode/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillloadmode/README.md)
+
+SkillToolProfile demo (no API key required):
+[examples/skilltoolprofile/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skilltoolprofile/README.md)
+
+Sub-agent skill isolation demo (AgentTool + Skills):
+[examples/skillisolation/README.md](https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillisolation/README.md)
 
 Quick start (download dataset JSON into `examples/skill/data/`):
 
@@ -291,6 +365,8 @@ Natural prompts:
   needed based on the overview.
 - When needed, the model calls `skill_load` for body/docs, then
   `skill_run` to execute and return output files.
+- In `knowledge_only`, the model can still load skill instructions/docs,
+  but it must use them as guidance rather than execute skill scripts.
 
 ## SKILL.md Anatomy
 
@@ -334,13 +410,363 @@ Input:
 
 Behavior:
 - Writes session-scoped `temp:*` keys:
-  - `temp:skill:loaded:<name>` = "1"
-  - `temp:skill:docs:<name>` = "*" or JSON array
+  - `temp:skill:loaded_by_agent:<agent>/<name>` = "1"
+  - `temp:skill:docs_by_agent:<agent>/<name>` = "*" or JSON array
+  - `temp:skill:loaded_order_by_agent:<agent>` = JSON array of touched
+    skill names, from oldest to newest
+  - Legacy keys (`temp:skill:loaded:<name>`, `temp:skill:docs:<name>`) are
+    still supported and migrated when seen.
+- Multi-agent note: sub-agents typically share the same Session. With
+  agent-scoped keys, a child agent’s `skill_load` won’t automatically
+  inflate the coordinator’s prompt. If another agent needs the body/docs,
+  have that agent call `skill_load` explicitly.
 - Request processors materialize `SKILL.md` body and docs into the next
   model request:
   - Default: appended to the system message (legacy behavior)
   - Optional: appended to the matching tool result message
     (`llmagent.WithSkillsLoadedContentInToolResults(true)`)
+
+#### Get the currently loaded skills (before every model call)
+
+If you want the **current loaded skills list** right before *each* model
+request (including every step inside a tool loop), register a
+`BeforeModel` callback and read the `Invocation` from context.
+
+From first principles:
+
+- `skill_load` does **not** inject the full `SKILL.md` text into the
+  session transcript.
+- Instead, it writes small “flags” into the session state:
+  - Loaded flag: keys with prefix `skill.StateKeyLoadedByAgentPrefix`
+  - Docs selection: keys with prefix `skill.StateKeyDocsByAgentPrefix`
+  - These keys are scoped by agent name to avoid cross-agent leakage in
+    multi-agent sessions.
+- The Skills request processors read those keys and materialize bodies
+  / docs into the **next** outbound model request.
+
+So, to observe the loaded skills list, you only need to inspect session
+state:
+
+In the snippet below, `m` is your model and `repo` is your skills
+repository.
+
+```go
+import (
+    "context"
+    "fmt"
+    "sort"
+    "strings"
+
+    "trpc.group/trpc-go/trpc-agent-go/agent"
+    "trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+    "trpc.group/trpc-go/trpc-agent-go/model"
+    "trpc.group/trpc-go/trpc-agent-go/skill"
+)
+
+func loadedSkillNames(inv *agent.Invocation) []string {
+    if inv == nil || inv.Session == nil {
+        return nil
+    }
+    state := inv.Session.SnapshotState()
+    if len(state) == 0 {
+        return nil
+    }
+
+    prefix := skill.LoadedPrefix(inv.AgentName)
+
+    var out []string
+    for k, v := range state {
+        if !strings.HasPrefix(k, prefix) {
+            continue
+        }
+        if len(v) == 0 {
+            continue
+        }
+        name := strings.TrimPrefix(k, prefix)
+        if strings.TrimSpace(name) == "" {
+            continue
+        }
+        out = append(out, name)
+    }
+    sort.Strings(out)
+    return out
+}
+
+modelCallbacks := model.NewCallbacks().
+    RegisterBeforeModel(func(
+        ctx context.Context,
+        args *model.BeforeModelArgs,
+    ) (*model.BeforeModelResult, error) {
+        _ = args
+        inv, ok := agent.InvocationFromContext(ctx)
+        if !ok {
+            return nil, nil
+        }
+        fmt.Printf("loaded skills: %v\n", loadedSkillNames(inv))
+        return nil, nil
+    })
+
+agt := llmagent.New(
+    "skills-assistant",
+    llmagent.WithModel(m),
+    llmagent.WithSkills(repo),
+    llmagent.WithModelCallbacks(modelCallbacks),
+)
+_ = agt
+```
+
+Notes:
+
+- `SkillLoadModeTurn` (default) clears the agent-scoped `temp:skill:*`
+  keys (for example, `temp:skill:loaded_by_agent:*` /
+  `temp:skill:docs_by_agent:*` /
+  `temp:skill:loaded_order_by_agent:*`) at the start of the **next**
+  `Runner.Run` call, so the loaded list is usually non-empty only within
+  the current turn/tool loop.
+- `SkillLoadModeSession` keeps them across turns, so the loaded list can
+  remain non-empty until you clear it (or the session expires).
+
+#### Built-in option: cap loaded skills (TopK)
+
+If your goal is simply “keep only the most recent N loaded skills”, use
+the built-in option:
+
+- `llmagent.WithMaxLoadedSkills(N)`
+
+This enforces the cap **before every model request** by clearing older
+`temp:skill:*` state keys. Recent skill touches are tracked in session
+state and updated by `skill_load` / `skill_select_docs`, so the cap does
+not depend on alphabetical fallback or surviving tool-result history.
+
+Example:
+
+```go
+agt := llmagent.New(
+    "skills-assistant",
+    llmagent.WithModel(m),
+    llmagent.WithSkills(repo),
+    llmagent.WithMaxLoadedSkills(3),
+)
+_ = agt
+```
+
+#### Custom policy: cap loaded skills (e.g., keep the most recent 3)
+
+`SkillLoadMode` controls **lifetime** (once/turn/session). If you need
+full manual control beyond `llmagent.WithMaxLoadedSkills` (for example,
+custom eviction policy), use an `AppendEventHook` on your session
+service to modify the state deltas written by `skill_load`.
+
+The core idea:
+
+1) Detect events that load a skill for a specific agent (state delta
+   contains keys with prefix `skill.LoadedPrefix(ev.Author)`).
+2) Compute which skills would be loaded *after* applying the delta.
+3) If the count exceeds your limit, clear the older skills by adding
+   `nil` entries into the same `StateDelta` map.
+
+Example (inmemory session service, keep the most recent 3 loaded skills):
+
+```go
+import (
+    "encoding/json"
+    "sort"
+    "strings"
+
+    "trpc.group/trpc-go/trpc-agent-go/event"
+    "trpc.group/trpc-go/trpc-agent-go/model"
+    "trpc.group/trpc-go/trpc-agent-go/session"
+    "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+    "trpc.group/trpc-go/trpc-agent-go/skill"
+)
+
+const (
+    maxLoadedSkills = 3
+    toolSkillLoad   = "skill_load"
+)
+
+type skillLoadArgs struct {
+    Skill string `json:"skill"`
+}
+
+func loadedSkillsFromState(
+    state session.StateMap,
+    agentName string,
+) []string {
+    if len(state) == 0 {
+        return nil
+    }
+    prefix := skill.LoadedPrefix(agentName)
+    var out []string
+    for k, v := range state {
+        if !strings.HasPrefix(k, prefix) {
+            continue
+        }
+        if len(v) == 0 {
+            continue
+        }
+        name := strings.TrimPrefix(k, prefix)
+        if strings.TrimSpace(name) == "" {
+            continue
+        }
+        out = append(out, name)
+    }
+    sort.Strings(out)
+    return out
+}
+
+func capLoadedSkills(
+    sess *session.Session,
+    ev *event.Event,
+    max int,
+) {
+    if sess == nil || ev == nil || max <= 0 {
+        return
+    }
+    if len(ev.StateDelta) == 0 {
+        return
+    }
+
+    agentName := strings.TrimSpace(ev.Author)
+    if agentName == "" {
+        return
+    }
+    loadedPrefix := skill.LoadedPrefix(agentName)
+
+    // Only enforce when this event loads a skill.
+    var newlyLoaded []string
+    for k, v := range ev.StateDelta {
+        if !strings.HasPrefix(k, loadedPrefix) {
+            continue
+        }
+        if len(v) == 0 {
+            continue
+        }
+        name := strings.TrimPrefix(k, loadedPrefix)
+        if strings.TrimSpace(name) == "" {
+            continue
+        }
+        newlyLoaded = append(newlyLoaded, name)
+    }
+    if len(newlyLoaded) == 0 {
+        return
+    }
+
+    // Predict the "post-append" state by applying delta to a copy.
+    nextState := sess.SnapshotState()
+    for k, v := range ev.StateDelta {
+        nextState[k] = v
+    }
+
+    loaded := loadedSkillsFromState(nextState, agentName)
+    if len(loaded) <= max {
+        return
+    }
+
+    loadedSet := make(map[string]struct{}, len(loaded))
+    for _, name := range loaded {
+        loadedSet[name] = struct{}{}
+    }
+
+    // Keep the most recent loaded skills by scanning recent events.
+    keep := make([]string, 0, max)
+    keepSet := make(map[string]struct{}, max)
+
+    // 1) Always keep the skill(s) loaded by this delta.
+    sort.Strings(newlyLoaded)
+    for _, name := range newlyLoaded {
+        if _, ok := loadedSet[name]; !ok {
+            continue
+        }
+        if _, ok := keepSet[name]; ok {
+            continue
+        }
+        keep = append(keep, name)
+        keepSet[name] = struct{}{}
+        if len(keep) >= max {
+            break
+        }
+    }
+
+    // 2) Fill from newest skill_load calls in the transcript.
+    events := sess.GetEvents()
+    for i := len(events) - 1; i >= 0 && len(keep) < max; i-- {
+        if strings.TrimSpace(events[i].Author) != agentName {
+            continue
+        }
+        rsp := events[i].Response
+        if rsp == nil || len(rsp.Choices) == 0 {
+            continue
+        }
+        msg := rsp.Choices[0].Message
+        if msg.Role != model.RoleAssistant {
+            continue
+        }
+        for _, tc := range msg.ToolCalls {
+            if tc.Function.Name != toolSkillLoad {
+                continue
+            }
+            var in skillLoadArgs
+            if err := json.Unmarshal(
+                []byte(tc.Function.Arguments),
+                &in,
+            ); err != nil {
+                continue
+            }
+            name := strings.TrimSpace(in.Skill)
+            if name == "" {
+                continue
+            }
+            if _, ok := loadedSet[name]; !ok {
+                continue
+            }
+            if _, ok := keepSet[name]; ok {
+                continue
+            }
+            keep = append(keep, name)
+            keepSet[name] = struct{}{}
+            if len(keep) >= max {
+                break
+            }
+        }
+    }
+
+    // 3) Fallback: fill deterministically from the loaded list.
+    for _, name := range loaded {
+        if len(keep) >= max {
+            break
+        }
+        if _, ok := keepSet[name]; ok {
+            continue
+        }
+        keep = append(keep, name)
+        keepSet[name] = struct{}{}
+    }
+
+    // Evict everything else by clearing the same state keys.
+    for _, name := range loaded {
+        if _, ok := keepSet[name]; ok {
+            continue
+        }
+        ev.StateDelta[skill.LoadedKey(agentName, name)] = nil
+        ev.StateDelta[skill.DocsKey(agentName, name)] = nil
+    }
+}
+
+svc := inmemory.NewSessionService(
+    inmemory.WithAppendEventHook(func(
+        ctx *session.AppendEventContext,
+        next func() error,
+    ) error {
+        capLoadedSkills(ctx.Session, ctx.Event, maxLoadedSkills)
+        return next()
+    }),
+)
+_ = svc
+```
+
+See `docs/mkdocs/en/session.md` (“AppendEventHook”) for the hook API, and
+`examples/session/hook` for a runnable example.
 
 Notes:
 - Prefer progressive disclosure: load only the body first, then list and
@@ -489,9 +915,12 @@ Input:
 - `mode` (optional string): `add` | `replace` | `clear`
 
 Behavior:
-- Updates `temp:skill:docs:<name>` accordingly:
-  - `*` for include all
-  - JSON array for explicit list
+- Updates doc selection state for the current agent:
+  - `temp:skill:docs_by_agent:<agent>/<name>` = `*` for include all
+  - `temp:skill:docs_by_agent:<agent>/<name>` = JSON array for explicit list
+  - Also refreshes `temp:skill:loaded_order_by_agent:<agent>` so
+    `WithMaxLoadedSkills(N)` treats doc selection as a recent touch
+  - Legacy key `temp:skill:docs:<name>` is still supported and migrated.
 
 ### `skill_list_docs`
 
@@ -514,6 +943,8 @@ Input:
 - `skill` (required)
 - `command` (required; by default runs via `bash -c`)
 - `cwd`, `env` (optional)
+- `stdin` (optional): one-shot stdin text passed to the command
+- `editor_text` (optional): text used for CLIs that launch `$EDITOR`
 - `output_files` (optional, legacy collection): glob patterns (e.g.,
   `out/*.txt`). Patterns are workspace‑relative; env‑style prefixes
   like `$OUTPUT_DIR/*.txt` are also accepted and normalized to
@@ -526,10 +957,31 @@ Input:
     - `workspace://rel/path` to copy/link from current workspace
     - `skill://<name>/rel/path` to copy/link from a staged skill
   - `to` workspace‑relative destination; defaults to
-    `WORK_DIR/inputs/<basename>`
+    `WORK_DIR/inputs/<basename>`. For convenience, `skill_run` treats
+    `to` values starting with `inputs/` as `work/inputs/` (because
+    `inputs/` is a symlink under the skill root).
   - `mode`: `copy` (default) or `link` when feasible
   - `pin`: for `artifact://name` without `@version`, reuse the first
     resolved version for the same `to` path (best effort)
+
+- Conversation file inputs (automatic staging):
+  - If the current session contains user messages with file inputs
+    (`content_parts` items of type `file`), `skill_run` automatically
+    stages them into `work/inputs/` (and thus `inputs/`) before the
+    command runs.
+  - Filenames are sanitized to a safe basename and de-duplicated with a
+    numeric suffix when needed.
+  - If a file input has no filename and `file_id` is an `artifact://...`
+    reference, the framework infers the basename from the artifact name.
+    Otherwise, it falls back to `upload_N`.
+  - If a file input includes raw bytes (`data`), those bytes are written
+    directly into the workspace.
+  - If a file input is referenced only by `file_id`:
+    - When `file_id` starts with `artifact://`, `skill_run` loads it
+      from the Artifact service (useful when user uploads are stored as
+      artifacts and only referenced in messages).
+    - Otherwise, the framework downloads the content via the configured
+      model when supported.
 
 - `outputs` (optional, declarative outputs): a manifest to collect
   results with limits and persistence:
@@ -580,8 +1032,16 @@ Optional safety restriction (denylist):
 - You can also configure this in code via
   `llmagent.WithSkillRunDeniedCommands(...)`.
 
+Optional behavior (force artifact persistence):
+- In code, you can force `skill_run` to persist collected outputs as
+  artifacts (best effort) even if the model omits `save_as_artifacts`
+  / `outputs.save`:
+  - `llmagent.WithSkillRunForceSaveArtifacts(true)`
+
 Output:
 - `stdout`, `stderr`, `exit_code`, `timed_out`, `duration_ms`
+- `staged_inputs` (optional): files staged from the conversation into
+  `work/inputs/` for this run
 - `primary_output` (optional) with `name`, `ref`, `content`, `mime_type`,
   `size_bytes`, `truncated`
   - Convenience pointer to the "best" small text output file (when one
@@ -595,6 +1055,8 @@ Output:
     Use `ref` with `read_file` to fetch text content on demand.
   - `size_bytes` is the file size on disk; `truncated=true` means the
     collected content hit internal caps (for example, 4 MiB/file).
+  - If the command fails or times out, zero-byte collected files are
+    omitted to avoid misleading shell-redirection artifacts.
 - `warnings` (optional): non-fatal notes (for example, when artifact
   saving is skipped)
 - `artifact_files` with `name`, `version` appears in two cases:
@@ -603,10 +1065,50 @@ Output:
 
 Typical flow:
 1) Call `skill_load` to inject body/docs
+   - When using `llmagent.LLMAgent`, this step is required by default:
+     `skill_run` rejects calls unless `skill_load` has been called for
+     that skill. Disable with:
+     `llmagent.WithSkillRunRequireSkillLoaded(false)`.
 2) Call `skill_run` and collect outputs:
    - Legacy: use `output_files` globs
    - Declarative: use `outputs` to drive collect/inline/save
    - Use `inputs` to stage upstream files when needed
+
+### Interactive skill sessions
+
+Declaration:
+- [tool/skill/exec.go](https://github.com/trpc-group/trpc-agent-go/blob/main/tool/skill/exec.go)
+
+Tools:
+- `skill_exec`: start a session-oriented command in the skill workspace
+- `skill_write_stdin`: write incremental stdin to a running session
+- `skill_poll_session`: fetch more terminal output or the final result
+- `skill_kill_session`: terminate and remove a session
+
+Guidance:
+- Prefer `skill_run` for one-shot commands.
+- Prefer `skill_exec` when the command may prompt for input, present a
+  numbered selection, or keep running between turns.
+- Prefer `editor_text` on `skill_run` or `skill_exec` for `$EDITOR`
+  workflows instead of trying to drive a full-screen editor via stdin.
+
+`skill_exec` reuses the same workspace, `inputs`, `outputs`,
+`save_as_artifacts`, `omit_inline_content`, `artifact_prefix`, `stdin`,
+and `editor_text` behavior as `skill_run`, but returns session state:
+- `status`: `running` or `exited`
+- `session_id`: stable id for follow-up calls
+- `output`: most recent terminal output seen during that call
+- `interaction`: best-effort hint when the process appears to be waiting
+  for more input
+- `result`: when the session exits, the final `skill_run`-style output
+
+Typical interactive flow:
+1) Call `skill_exec`
+2) Inspect `output` / `interaction`
+3) Use `skill_write_stdin` or `skill_poll_session` until `status`
+   becomes `exited`
+4) Read `result` and collected outputs, or call `skill_kill_session`
+   to stop the session
 
 Examples:
 
@@ -772,5 +1274,7 @@ Common spans:
 - This repo:
   - Interactive demo: [examples/skillrun/main.go]
     (https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillrun/main.go)
+  - Real discovery/install demo: [examples/skillfind/README.md]
+    (https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillfind/README.md)
   - Sample skill: [examples/skillrun/skills/python_math/SKILL.md]
     (https://github.com/trpc-group/trpc-agent-go/blob/main/examples/skillrun/skills/python_math/SKILL.md)

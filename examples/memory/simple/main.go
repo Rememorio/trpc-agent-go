@@ -13,12 +13,22 @@
 // Usage:
 //
 //	go run main.go -memory=inmemory
+//	go run main.go -memory=sqlite
+//	go run main.go -memory=sqlitevec
 //	go run main.go -memory=redis
 //	go run main.go -memory=mysql
 //	go run main.go -memory=postgres
 //	go run main.go -memory=pgvector
+//	go run main.go -memory=mem0
 //
 // Environment variables by memory type (example usage):
+//
+//	sqlite:
+//		export SQLITE_MEMORY_DSN="file:memories.db?_busy_timeout=5000"
+//
+//	sqlitevec:
+//		export SQLITEVEC_MEMORY_DSN="file:memories_vec.db?_busy_timeout=5000"
+//		export SQLITEVEC_EMBEDDER_MODEL="text-embedding-3-small"
 //
 //	redis:
 //		export REDIS_ADDR="localhost:6379"
@@ -44,6 +54,12 @@
 //		export PGVECTOR_PASSWORD=""
 //		export PGVECTOR_DATABASE="trpc_agent_go"
 //		export PGVECTOR_EMBEDDER_MODEL="text-embedding-3-small"
+//
+//	mem0:
+//		export MEM0_API_KEY="your-mem0-api-key"
+//		export MEM0_HOST="https://api.mem0.ai"
+//		export MEM0_ORG_ID=""
+//		export MEM0_PROJECT_ID=""
 package main
 
 import (
@@ -67,10 +83,29 @@ import (
 )
 
 var (
-	modelName      = flag.String("model", "deepseek-chat", "Name of the model to use")
-	memServiceName = flag.String("memory", "inmemory", "Name of the memory service to use, inmemory / redis / mysql / postgres / pgvector / mem0")
-	streaming      = flag.Bool("streaming", true, "Enable streaming mode for responses")
-	softDelete     = flag.Bool("soft-delete", false, "Enable soft delete for MySQL/PostgreSQL memory service")
+	modelName = flag.String(
+		"model",
+		"deepseek-chat",
+		"Name of the model to use",
+	)
+	memServiceName = flag.String(
+		"memory",
+		"inmemory",
+		"Name of the memory service to use, "+
+			"inmemory / sqlite / sqlitevec / redis / "+
+			"mysql / postgres / pgvector / mem0",
+	)
+	streaming = flag.Bool(
+		"streaming",
+		true,
+		"Enable streaming mode for responses",
+	)
+	softDelete = flag.Bool(
+		"soft-delete",
+		false,
+		"Enable soft delete for SQLite/SQLiteVec/"+
+			"MySQL/PostgreSQL/pgvector memory service",
+	)
 )
 
 func main() {
@@ -133,9 +168,8 @@ func (c *memoryChat) setup(_ context.Context) error {
 	c.sessionID = fmt.Sprintf("memory-session-%d", time.Now().Unix())
 
 	genConfig := model.GenerationConfig{
-		MaxTokens:   util.IntPtr(2000),
-		Temperature: util.FloatPtr(0.7),
-		Stream:      c.streaming,
+		MaxTokens: util.IntPtr(2000),
+		Stream:    c.streaming,
 	}
 
 	appName := "memory-chat"
@@ -227,11 +261,16 @@ func (c *memoryChat) processResponse(eventChan <-chan *event.Event) error {
 		fullContent       string
 		toolCallsDetected bool
 		assistantStarted  bool
+		finalSeen         bool
 	)
 
 	for event := range eventChan {
 		if event.Error != nil {
 			fmt.Printf("\n❌ Error: %s\n", event.Error.Message)
+			continue
+		}
+
+		if finalSeen {
 			continue
 		}
 
@@ -260,7 +299,7 @@ func (c *memoryChat) processResponse(eventChan <-chan *event.Event) error {
 
 		if event.IsFinalResponse() {
 			fmt.Printf("\n")
-			break
+			finalSeen = true
 		}
 	}
 

@@ -14,11 +14,15 @@ import (
 	"runtime"
 
 	"github.com/google/uuid"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult"
 	evalresultinmemory "trpc.group/trpc-go/trpc-agent-go/evaluation/evalresult/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evalset"
 	evalsetinmemory "trpc.group/trpc-go/trpc-agent-go/evaluation/evalset/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/evaluation/evaluator/registry"
+	metricregistry "trpc.group/trpc-go/trpc-agent-go/evaluation/metric/registry"
+	"trpc.group/trpc-go/trpc-agent-go/evaluation/usersimulation"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
 // Options holds the options for the evaluation service.
@@ -26,8 +30,12 @@ type Options struct {
 	EvalSetManager                    evalset.Manager                  // EvalSetManager is used to store and retrieve eval set.
 	EvalResultManager                 evalresult.Manager               // EvalResultManager is used to store and retrieve eval results.
 	Registry                          registry.Registry                // Registry is used to store and retrieve evaluator.
+	MetricRegistry                    metricregistry.Registry          // MetricRegistry resolves runtime metric extensions.
 	SessionIDSupplier                 func(ctx context.Context) string // SessionIDSupplier is used to generate session IDs.
+	ExpectedRunner                    runner.Runner                    // ExpectedRunner is used to generate dynamic expected outputs.
+	UserSimulator                     usersimulation.Simulator         // UserSimulator drives conversationScenario inference.
 	Callbacks                         *Callbacks                       // Callbacks holds evaluation callbacks.
+	RunOptions                        []agent.RunOption                // RunOptions configures runner.Run calls during inference.
 	EvalCaseParallelism               int                              // EvalCaseParallelism controls concurrent eval case processing.
 	EvalCaseParallelInferenceEnabled  bool                             // EvalCaseParallelInferenceEnabled toggles parallel inference across eval cases.
 	EvalCaseParallelEvaluationEnabled bool                             // EvalCaseParallelEvaluationEnabled toggles parallel evaluation across eval cases.
@@ -42,6 +50,7 @@ func NewOptions(opt ...Option) *Options {
 		EvalSetManager:    evalsetinmemory.New(),
 		EvalResultManager: evalresultinmemory.New(),
 		Registry:          registry.New(),
+		MetricRegistry:    metricregistry.New(),
 		SessionIDSupplier: func(ctx context.Context) string {
 			return uuid.New().String()
 		},
@@ -79,6 +88,13 @@ func WithRegistry(r registry.Registry) Option {
 	}
 }
 
+// WithMetricRegistry sets the metric runtime registry.
+func WithMetricRegistry(r metricregistry.Registry) Option {
+	return func(o *Options) {
+		o.MetricRegistry = r
+	}
+}
+
 // WithSessionIDSupplier sets the function used to generate session IDs.
 // UUID generator is used by default.
 func WithSessionIDSupplier(s func(ctx context.Context) string) Option {
@@ -87,10 +103,31 @@ func WithSessionIDSupplier(s func(ctx context.Context) string) Option {
 	}
 }
 
+// WithExpectedRunner sets the runner used to generate dynamic expected outputs.
+func WithExpectedRunner(r runner.Runner) Option {
+	return func(o *Options) {
+		o.ExpectedRunner = r
+	}
+}
+
+// WithUserSimulator sets the simulator used for conversation scenarios.
+func WithUserSimulator(sim usersimulation.Simulator) Option {
+	return func(o *Options) {
+		o.UserSimulator = sim
+	}
+}
+
 // WithCallbacks sets the evaluation lifecycle callbacks.
 func WithCallbacks(c *Callbacks) Option {
 	return func(o *Options) {
 		o.Callbacks = c
+	}
+}
+
+// WithRunOptions appends agent.RunOption values that will be applied to every runner.Run call during inference.
+func WithRunOptions(opt ...agent.RunOption) Option {
+	return func(o *Options) {
+		o.RunOptions = append(o.RunOptions, opt...)
 	}
 }
 

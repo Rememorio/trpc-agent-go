@@ -11,6 +11,7 @@
 package mem0
 
 import (
+	"maps"
 	"net/http"
 	"time"
 
@@ -38,8 +39,8 @@ type serviceOpts struct {
 	client  *http.Client
 
 	toolCreators      map[string]memory.ToolCreator
-	enabledTools      map[string]bool
-	userExplicitlySet map[string]bool
+	enabledTools      map[string]struct{}
+	userExplicitlySet map[string]struct{}
 
 	extractor extractor.MemoryExtractor
 	// useExtractorForAutoMemory controls whether mem0 auto memory uses the framework
@@ -56,19 +57,9 @@ type serviceOpts struct {
 
 func (o serviceOpts) clone() serviceOpts {
 	opts := o
-	if o.toolCreators != nil {
-		opts.toolCreators = make(map[string]memory.ToolCreator, len(o.toolCreators))
-		for name, c := range o.toolCreators {
-			opts.toolCreators[name] = c
-		}
-	}
-	if o.enabledTools != nil {
-		opts.enabledTools = make(map[string]bool, len(o.enabledTools))
-		for name, enabled := range o.enabledTools {
-			opts.enabledTools[name] = enabled
-		}
-	}
-	opts.userExplicitlySet = make(map[string]bool)
+	opts.toolCreators = maps.Clone(o.toolCreators)
+	opts.enabledTools = maps.Clone(o.enabledTools)
+	opts.userExplicitlySet = make(map[string]struct{})
 	return opts
 }
 
@@ -163,9 +154,13 @@ func WithCustomTool(toolName string, creator memory.ToolCreator) ServiceOpt {
 		}
 		opts.toolCreators[toolName] = creator
 		if opts.enabledTools == nil {
-			opts.enabledTools = make(map[string]bool)
+			opts.enabledTools = make(map[string]struct{})
 		}
-		opts.enabledTools[toolName] = true
+		if opts.userExplicitlySet == nil {
+			opts.userExplicitlySet = make(map[string]struct{})
+		}
+		opts.enabledTools[toolName] = struct{}{}
+		opts.userExplicitlySet[toolName] = struct{}{}
 	}
 }
 
@@ -175,13 +170,17 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 			return
 		}
 		if opts.enabledTools == nil {
-			opts.enabledTools = make(map[string]bool)
+			opts.enabledTools = make(map[string]struct{})
 		}
-		opts.enabledTools[toolName] = enabled
+		if enabled {
+			opts.enabledTools[toolName] = struct{}{}
+		} else {
+			delete(opts.enabledTools, toolName)
+		}
 		if opts.userExplicitlySet == nil {
-			opts.userExplicitlySet = make(map[string]bool)
+			opts.userExplicitlySet = make(map[string]struct{})
 		}
-		opts.userExplicitlySet[toolName] = true
+		opts.userExplicitlySet[toolName] = struct{}{}
 	}
 }
 

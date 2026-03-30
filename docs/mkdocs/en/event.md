@@ -38,6 +38,9 @@ type Event struct {
     // Branch is a branch identifier for multi-Agent collaboration.
     Branch string `json:"branch,omitempty"`
 
+    // Tag uses tags to annotate events with business-specific labels.
+    Tag string `json:"tag,omitempty"`
+
     // RequiresCompletion indicates whether this event requires a completion signal.
     RequiresCompletion bool `json:"requiresCompletion,omitempty"`
 
@@ -54,6 +57,9 @@ type Event struct {
 
     // Actions carry flow-level hints (e.g., skip post-tool summarization).
     Actions *EventActions `json:"actions,omitempty"`
+
+    // FilterKey is an identifier for hierarchical event filtering.
+    FilterKey string `json:"filterKey,omitempty"`
 }
 
 // EventActions provides optional behavior hints attached to the event.
@@ -63,6 +69,31 @@ type EventActions struct {
     SkipSummarization bool `json:"skipSummarization,omitempty"`
 }
 ```
+
+`SkipSummarization` is a flow-control hint. It does not mean the current
+`tool.response` is a final assistant response. If you need the true terminal
+event for the run, continue consuming until `runner.completion`.
+
+#### FilterKey (hierarchical scope key)
+
+`FilterKey` is an optional string field on each event. Think of it as a
+path-like label, mainly used for:
+
+- Filtering which historical events are visible to the model when building the
+  next prompt (`WithMessageBranchFilterMode`).
+- Generating / retrieving per-scope session summaries (`WithSummaryFilterKey`).
+
+Keys are hierarchical paths separated by `/`, for example:
+
+- `my-app/user-messages`
+- `my-app/auth/role_admin`
+
+In `prefix` mode, matching is **hierarchical**: two keys match if one is an
+ancestor of the other (for example, `my-app` matches `my-app/auth/...`).
+
+For strict isolation (do not inherit ancestors), use `BranchFilterModeSubtree`.
+For a beginner-friendly explanation, see Session docs:
+`FilterKey, EventFilterKey, and BranchFilterMode`.
 
 `model.Response` is the basic response structure of Event, carrying LLM responses, tool calls, and error information, defined as follows:
 
@@ -254,6 +285,24 @@ if e.IsRunnerCompletion() {
     // Safe point to stop reading the channel
 }
 ```
+
+Do not confuse `event.IsFinalResponse()` with
+`event.IsRunnerCompletion()`:
+
+- `event.IsFinalResponse()` reuses the embedded `Response` semantics. It only
+  says the current response payload has finished: it is not partial, not a
+  tool-call response, and `Response.Done == true`. This can be an assistant
+  message, a `tool.response`, or a terminal error response.
+- `event.IsRunnerCompletion()` asks whether Runner has emitted the terminal
+  `runner.completion` event. Only this signal means the entire `Runner.Run`
+  has finished and no more runtime events should be expected.
+
+Rule of thumb:
+
+- Use `IsFinalResponse()` when you only care whether the current payload is
+  complete.
+- Use `IsRunnerCompletion()` when deciding to stop consuming the event stream,
+  read final state, or treat the whole run as finished.
 
 ### Event Creation
 
@@ -487,8 +536,8 @@ func (c *multiTurnChat) processResponse(eventChan <-chan *event.Event) error {
         if err := c.handleEvent(event, &toolCallsDetected, &assistantStarted, &fullContent); err != nil {
             return err
         }
-        // Check if it's the final event.
-        if event.IsFinalResponse() {
+        // Check if the run-completion event has arrived.
+        if event.IsRunnerCompletion() {
             fmt.Printf("\n")
             break
         }

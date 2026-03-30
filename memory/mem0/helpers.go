@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
+	imemory "trpc.group/trpc-go/trpc-agent-go/memory/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
@@ -121,7 +122,14 @@ func toEntry(appName, userID string, rec *memoryRecord) *memory.Entry {
 		Memory:      rec.Memory,
 		Topics:      readTopicsFromMetadata(rec.Metadata),
 		LastUpdated: &updatedAt,
+		Kind:        readKindFromMetadata(rec.Metadata),
+		EventTime:   readEventTimeFromMetadata(rec.Metadata),
+		Participants: readParticipantsFromMetadata(
+			rec.Metadata,
+		),
+		Location: readLocationFromMetadata(rec.Metadata),
 	}
+	imemory.NormalizeMemory(mem)
 
 	return &memory.Entry{
 		ID:        rec.ID,
@@ -165,6 +173,95 @@ func readTopicsFromMetadata(meta map[string]any) []string {
 	}
 
 	return nil
+}
+
+func readKindFromMetadata(meta map[string]any) memory.Kind {
+	if meta == nil {
+		return ""
+	}
+	raw, ok := meta[metadataKeyTRPCKind]
+	if !ok {
+		return ""
+	}
+	kind, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	kind = strings.TrimSpace(kind)
+	return memory.Kind(kind)
+}
+
+func readEventTimeFromMetadata(meta map[string]any) *time.Time {
+	if meta == nil {
+		return nil
+	}
+	raw, ok := meta[metadataKeyTRPCEventTime]
+	if !ok {
+		return nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return nil
+	}
+	eventTime, ok := parseMem0Time(value)
+	if !ok {
+		return nil
+	}
+	return &eventTime
+}
+
+func readParticipantsFromMetadata(meta map[string]any) []string {
+	if meta == nil {
+		return nil
+	}
+	raw, ok := meta[metadataKeyTRPCParticipants]
+	if !ok || raw == nil {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if ok {
+		out := make([]string, 0, len(arr))
+		for _, v := range arr {
+			s, ok := v.(string)
+			if !ok || strings.TrimSpace(s) == "" {
+				continue
+			}
+			out = append(out, strings.TrimSpace(s))
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	if arr, ok := raw.([]string); ok {
+		out := make([]string, 0, len(arr))
+		for _, s := range arr {
+			if strings.TrimSpace(s) == "" {
+				continue
+			}
+			out = append(out, strings.TrimSpace(s))
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
+func readLocationFromMetadata(meta map[string]any) string {
+	if meta == nil {
+		return ""
+	}
+	raw, ok := meta[metadataKeyTRPCLocation]
+	if !ok {
+		return ""
+	}
+	location, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(location)
 }
 
 func messageText(msg model.Message) string {
