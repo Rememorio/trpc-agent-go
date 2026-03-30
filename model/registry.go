@@ -10,6 +10,8 @@
 package model
 
 import (
+	"strings"
+
 	imodel "trpc.group/trpc-go/trpc-agent-go/model/internal/model"
 )
 
@@ -18,7 +20,7 @@ import (
 func RegisterModelContextWindow(modelName string, contextWindowSize int) {
 	imodel.ModelMutex.Lock()
 	defer imodel.ModelMutex.Unlock()
-	imodel.ModelContextWindows[modelName] = contextWindowSize
+	imodel.ModelContextWindows[strings.ToLower(modelName)] = contextWindowSize
 }
 
 // RegisterModelContextWindows registers multiple models' context window sizes in batch.
@@ -27,7 +29,7 @@ func RegisterModelContextWindows(models map[string]int) {
 	imodel.ModelMutex.Lock()
 	defer imodel.ModelMutex.Unlock()
 	for modelName, contextWindowSize := range models {
-		imodel.ModelContextWindows[modelName] = contextWindowSize
+		imodel.ModelContextWindows[strings.ToLower(modelName)] = contextWindowSize
 	}
 }
 

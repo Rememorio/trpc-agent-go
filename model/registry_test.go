@@ -111,6 +111,41 @@ func TestLookupModelContextWindow(t *testing.T) {
 	assert.Equal(t, 54321, window)
 }
 
+func TestLookupModelContextWindowMatchesMixedCaseRegistration(
+	t *testing.T,
+) {
+	const registeredModelName = "Mixed-Case-Model"
+
+	RegisterModelContextWindow(registeredModelName, 54321)
+
+	window, ok := LookupModelContextWindow(
+		"mixed-case-model",
+	)
+	assert.True(t, ok)
+	assert.Equal(t, 54321, window)
+}
+
+func TestRegisterModelContextWindowsNormalizesMixedCaseKeys(
+	t *testing.T,
+) {
+	RegisterModelContextWindows(map[string]int{
+		"Mixed-Case-Model-1": 11111,
+		"Mixed-Case-Model-2": 22222,
+	})
+
+	window, ok := LookupModelContextWindow(
+		"mixed-case-model-1",
+	)
+	assert.True(t, ok)
+	assert.Equal(t, 11111, window)
+
+	window, ok = LookupModelContextWindow(
+		"mixed-case-model-2",
+	)
+	assert.True(t, ok)
+	assert.Equal(t, 22222, window)
+}
+
 func TestLookupModelContextWindowUnknown(t *testing.T) {
 	window, ok := LookupModelContextWindow("unknown-model-for-lookup")
 	assert.False(t, ok)

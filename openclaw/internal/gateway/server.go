@@ -687,7 +687,7 @@ func (a *replyAccumulator) captureUsage(rsp *model.Response) {
 }
 
 func usageFromModelUsage(usage *model.Usage) *gwproto.Usage {
-	if usage == nil {
+	if !modelUsageHasKnownTokenCounts(usage) {
 		return nil
 	}
 	return &gwproto.Usage{
@@ -695,6 +695,15 @@ func usageFromModelUsage(usage *model.Usage) *gwproto.Usage {
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,
 	}
+}
+
+func modelUsageHasKnownTokenCounts(usage *model.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	return usage.PromptTokens != 0 ||
+		usage.CompletionTokens != 0 ||
+		usage.TotalTokens != 0
 }
 
 func cloneGatewayUsage(usage *gwproto.Usage) *gwproto.Usage {

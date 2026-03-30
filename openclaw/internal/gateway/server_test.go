@@ -2764,6 +2764,26 @@ func TestReplyAccumulator_CapturesUsage(t *testing.T) {
 	require.Equal(t, 12345, acc.Usage.TotalTokens)
 }
 
+func TestReplyAccumulator_IgnoresUsageWithoutTokenCounts(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	acc := newReplyAccumulator()
+	acc.Consume(&event.Event{
+		Response: &model.Response{
+			Object: model.ObjectTypeChatCompletion,
+			Choices: []model.Choice{
+				{Message: model.NewAssistantMessage("final")},
+			},
+			Usage: &model.Usage{},
+		},
+		RequestID: "req-1",
+	})
+
+	require.Nil(t, acc.Usage)
+}
+
 func TestServer_StreamMessage_Success(t *testing.T) {
 	t.Parallel()
 
