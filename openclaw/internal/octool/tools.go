@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	imemory "trpc.group/trpc-go/trpc-agent-go/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
@@ -192,6 +193,8 @@ func execToolDescription(hasMemoryFile bool) string {
 	parts := []string{
 		"Execute a host shell command. Use this for general local shell work.",
 		"Interactive commands can continue with write_stdin.",
+		"Credential exfiltration and direct reads or writes of shell and " +
+			"credential files may be blocked by policy.",
 		"When a chat upload is available, OPENCLAW_LAST_UPLOAD_PATH, " +
 			"OPENCLAW_LAST_UPLOAD_HOST_REF, OPENCLAW_LAST_UPLOAD_NAME, " +
 			"OPENCLAW_LAST_UPLOAD_MIME, kind-specific " +
@@ -729,9 +732,11 @@ func memoryFileEnvFromContext(
 		return nil
 	}
 
-	appName := strings.TrimSpace(inv.Session.AppName)
-	userID := strings.TrimSpace(inv.Session.UserID)
-	if appName == "" || userID == "" {
+	appName, userID, ok := imemory.ResolveUserKey(
+		inv.Session,
+		inv.RunOptions.RuntimeState,
+	)
+	if !ok {
 		return nil
 	}
 
