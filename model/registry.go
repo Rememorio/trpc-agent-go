@@ -30,3 +30,9 @@ func RegisterModelContextWindows(models map[string]int) {
 		imodel.ModelContextWindows[modelName] = contextWindowSize
 	}
 }
+
+// LookupModelContextWindow returns a known context window size for the
+// given model name. It returns ok=false when the model is unknown.
+func LookupModelContextWindow(modelName string) (int, bool) {
+	return imodel.LookupContextWindow(modelName)
+}

@@ -100,3 +100,19 @@ func TestConcurrentRegistryAccess(t *testing.T) {
 	// Restore original GPT-4 size
 	RegisterModelContextWindow("gpt-4", originalGPT4)
 }
+
+func TestLookupModelContextWindow(t *testing.T) {
+	const modelName = "lookup-test-model"
+
+	RegisterModelContextWindow(modelName, 54321)
+
+	window, ok := LookupModelContextWindow(modelName)
+	assert.True(t, ok)
+	assert.Equal(t, 54321, window)
+}
+
+func TestLookupModelContextWindowUnknown(t *testing.T) {
+	window, ok := LookupModelContextWindow("unknown-model-for-lookup")
+	assert.False(t, ok)
+	assert.Zero(t, window)
+}
