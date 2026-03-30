@@ -58,7 +58,17 @@ func TestHelpers_ToEntry_Validation(t *testing.T) {
 	assert.Nil(t, toEntry(testAppID, testUserID, &memoryRecord{}))
 	assert.Nil(t, toEntry(testAppID, testUserID, &memoryRecord{ID: "id"}))
 
-	rec := &memoryRecord{ID: "id", Memory: "mem", Metadata: map[string]any{}}
+	eventTime := "2025-01-02T03:04:05Z"
+	rec := &memoryRecord{
+		ID:     "id",
+		Memory: "mem",
+		Metadata: map[string]any{
+			metadataKeyTRPCKind:         string(memory.KindEpisode),
+			metadataKeyTRPCEventTime:    eventTime,
+			metadataKeyTRPCParticipants: []any{"alice", "bob"},
+			metadataKeyTRPCLocation:     "office",
+		},
+	}
 	entry := toEntry(testAppID, testUserID, rec)
 	require.NotNil(t, entry)
 	assert.Equal(t, "id", entry.ID)
@@ -66,6 +76,11 @@ func TestHelpers_ToEntry_Validation(t *testing.T) {
 	assert.Equal(t, testUserID, entry.UserID)
 	assert.Equal(t, "mem", entry.Memory.Memory)
 	assert.IsType(t, &time.Time{}, entry.Memory.LastUpdated)
+	assert.Equal(t, memory.KindEpisode, entry.Memory.Kind)
+	require.NotNil(t, entry.Memory.EventTime)
+	assert.Equal(t, eventTime, entry.Memory.EventTime.UTC().Format(time.RFC3339))
+	assert.Equal(t, []string{"alice", "bob"}, entry.Memory.Participants)
+	assert.Equal(t, "office", entry.Memory.Location)
 }
 
 func TestHelpers_MetadataQueryKey(t *testing.T) {

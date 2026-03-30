@@ -65,6 +65,82 @@ func TestService_NewService_ModeSelection(t *testing.T) {
 		tools := svc.Tools()
 		require.GreaterOrEqual(t, len(tools), 4)
 	})
+
+	t.Run("auto mode honors exposed tools", func(t *testing.T) {
+		svc := newTestService(t, srv.URL,
+			WithExtractor(&stubExtractor{}),
+			WithAutoMemoryExposedTools(memory.AddToolName),
+			WithToolEnabled(memory.LoadToolName, true),
+		)
+
+		seen := map[string]bool{}
+		for _, tool := range svc.Tools() {
+			seen[tool.Declaration().Name] = true
+		}
+		assert.True(t, seen[memory.SearchToolName])
+		assert.True(t, seen[memory.LoadToolName])
+		assert.True(t, seen[memory.AddToolName])
+		assert.False(t, seen[memory.UpdateToolName])
+	})
+}
+
+func TestService_SearchMemories_EmptyQueryReturnsNoResults(t *testing.T) {
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("unexpected remote search call for empty query")
+	})
+
+	svc := newTestService(t, srv.URL)
+	results, err := svc.SearchMemories(
+		context.Background(),
+		memory.UserKey{AppName: testAppID, UserID: testUserID},
+		"   ",
+	)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestService_SearchMemories_HybridSearch(t *testing.T) {
+	userKey := memory.UserKey{AppName: testAppID, UserID: testUserID}
+	var searchCalls int
+
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodPost && r.URL.Path == pathV2Search:
+			searchCalls++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"memories":[]}`))
+			return
+		case r.Method == httpMethodGet && r.URL.Path == pathV1Memories:
+			switch r.URL.Query().Get(queryKeyPage) {
+			case "1":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[{"id":"local","memory":"Alice likes PostgreSQL","metadata":{},"created_at":"2025-01-02T03:04:05Z","updated_at":"2025-01-02T03:04:06Z"}]`))
+				return
+			case "2":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	svc := newTestService(t, srv.URL)
+	results, err := svc.SearchMemories(
+		context.Background(),
+		userKey,
+		"PostgreSQL",
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:        "PostgreSQL",
+			HybridSearch: true,
+			MaxResults:   5,
+		}),
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "local", results[0].ID)
+	assert.Equal(t, "Alice likes PostgreSQL", results[0].Memory.Memory)
+	assert.Equal(t, 1, searchCalls)
 }
 
 func TestService_AddMemory_Create(t *testing.T) {

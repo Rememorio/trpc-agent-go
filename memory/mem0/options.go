@@ -40,6 +40,8 @@ type serviceOpts struct {
 
 	toolCreators      map[string]memory.ToolCreator
 	enabledTools      map[string]struct{}
+	toolExposed       map[string]struct{}
+	toolHidden        map[string]struct{}
 	userExplicitlySet map[string]struct{}
 
 	extractor extractor.MemoryExtractor
@@ -59,6 +61,8 @@ func (o serviceOpts) clone() serviceOpts {
 	opts := o
 	opts.toolCreators = maps.Clone(o.toolCreators)
 	opts.enabledTools = maps.Clone(o.enabledTools)
+	opts.toolExposed = maps.Clone(o.toolExposed)
+	opts.toolHidden = maps.Clone(o.toolHidden)
 	opts.userExplicitlySet = make(map[string]struct{})
 	return opts
 }
@@ -181,6 +185,39 @@ func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 			opts.userExplicitlySet = make(map[string]struct{})
 		}
 		opts.userExplicitlySet[toolName] = struct{}{}
+	}
+}
+
+// WithAutoMemoryExposedTools exposes enabled tools via Tools() in auto memory
+// mode so the agent can call them directly. Invalid tool names are ignored.
+func WithAutoMemoryExposedTools(toolNames ...string) ServiceOpt {
+	return func(opts *serviceOpts) {
+		for _, toolName := range toolNames {
+			WithToolExposed(toolName, true)(opts)
+		}
+	}
+}
+
+// WithToolExposed controls whether an enabled memory tool is exposed via
+// Tools(). Use WithAutoMemoryExposedTools for the common auto memory case.
+func WithToolExposed(toolName string, exposed bool) ServiceOpt {
+	return func(opts *serviceOpts) {
+		if !imemory.IsValidToolName(toolName) {
+			return
+		}
+		if exposed {
+			if opts.toolExposed == nil {
+				opts.toolExposed = make(map[string]struct{})
+			}
+			opts.toolExposed[toolName] = struct{}{}
+			delete(opts.toolHidden, toolName)
+			return
+		}
+		if opts.toolHidden == nil {
+			opts.toolHidden = make(map[string]struct{})
+		}
+		opts.toolHidden[toolName] = struct{}{}
+		delete(opts.toolExposed, toolName)
 	}
 }
 

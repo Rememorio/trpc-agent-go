@@ -119,6 +119,16 @@ func TestOptions_All(t *testing.T) {
 	_, ok = opts.userExplicitlySet[memory.LoadToolName]
 	assert.True(t, ok)
 
+	WithAutoMemoryExposedTools("bad", memory.AddToolName)(&opts)
+	_, ok = opts.toolExposed[memory.AddToolName]
+	assert.True(t, ok)
+
+	WithToolExposed(memory.LoadToolName, false)(&opts)
+	_, ok = opts.toolHidden[memory.LoadToolName]
+	assert.True(t, ok)
+	_, ok = opts.toolExposed[memory.LoadToolName]
+	assert.False(t, ok)
+
 	WithUseExtractorForAutoMemory(false)(&opts)
 	assert.False(t, opts.useExtractorForAutoMemory)
 
@@ -211,6 +221,10 @@ func TestService_UpdateMemory_AndGetMemoryError(t *testing.T) {
 
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == httpMethodGet && r.URL.Path == pathV1Memories:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+			return
 		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{\"id\":\"m\",\"memory\":\"x\",\"metadata\":{\"old\":\"1\"}}"))
@@ -230,6 +244,88 @@ func TestService_UpdateMemory_AndGetMemoryError(t *testing.T) {
 
 	_, err = svc.getMemory(context.Background(), " ")
 	require.Error(t, err)
+}
+
+func TestService_UpdateMemory_RefreshesTRPCIDMetadata(t *testing.T) {
+	const existingID = "remote-1"
+	key := memory.Key{AppName: testAppID, UserID: testUserID, MemoryID: existingID}
+	eventTime := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	updatedMem := &memory.Memory{
+		Memory: "new memory",
+		Topics: []string{"updated"},
+	}
+	imemory.ApplyMetadata(updatedMem, &memory.Metadata{
+		Kind:         memory.KindEpisode,
+		EventTime:    &eventTime,
+		Participants: []string{"alice", "bob"},
+		Location:     "office",
+	})
+	newTRPCID := imemory.GenerateMemoryID(updatedMem, testAppID, testUserID)
+
+	var putReq updateMemoryRequest
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"remote-1","memory":"old memory","metadata":{"trpc_memory_id":"old-id"},"created_at":"2025-01-02T03:04:05Z","updated_at":"2025-01-02T03:04:06Z"}`))
+			return
+		case r.Method == httpMethodGet && r.URL.Path == pathV1Memories:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		case r.Method == httpMethodPut && r.URL.Path == buildMemoryPath(existingID):
+			body, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(body, &putReq))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	svc := newTestService(t, srv.URL)
+	updateResult := &memory.UpdateResult{}
+	err := svc.UpdateMemory(
+		context.Background(),
+		key,
+		"new memory",
+		[]string{"updated"},
+		memory.WithUpdateMetadata(&memory.Metadata{
+			Kind:         memory.KindEpisode,
+			EventTime:    &eventTime,
+			Participants: []string{"alice", "bob"},
+			Location:     "office",
+		}),
+		memory.WithUpdateResult(updateResult),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, existingID, updateResult.MemoryID)
+	assert.Equal(t, newTRPCID, putReq.Metadata[metadataKeyTRPCMemoryID])
+	assert.Equal(t, string(memory.KindEpisode), putReq.Metadata[metadataKeyTRPCKind])
+	assert.Equal(t, "office", putReq.Metadata[metadataKeyTRPCLocation])
+}
+
+func TestService_UpdateMemory_NotFoundWrapped(t *testing.T) {
+	const missingID = "missing"
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(missingID) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	svc := newTestService(t, srv.URL)
+	err := svc.UpdateMemory(context.Background(), memory.Key{
+		AppName:  testAppID,
+		UserID:   testUserID,
+		MemoryID: missingID,
+	}, "new", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "memory with id missing not found")
 }
 
 func TestService_EnqueueAutoMemoryJob_AutoWorkerNilSession(t *testing.T) {

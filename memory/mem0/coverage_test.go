@@ -618,7 +618,7 @@ func TestService_SearchMemories_ValidationErrors(t *testing.T) {
 
 	_, err = svc.SearchMemories(context.Background(),
 		memory.UserKey{AppName: testAppID, UserID: testUserID}, "  ")
-	require.ErrorIs(t, err, errEmptyQuery)
+	require.NoError(t, err)
 }
 
 func TestService_SearchMemories_FetchError(t *testing.T) {

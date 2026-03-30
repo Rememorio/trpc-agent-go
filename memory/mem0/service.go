@@ -13,6 +13,8 @@ package mem0
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -35,11 +37,11 @@ const (
 
 	defaultListPageSize = 100
 	defaultSearchTopK   = 20
+	defaultRRFK         = imemory.DefaultHybridRRFK
 )
 
 var (
 	errEmptyMemory = errors.New("mem0: memory is empty")
-	errEmptyQuery  = errors.New("mem0: query is empty")
 )
 
 var _ memory.Service = (*Service)(nil)
@@ -100,8 +102,8 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		extForTools,
 		opts.toolCreators,
 		opts.enabledTools,
-		nil,
-		nil,
+		opts.toolExposed,
+		opts.toolHidden,
 		svc.cachedTools,
 	)
 
@@ -229,14 +231,31 @@ func (s *Service) UpdateMemory(
 	}
 
 	imemory.ApplyMetadataPatch(updated, memory.ResolveUpdateOptions(opts))
+	trpcID := imemory.GenerateMemoryID(
+		updated,
+		memoryKey.AppName,
+		memoryKey.UserID,
+	)
 	meta := s.baseMetadata(memoryKey.AppName, updated)
+	meta[metadataKeyTRPCMemoryID] = trpcID
 	meta = mergeMetadata(current.Metadata, meta)
+
+	existingID, err := s.findMemoryIDByTRPCID(ctx, memory.UserKey{
+		AppName: memoryKey.AppName,
+		UserID:  memoryKey.UserID,
+	}, trpcID)
+	if err != nil {
+		return err
+	}
+	if existingID != "" && existingID != memoryKey.MemoryID {
+		return fmt.Errorf("memory with id %s already exists", trpcID)
+	}
 
 	path := buildMemoryPath(memoryKey.MemoryID)
 	body := updateMemoryRequest{Text: memoryText, Metadata: meta}
 	var out any
 	if err := s.c.doJSON(ctx, httpMethodPut, path, nil, body, &out); err != nil {
-		return err
+		return wrapMemoryNotFoundError(memoryKey.MemoryID, err)
 	}
 	if result := memory.ResolveUpdateResult(opts); result != nil {
 		result.MemoryID = memoryKey.MemoryID
@@ -251,7 +270,10 @@ func (s *Service) DeleteMemory(ctx context.Context, memoryKey memory.Key) error 
 	}
 	path := buildMemoryPath(memoryKey.MemoryID)
 	var out any
-	return s.c.doJSON(ctx, httpMethodDelete, path, nil, nil, &out)
+	return wrapMemoryNotFoundError(
+		memoryKey.MemoryID,
+		s.c.doJSON(ctx, httpMethodDelete, path, nil, nil, &out),
+	)
 }
 
 // ClearMemories clears all memories for a user.
@@ -338,10 +360,101 @@ func (s *Service) SearchMemories(
 		return nil, err
 	}
 	searchOpts := memory.ResolveSearchOptions(query, opts)
-	if strings.TrimSpace(searchOpts.Query) == "" {
-		return nil, errEmptyQuery
+	searchOpts.Query = strings.TrimSpace(searchOpts.Query)
+	if searchOpts.Query == "" {
+		return []*memory.Entry{}, nil
 	}
 
+	maxResults := defaultSearchTopK
+	if searchOpts.MaxResults > 0 {
+		maxResults = searchOpts.MaxResults
+	}
+
+	results, err := s.executeSemanticSearch(ctx, userKey, searchOpts, maxResults)
+	if err != nil {
+		return nil, err
+	}
+
+	if searchOpts.Kind != "" && searchOpts.KindFallback &&
+		len(results) < imemory.MinKindFallbackResults {
+		fallbackOpts := searchOpts
+		fallbackOpts.Kind = ""
+		fallbackOpts.KindFallback = false
+		fallbackResults, fallbackErr := s.executeSemanticSearch(
+			ctx,
+			userKey,
+			fallbackOpts,
+			maxResults,
+		)
+		if fallbackErr == nil && len(fallbackResults) > 0 {
+			results = imemory.MergeSearchResults(
+				results,
+				fallbackResults,
+				searchOpts.Kind,
+				maxResults,
+			)
+		}
+	}
+
+	if searchOpts.HybridSearch {
+		keywordResults, kwErr := s.executeKeywordSearch(
+			ctx,
+			userKey,
+			searchOpts,
+			maxResults,
+		)
+		if kwErr == nil && len(keywordResults) > 0 {
+			rrfK := searchOpts.HybridRRFK
+			if rrfK <= 0 {
+				rrfK = defaultRRFK
+			}
+			results = imemory.MergeHybridResults(
+				results,
+				keywordResults,
+				rrfK,
+				maxResults,
+			)
+		}
+	}
+
+	if searchOpts.SimilarityThreshold > 0 && !searchOpts.HybridSearch {
+		filtered := results[:0]
+		for _, result := range results {
+			if result.Score >= searchOpts.SimilarityThreshold {
+				filtered = append(filtered, result)
+			}
+		}
+		results = filtered
+	}
+
+	if len(results) > 1 {
+		if searchOpts.Kind != "" && searchOpts.KindFallback {
+			imemory.SortSearchResultsWithKindPriority(
+				results,
+				searchOpts.Kind,
+				searchOpts.OrderByEventTime,
+			)
+		} else {
+			imemory.SortSearchResults(results, searchOpts.OrderByEventTime)
+		}
+	}
+
+	if searchOpts.Deduplicate && len(results) > 1 {
+		results = imemory.DeduplicateResults(results)
+	}
+	if maxResults > 0 && len(results) > maxResults {
+		results = results[:maxResults]
+	}
+
+	return results, nil
+}
+
+func (s *Service) executeSemanticSearch(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+) ([]*memory.Entry, error) {
 	filters := map[string]any{
 		"AND": []any{
 			map[string]any{queryKeyUserID: userKey.UserID},
@@ -350,14 +463,10 @@ func (s *Service) SearchMemories(
 	}
 	addOrgProjectFilter(filters, s.opts)
 
-	topK := defaultSearchTopK
-	if searchOpts.MaxResults > 0 {
-		topK = searchOpts.MaxResults
-	}
 	req := searchV2Request{
-		Query:   searchOpts.Query,
+		Query:   opts.Query,
 		Filters: filters,
-		TopK:    topK,
+		TopK:    searchCandidateLimit(opts, maxResults),
 	}
 
 	var resp searchV2Response
@@ -367,8 +476,14 @@ func (s *Service) SearchMemories(
 
 	entries := make([]*memory.Entry, 0, len(resp.Memories))
 	for _, m := range resp.Memories {
-		rec := memoryRecord{ID: m.ID, Memory: m.Memory, Metadata: m.Metadata, UserID: m.UserID, AppID: m.AppID,
-			CreatedAt: m.CreatedAt}
+		rec := memoryRecord{
+			ID:        m.ID,
+			Memory:    m.Memory,
+			Metadata:  m.Metadata,
+			UserID:    m.UserID,
+			AppID:     m.AppID,
+			CreatedAt: m.CreatedAt,
+		}
 		if m.UpdatedAt != nil {
 			rec.UpdatedAt = *m.UpdatedAt
 		}
@@ -377,9 +492,33 @@ func (s *Service) SearchMemories(
 			continue
 		}
 		entry.Score = m.Score
+		if !matchesSemanticFilters(entry, opts) {
+			continue
+		}
 		entries = append(entries, entry)
 	}
-	return applySearchOptions(entries, searchOpts), nil
+	return entries, nil
+}
+
+func (s *Service) executeKeywordSearch(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+) ([]*memory.Entry, error) {
+	entries, err := s.ReadMemories(ctx, userKey, 0)
+	if err != nil {
+		return []*memory.Entry{}, nil
+	}
+
+	keywordOpts := opts
+	keywordOpts.KindFallback = false
+	keywordOpts.Deduplicate = false
+	keywordOpts.HybridSearch = false
+	keywordOpts.HybridRRFK = 0
+	keywordOpts.SimilarityThreshold = 0
+
+	return imemory.SearchEntries(entries, keywordOpts, 0, maxResults), nil
 }
 
 func (s *Service) baseMetadata(appName string, memObj *memory.Memory) map[string]any {
@@ -423,7 +562,10 @@ func (s *Service) updateMemoryWithMergedMetadata(
 
 	body := updateMemoryRequest{Text: memoryText, Metadata: metadata}
 	var out any
-	return s.c.doJSON(ctx, httpMethodPut, path, nil, body, &out)
+	return wrapMemoryNotFoundError(
+		memoryKey.MemoryID,
+		s.c.doJSON(ctx, httpMethodPut, path, nil, body, &out),
+	)
 }
 
 func (s *Service) findMemoryIDByTRPCID(
@@ -457,7 +599,7 @@ func (s *Service) getMemory(ctx context.Context, memoryID string) (*memoryRecord
 
 	var out memoryRecord
 	if err := s.c.doJSON(ctx, httpMethodGet, path, nil, nil, &out); err != nil {
-		return nil, err
+		return nil, wrapMemoryNotFoundError(memoryID, err)
 	}
 	return &out, nil
 }
@@ -500,58 +642,51 @@ func applyIngestModeDefaults(
 	}
 }
 
-func applySearchOptions(
-	entries []*memory.Entry,
+func matchesSemanticFilters(
+	entry *memory.Entry,
 	opts memory.SearchOptions,
-) []*memory.Entry {
-	results := filterSearchResults(entries, opts)
-	if opts.Kind != "" && opts.KindFallback &&
-		len(results) < imemory.MinKindFallbackResults {
-		fallbackOpts := opts
-		fallbackOpts.Kind = ""
-		fallbackOpts.KindFallback = false
-		fallback := filterSearchResults(entries, fallbackOpts)
-		results = imemory.MergeSearchResults(
-			results,
-			fallback,
-			opts.Kind,
-			opts.MaxResults,
-		)
+) bool {
+	if entry == nil || entry.Memory == nil {
+		return false
 	}
-	if opts.Deduplicate && len(results) > 1 {
-		results = imemory.DeduplicateResults(results)
+	if opts.Kind != "" && imemory.EffectiveKind(entry.Memory) != opts.Kind {
+		return false
 	}
-	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
-		results = results[:opts.MaxResults]
+	if opts.TimeAfter != nil && entry.Memory.EventTime != nil &&
+		entry.Memory.EventTime.Before(*opts.TimeAfter) {
+		return false
 	}
-	return results
+	if opts.TimeBefore != nil && entry.Memory.EventTime != nil &&
+		entry.Memory.EventTime.After(*opts.TimeBefore) {
+		return false
+	}
+	return true
 }
 
-func filterSearchResults(
-	entries []*memory.Entry,
-	opts memory.SearchOptions,
-) []*memory.Entry {
-	filtered := make([]*memory.Entry, 0, len(entries))
-	for _, entry := range entries {
-		if entry == nil || entry.Memory == nil {
-			continue
-		}
-		if opts.SimilarityThreshold > 0 && entry.Score < opts.SimilarityThreshold {
-			continue
-		}
-		if opts.Kind != "" && imemory.EffectiveKind(entry.Memory) != opts.Kind {
-			continue
-		}
-		if opts.TimeAfter != nil && entry.Memory.EventTime != nil &&
-			entry.Memory.EventTime.Before(*opts.TimeAfter) {
-			continue
-		}
-		if opts.TimeBefore != nil && entry.Memory.EventTime != nil &&
-			entry.Memory.EventTime.After(*opts.TimeBefore) {
-			continue
-		}
-		filtered = append(filtered, entry)
+func searchCandidateLimit(opts memory.SearchOptions, maxResults int) int {
+	limit := defaultSearchTopK
+	if maxResults > limit {
+		limit = maxResults
 	}
-	imemory.SortSearchResults(filtered, opts.OrderByEventTime)
-	return filtered
+	if opts.Kind != "" || opts.TimeAfter != nil || opts.TimeBefore != nil ||
+		opts.Deduplicate || opts.HybridSearch {
+		if limit < defaultListPageSize {
+			limit = defaultListPageSize
+		}
+		if maxResults > 0 && limit < maxResults*3 {
+			limit = maxResults * 3
+		}
+	}
+	return limit
+}
+
+func wrapMemoryNotFoundError(memoryID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("memory with id %s not found", memoryID)
+	}
+	return err
 }
