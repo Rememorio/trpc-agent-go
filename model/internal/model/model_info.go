@@ -244,7 +244,7 @@ var ModelContextWindows = map[string]int{
 
 // ResolveContextWindow returns the context window size for a given model name.
 // - Exact match (case-insensitive) first
-// - Optional: longest prefix-based fallback (simple heuristic)
+// - Optional: longest prefix-based fallback at a model-ID boundary
 // - Fallback to defaultContextWindow
 func ResolveContextWindow(modelName string) int {
 	if modelName == "" {
@@ -262,7 +262,7 @@ func ResolveContextWindow(modelName string) int {
 	bestKeyLen := -1
 	bestWindow := 0
 	for k, w := range ModelContextWindows {
-		if strings.HasPrefix(key, k) && len(k) > bestKeyLen {
+		if isModelPrefixMatch(key, k) && len(k) > bestKeyLen {
 			bestKeyLen = len(k)
 			bestWindow = w
 		}
@@ -271,6 +271,23 @@ func ResolveContextWindow(modelName string) int {
 		return bestWindow
 	}
 	return defaultContextWindow
+}
+
+// isModelPrefixMatch reports whether prefix matches a full model name or is
+// followed by a separator used by common snapshot/provider suffixes.
+func isModelPrefixMatch(modelName, prefix string) bool {
+	if !strings.HasPrefix(modelName, prefix) {
+		return false
+	}
+	if len(modelName) == len(prefix) {
+		return true
+	}
+	switch modelName[len(prefix)] {
+	case '-', '@', ':':
+		return true
+	default:
+		return false
+	}
 }
 
 // GetAllModelContextWindows returns a copy of all model context window mappings.

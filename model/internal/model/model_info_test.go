@@ -107,6 +107,16 @@ func TestResolveContextWindow(t *testing.T) {
 			expected:  400000,
 		},
 		{
+			name:      "prefix match - Claude alias snapshot with at separator",
+			modelName: "claude-opus-4-5@20251101",
+			expected:  200000,
+		},
+		{
+			name:      "no prefix match without separator boundary",
+			modelName: "gpt-5.4x",
+			expected:  defaultContextWindow,
+		},
+		{
 			name:      "unknown model fallback",
 			modelName: "unknown-model",
 			expected:  defaultContextWindow,
