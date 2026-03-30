@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -191,6 +192,123 @@ func TestHelpers_AddOrgProjectFilter(t *testing.T) {
 	assert.True(t, seen["project_id=proj"])
 
 	_ = memory.Key{}
+}
+
+func TestHelpers_AddOrgProjectQuery_WithValues(t *testing.T) {
+	q := url.Values{}
+	opts := serviceOpts{orgID: "org1", projectID: "proj1"}
+	addOrgProjectQuery(q, opts)
+	assert.Equal(t, "org1", q.Get("org_id"))
+	assert.Equal(t, "proj1", q.Get("project_id"))
+}
+
+func TestHelpers_AddOrgProjectQuery_NilQ(t *testing.T) {
+	addOrgProjectQuery(nil, serviceOpts{orgID: "x"})
+}
+
+func TestHelpers_AddOrgProjectFilter_NilFilters(t *testing.T) {
+	addOrgProjectFilter(nil, serviceOpts{orgID: "x"})
+}
+
+func TestHelpers_AddOrgProjectFilter_NoAND(t *testing.T) {
+	filters := map[string]any{"OR": []any{}}
+	addOrgProjectFilter(filters, serviceOpts{orgID: "x"})
+	_, ok := filters["AND"]
+	assert.False(t, ok)
+}
+
+func TestHelpers_AddOrgProjectFilter_ANDNotSlice(t *testing.T) {
+	filters := map[string]any{"AND": "bad"}
+	addOrgProjectFilter(filters, serviceOpts{orgID: "x"})
+}
+
+func TestHelpers_ParseMem0Times_NilRec(t *testing.T) {
+	pt := parseMem0Times(nil)
+	assert.False(t, pt.CreatedAt.IsZero())
+	assert.False(t, pt.UpdatedAt.IsZero())
+}
+
+func TestHelpers_ParseMem0Time_EmptyString(t *testing.T) {
+	_, ok := parseMem0Time("")
+	assert.False(t, ok)
+
+	_, ok = parseMem0Time("  ")
+	assert.False(t, ok)
+}
+
+func TestHelpers_ParseMem0Time_RFC3339Only(t *testing.T) {
+	const s = "2025-06-15T10:30:00+08:00"
+	ts, ok := parseMem0Time(s)
+	assert.True(t, ok)
+	assert.Equal(t, 2025, ts.Year())
+}
+
+func TestHelpers_ReadTopicsFromMetadata_NilMeta(t *testing.T) {
+	assert.Nil(t, readTopicsFromMetadata(nil))
+}
+
+func TestHelpers_ReadTopicsFromMetadata_NilValue(t *testing.T) {
+	meta := map[string]any{metadataKeyTRPCTopics: nil}
+	assert.Nil(t, readTopicsFromMetadata(meta))
+}
+
+func TestHelpers_ReadTopicsFromMetadata_ArrayWithNonString(t *testing.T) {
+	meta := map[string]any{metadataKeyTRPCTopics: []any{"a", 123, ""}}
+	topics := readTopicsFromMetadata(meta)
+	assert.Equal(t, []string{"a"}, topics)
+}
+
+func TestHelpers_ReadTopicsFromMetadata_EmptyString(t *testing.T) {
+	meta := map[string]any{metadataKeyTRPCTopics: ""}
+	assert.Nil(t, readTopicsFromMetadata(meta))
+
+	meta = map[string]any{metadataKeyTRPCTopics: "  "}
+	assert.Nil(t, readTopicsFromMetadata(meta))
+}
+
+func TestHelpers_ReadTopicsFromMetadata_UnknownType(t *testing.T) {
+	meta := map[string]any{metadataKeyTRPCTopics: 42}
+	assert.Nil(t, readTopicsFromMetadata(meta))
+}
+
+func TestHelpers_MessageText_ContentParts(t *testing.T) {
+	text := "hello"
+	msg := model.Message{ContentParts: []model.ContentPart{
+		{Type: model.ContentTypeText, Text: &text},
+	}}
+	assert.Equal(t, text, messageText(msg))
+}
+
+func TestHelpers_MessageText_EmptyContentParts(t *testing.T) {
+	msg := model.Message{Content: "", ContentParts: nil}
+	assert.Equal(t, "", messageText(msg))
+}
+
+func TestHelpers_MessageText_ContentPartsNonText(t *testing.T) {
+	msg := model.Message{ContentParts: []model.ContentPart{
+		{Type: model.ContentTypeImage},
+	}}
+	assert.Equal(t, "", messageText(msg))
+}
+
+func TestHelpers_MessageText_ContentPartsNilText(t *testing.T) {
+	msg := model.Message{ContentParts: []model.ContentPart{
+		{Type: model.ContentTypeText, Text: nil},
+	}}
+	assert.Equal(t, "", messageText(msg))
+}
+
+func TestHelpers_MessageText_ContentPartsEmptyText(t *testing.T) {
+	empty := "  "
+	msg := model.Message{ContentParts: []model.ContentPart{
+		{Type: model.ContentTypeText, Text: &empty},
+	}}
+	assert.Equal(t, "", messageText(msg))
+}
+
+func TestHelpers_ReadTopicsFromMetadata_WhitespaceString(t *testing.T) {
+	meta := map[string]any{metadataKeyTRPCTopics: "  \t "}
+	assert.Nil(t, readTopicsFromMetadata(meta))
 }
 
 const (

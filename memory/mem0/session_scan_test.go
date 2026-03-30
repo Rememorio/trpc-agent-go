@@ -10,6 +10,7 @@
 package mem0
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -55,4 +56,70 @@ func TestSessionScan_ScanDeltaSince(t *testing.T) {
 	latest, msgs = scanDeltaSince(sess, ts2)
 	assert.True(t, latest.IsZero())
 	assert.Nil(t, msgs)
+}
+
+func TestSessionScan_WriteLastExtractAt_NilSession(t *testing.T) {
+	writeLastExtractAt(nil, time.Now())
+}
+
+func TestSessionScan_ReadLastExtractAt_NilSession(t *testing.T) {
+	ts := readLastExtractAt(nil)
+	assert.True(t, ts.IsZero())
+}
+
+func TestSessionScan_ScanDeltaSince_NilSession(t *testing.T) {
+	latest, msgs := scanDeltaSince(nil, time.Time{})
+	assert.True(t, latest.IsZero())
+	assert.Nil(t, msgs)
+}
+
+func TestSessionScan_ScanDeltaSince_ToolCalls(t *testing.T) {
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	toolCallMsg := model.Message{
+		Role:    model.RoleAssistant,
+		Content: "calling tool",
+		ToolCalls: []model.ToolCall{
+			{ID: "tc1", Function: model.FunctionDefinitionParam{Name: "fn", Arguments: json.RawMessage("{}")}},
+		},
+	}
+	toolRespMsg := model.Message{Role: model.RoleTool, Content: "result", ToolID: "tc1"}
+	emptyMsg := model.Message{Role: model.RoleUser}
+	validMsg := model.Message{Role: model.RoleUser, Content: "hello"}
+
+	events := []event.Event{
+		{Timestamp: ts, Response: &model.Response{Choices: []model.Choice{
+			{Message: toolCallMsg}, {Message: toolRespMsg}, {Message: emptyMsg}, {Message: validMsg},
+		}}},
+	}
+	sess := session.NewSession(testAppID, testUserID, "sid",
+		session.WithSessionEvents(events))
+	latest, msgs := scanDeltaSince(sess, time.Time{})
+	assert.Equal(t, ts, latest)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "hello", msgs[0].Content)
+}
+
+func TestSessionScan_ScanDeltaSince_NilResponse(t *testing.T) {
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	events := []event.Event{
+		{Timestamp: ts, Response: nil},
+	}
+	sess := session.NewSession(testAppID, testUserID, "sid",
+		session.WithSessionEvents(events))
+	latest, msgs := scanDeltaSince(sess, time.Time{})
+	assert.Equal(t, ts, latest)
+	assert.Empty(t, msgs)
+}
+
+func TestSessionScan_ScanDeltaSince_SystemRoleSkipped(t *testing.T) {
+	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	sysMsg := model.Message{Role: model.RoleSystem, Content: "you are helpful"}
+	events := []event.Event{
+		{Timestamp: ts, Response: &model.Response{Choices: []model.Choice{{Message: sysMsg}}}},
+	}
+	sess := session.NewSession(testAppID, testUserID, "sid",
+		session.WithSessionEvents(events))
+	_, msgs := scanDeltaSince(sess, time.Time{})
+	assert.Empty(t, msgs)
 }
