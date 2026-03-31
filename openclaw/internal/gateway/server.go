@@ -732,7 +732,11 @@ func mergeGatewayUsage(
 		return cloneGatewayUsage(accumulated)
 	}
 	if accumulated == nil {
-		return cloneGatewayUsage(usage)
+		cloned := cloneGatewayUsage(usage)
+		if cloned != nil {
+			cloned.LastPromptTokens = usage.PromptTokens
+		}
+		return cloned
 	}
 	return &gwproto.Usage{
 		PromptTokens: accumulated.PromptTokens +
@@ -741,6 +745,7 @@ func mergeGatewayUsage(
 			usage.CompletionTokens,
 		TotalTokens: accumulated.TotalTokens +
 			usage.TotalTokens,
+		LastPromptTokens: usage.PromptTokens,
 	}
 }
 
