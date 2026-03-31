@@ -253,6 +253,62 @@ func (m *mockSummarizer) SetPrompt(_ string)       {}
 func (m *mockSummarizer) SetModel(_ model.Model)   {}
 func (m *mockSummarizer) Metadata() map[string]any { return nil }
 
+func TestNewService_RequiresEmbedder(t *testing.T) {
+	oldBuilder := storage.GetClientBuilder()
+	t.Cleanup(func() {
+		storage.SetClientBuilder(oldBuilder)
+	})
+	builderCalled := false
+	storage.SetClientBuilder(func(
+		_ context.Context,
+		_ ...storage.ClientBuilderOpt,
+	) (storage.Client, error) {
+		builderCalled = true
+		return nil, fmt.Errorf("unexpected builder call")
+	})
+
+	svc, err := NewService()
+	require.Nil(t, svc)
+	require.ErrorIs(t, err, errEmbedderRequired)
+	require.False(t, builderCalled)
+}
+
+func TestNewService_ValidatesEmbedderDimensions(t *testing.T) {
+	oldBuilder := storage.GetClientBuilder()
+	t.Cleanup(func() {
+		storage.SetClientBuilder(oldBuilder)
+	})
+	builderCalled := false
+	storage.SetClientBuilder(func(
+		_ context.Context,
+		_ ...storage.ClientBuilderOpt,
+	) (storage.Client, error) {
+		builderCalled = true
+		return nil, fmt.Errorf("unexpected builder call")
+	})
+
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dimensions: 768}),
+		WithIndexDimension(1536),
+	)
+	require.Nil(t, svc)
+	require.ErrorIs(t, err, errEmbedderDimensionMismatch)
+	require.Contains(
+		t,
+		err.Error(),
+		"embedder=768 configured=1536",
+	)
+	require.False(t, builderCalled)
+}
+
+func TestValidateEmbedderDimensions_UnknownDimension(t *testing.T) {
+	err := validateEmbedderDimensions(&ServiceOpts{
+		embedder:       &mockEmbedder{dimensions: 0},
+		indexDimension: defaultIndexDimension,
+	})
+	require.NoError(t, err)
+}
+
 // --- Helper: verify interface compliance ---
 
 // Compile-time check that *Service implements

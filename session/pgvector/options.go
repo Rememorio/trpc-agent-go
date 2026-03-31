@@ -339,7 +339,8 @@ func WithGetSessionHook(
 }
 
 // WithEmbedder sets the embedder for generating event
-// embeddings. Required for vector search support.
+// embeddings. Required for pgvector service
+// initialization and vector search support.
 func WithEmbedder(e embedder.Embedder) ServiceOpt {
 	return func(o *ServiceOpts) { o.embedder = e }
 }
@@ -372,7 +373,8 @@ func WithIndexTextBuilder(builder IndexTextBuilder) ServiceOpt {
 }
 
 // WithIndexDimension sets the embedding vector dimension
-// (default: 1536).
+// (default: 1536). It must match the configured embedder
+// dimension when the embedder reports one.
 func WithIndexDimension(dim int) ServiceOpt {
 	return func(o *ServiceOpts) {
 		if dim > 0 {

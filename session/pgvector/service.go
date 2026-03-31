@@ -35,6 +35,8 @@ var _ session.TrackService = (*Service)(nil)
 var _ session.SearchableService = (*Service)(nil)
 
 var errServiceClosing = errors.New("service is closing")
+var errEmbedderRequired = errors.New("pgvector session embedder is required")
+var errEmbedderDimensionMismatch = errors.New("pgvector session embedder dimension mismatch")
 
 // SessionState is the state of a session.
 type SessionState struct {
@@ -122,6 +124,12 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 	opts := defaultOptions
 	for _, option := range options {
 		option(&opts)
+	}
+	if opts.embedder == nil {
+		return nil, errEmbedderRequired
+	}
+	if err := validateEmbedderDimensions(&opts); err != nil {
+		return nil, err
 	}
 
 	// Set default cleanup interval if any TTL is
@@ -232,6 +240,22 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 	}
 
 	return s, nil
+}
+
+func validateEmbedderDimensions(opts *ServiceOpts) error {
+	if opts == nil || opts.embedder == nil {
+		return nil
+	}
+	dim := opts.embedder.GetDimensions()
+	if dim <= 0 || dim == opts.indexDimension {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: embedder=%d configured=%d",
+		errEmbedderDimensionMismatch,
+		dim,
+		opts.indexDimension,
+	)
 }
 
 // CreateSession creates a new session.
