@@ -12,6 +12,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1038,4 +1039,37 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+func TestFinalizeRunOptions_ApproxRunesPerToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero is valid", func(t *testing.T) {
+		opts := &runOptions{}
+		require.NoError(t, finalizeRunOptions(opts))
+	})
+
+	t.Run("positive is valid", func(t *testing.T) {
+		opts := &runOptions{SessionSummaryApproxRunesPerToken: 2.0}
+		require.NoError(t, finalizeRunOptions(opts))
+	})
+
+	t.Run("negative is rejected", func(t *testing.T) {
+		opts := &runOptions{SessionSummaryApproxRunesPerToken: -1.0}
+		require.Error(t, finalizeRunOptions(opts))
+	})
+
+	t.Run("NaN is rejected", func(t *testing.T) {
+		opts := &runOptions{
+			SessionSummaryApproxRunesPerToken: math.NaN(),
+		}
+		require.Error(t, finalizeRunOptions(opts))
+	})
+
+	t.Run("Inf is rejected", func(t *testing.T) {
+		opts := &runOptions{
+			SessionSummaryApproxRunesPerToken: math.Inf(1),
+		}
+		require.Error(t, finalizeRunOptions(opts))
+	})
 }

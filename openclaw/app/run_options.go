@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,13 +206,13 @@ type runOptions struct {
 	MemoryAutoMessageThreshold int
 	MemoryAutoTimeInterval     time.Duration
 
-	SessionSummaryEnabled            bool
-	SessionSummaryMode               string
-	SessionSummaryPolicy             string
-	SessionSummaryEventCount         int
-	SessionSummaryTokenCount         int
-	SessionSummaryIdleThreshold      time.Duration
-	SessionSummaryMaxWords           int
+	SessionSummaryEnabled             bool
+	SessionSummaryMode                string
+	SessionSummaryPolicy              string
+	SessionSummaryEventCount          int
+	SessionSummaryTokenCount          int
+	SessionSummaryIdleThreshold       time.Duration
+	SessionSummaryMaxWords            int
 	SessionSummaryApproxRunesPerToken float64
 
 	EnableLocalExec     bool
@@ -1917,6 +1918,12 @@ func finalizeRunOptions(opts *runOptions) error {
 	opts.LangfuseTraceURLTemplate = strings.TrimSpace(
 		opts.LangfuseTraceURLTemplate,
 	)
+	if v := opts.SessionSummaryApproxRunesPerToken; math.IsNaN(v) ||
+		math.IsInf(v, 0) || v < 0 {
+		return fmt.Errorf(
+			"invalid session-summary-approx-runes-per-token: %v", v,
+		)
+	}
 	normalizeA2AOptions(opts)
 	return nil
 }
