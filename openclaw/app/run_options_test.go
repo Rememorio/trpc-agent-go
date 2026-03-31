@@ -556,6 +556,7 @@ session:
     key_prefix: "sp"
   summary:
     enabled: true
+    mode: "auto"
     policy: "all"
     event_threshold: 10
     token_threshold: 100
@@ -697,6 +698,7 @@ memory:
 	require.NotNil(t, opts.SessionConfig)
 
 	require.True(t, opts.SessionSummaryEnabled)
+	require.Equal(t, "auto", opts.SessionSummaryMode)
 	require.Equal(t, "all", opts.SessionSummaryPolicy)
 	require.Equal(t, 10, opts.SessionSummaryEventCount)
 	require.Equal(t, 100, opts.SessionSummaryTokenCount)

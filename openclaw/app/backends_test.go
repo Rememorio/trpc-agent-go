@@ -76,11 +76,15 @@ func TestNewSessionSummarizer_AutoMode(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, summarizer)
 
-	// With just one event and a small message, should not trigger.
+	// Use many empty events: manual-default event threshold (20) would
+	// trigger, but auto token-threshold should still stay false because
+	// the events carry negligible tokens.
 	sess := session.NewSession("app", "user", "sess")
-	sess.Events = append(sess.Events, event.Event{
-		Timestamp: time.Now(),
-	})
+	for i := 0; i < 50; i++ {
+		sess.Events = append(sess.Events, event.Event{
+			Timestamp: time.Now(),
+		})
+	}
 	require.False(t, summarizer.ShouldSummarize(sess))
 }
 
@@ -97,6 +101,115 @@ func TestNewSessionSummarizer_ManualMode(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, summarizer)
+
+	// With event_threshold=1, 2 events should trigger.
+	sess := session.NewSession("app", "user", "sess")
+	for i := 0; i < 2; i++ {
+		sess.Events = append(sess.Events, event.Event{
+			Timestamp: time.Now(),
+		})
+	}
+	require.True(t, summarizer.ShouldSummarize(sess))
+}
+
+func TestNewSessionSummarizer_ManualTokenThreshold(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	summarizer, err := newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled:    true,
+		SessionSummaryMode:       "manual",
+		SessionSummaryTokenCount: 999999,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summarizer)
+
+	sess := session.NewSession("app", "user", "sess")
+	sess.Events = append(sess.Events, event.Event{
+		Timestamp: time.Now(),
+	})
+	require.False(t, summarizer.ShouldSummarize(sess))
+}
+
+func TestNewSessionSummarizer_ManualIdleThreshold(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	summarizer, err := newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled:       true,
+		SessionSummaryMode:          "manual",
+		SessionSummaryIdleThreshold: time.Hour,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summarizer)
+}
+
+func TestNewSessionSummarizer_ManualMaxWords(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	summarizer, err := newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled:    true,
+		SessionSummaryMaxWords:   200,
+		SessionSummaryEventCount: 1,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summarizer)
+}
+
+func TestNewSessionSummarizer_ManualPolicyAll(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	summarizer, err := newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled:    true,
+		SessionSummaryPolicy:     "all",
+		SessionSummaryEventCount: 1,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summarizer)
+}
+
+func TestNewSessionSummarizer_InvalidPolicy(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	_, err = newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled: true,
+		SessionSummaryPolicy:  "nope",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported summary policy")
+}
+
+func TestNewSessionSummarizer_RequiresModel(t *testing.T) {
+	t.Parallel()
+
+	_, err := newSessionSummarizer(nil, runOptions{
+		SessionSummaryEnabled: true,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires a model")
+}
+
+func TestNewSessionSummarizer_Disabled(t *testing.T) {
+	t.Parallel()
+
+	summarizer, err := newSessionSummarizer(nil, runOptions{
+		SessionSummaryEnabled: false,
+	})
+	require.NoError(t, err)
+	require.Nil(t, summarizer)
 }
 
 func TestNewSessionSummarizer_InvalidMode(t *testing.T) {

@@ -914,6 +914,26 @@ func TestWithContextThresholdRatio_InvalidValues(t *testing.T) {
 	assert.Equal(t, 1.0, o.thresholdRatio)
 }
 
+func TestWithContextThresholdFallbackWindow_InvalidValues(t *testing.T) {
+	o := contextThresholdOptions{fallbackContextWindow: 8192}
+	WithContextThresholdFallbackWindow(0)(&o)
+	assert.Equal(t, 8192, o.fallbackContextWindow)
+	WithContextThresholdFallbackWindow(-1)(&o)
+	assert.Equal(t, 8192, o.fallbackContextWindow)
+	WithContextThresholdFallbackWindow(32000)(&o)
+	assert.Equal(t, 32000, o.fallbackContextWindow)
+}
+
+func TestWithContextThresholdMinTokens_InvalidValues(t *testing.T) {
+	o := contextThresholdOptions{minTokenThreshold: 2000}
+	WithContextThresholdMinTokens(-1)(&o)
+	assert.Equal(t, 2000, o.minTokenThreshold)
+	WithContextThresholdMinTokens(0)(&o)
+	assert.Equal(t, 0, o.minTokenThreshold)
+	WithContextThresholdMinTokens(500)(&o)
+	assert.Equal(t, 500, o.minTokenThreshold)
+}
+
 func TestWithContextThreshold_SummarizerModelFallback(t *testing.T) {
 	defer SetTokenCounter(nil)
 	// Fixed counter: every message = 70000 tokens.
@@ -951,6 +971,56 @@ func TestWithContextThreshold_SummarizerModelFallback(t *testing.T) {
 	// would give 5000 > 4096 → true.
 	result = sum.ShouldSummarize(sess)
 	assert.False(t, result)
+}
+
+func TestWithContextThreshold_UnknownSummarizerModel(t *testing.T) {
+	defer SetTokenCounter(nil)
+	SetTokenCounter(testFixedTokenCounter{tokens: 5000})
+
+	// Create summarizer with an unknown model name. WithContextThreshold()
+	// should NOT find it in the registry, so it falls back to the default
+	// 8192 context window. threshold = 8192 × 0.5 = 4096. 5000 > 4096 → true.
+	fakeModel := &fakeModelWithName{name: "totally-unknown-model-xyz"}
+	sum := NewSummarizer(fakeModel, WithContextThreshold())
+
+	sess := &session.Session{
+		Events: []event.Event{
+			{
+				Author:    "user",
+				Timestamp: time.Now(),
+				Response: &model.Response{Choices: []model.Choice{{
+					Message: model.Message{Content: "hello"},
+				}}},
+			},
+		},
+	}
+	result := sum.ShouldSummarize(sess)
+	assert.True(t, result)
+}
+
+func TestWithContextThreshold_NilSummarizerModel(t *testing.T) {
+	defer SetTokenCounter(nil)
+	SetTokenCounter(testFixedTokenCounter{tokens: 5000})
+
+	// Create summarizer with nil model. WithContextThreshold() should
+	// gracefully fall back to the default. Note: NewSummarizer allows
+	// nil model (the model is only used for generating summaries).
+	sum := NewSummarizer(nil, WithContextThreshold())
+
+	sess := &session.Session{
+		Events: []event.Event{
+			{
+				Author:    "user",
+				Timestamp: time.Now(),
+				Response: &model.Response{Choices: []model.Choice{{
+					Message: model.Message{Content: "hello"},
+				}}},
+			},
+		},
+	}
+	// fallback=8192, ratio=0.5 → threshold=4096. 5000 > 4096 → true.
+	result := sum.ShouldSummarize(sess)
+	assert.True(t, result)
 }
 
 // fakeModelWithName implements model.Model with a configurable name.
