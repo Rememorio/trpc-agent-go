@@ -264,34 +264,7 @@ func newSessionSummarizer(
 		return nil, errors.New("session summary requires a model")
 	}
 
-	checks := make([]summary.Checker, 0, 3)
-	if opts.SessionSummaryEventCount > 0 {
-		checks = append(
-			checks,
-			summary.CheckEventThreshold(opts.SessionSummaryEventCount),
-		)
-	}
-	if opts.SessionSummaryTokenCount > 0 {
-		checks = append(
-			checks,
-			summary.CheckTokenThreshold(opts.SessionSummaryTokenCount),
-		)
-	}
-	if opts.SessionSummaryIdleThreshold > 0 {
-		checks = append(
-			checks,
-			summary.CheckTimeThreshold(opts.SessionSummaryIdleThreshold),
-		)
-	}
-
-	if len(checks) == 0 {
-		checks = append(
-			checks,
-			summary.CheckEventThreshold(defaultSessionSummaryEventThreshold),
-		)
-	}
-
-	options := make([]summary.Option, 0, 3)
+	options := make([]summary.Option, 0, 4)
 	options = append(options, summary.WithName(appName))
 	options = append(
 		options,
@@ -306,17 +279,73 @@ func newSessionSummarizer(
 		)
 	}
 
-	policy, err := parseSummaryPolicy(opts.SessionSummaryPolicy)
-	if err != nil {
-		return nil, err
-	}
-	switch policy {
-	case summaryPolicyAll:
-		options = append(options, summary.WithChecksAll(checks...))
-	case summaryPolicyAny:
-		options = append(options, summary.WithChecksAny(checks...))
+	mode := strings.ToLower(strings.TrimSpace(opts.SessionSummaryMode))
+	switch mode {
+	case summaryModeAuto:
+		// Context-window aware: dynamically resolve the model's context
+		// window at evaluation time, trigger when delta tokens exceed a
+		// fraction of it (default 50%). Zero-configuration.
+		options = append(options, summary.WithContextThreshold())
+	case summaryModeManual, "":
+		// Manual thresholds (original behavior).
+		checks := make([]summary.Checker, 0, 3)
+		if opts.SessionSummaryEventCount > 0 {
+			checks = append(
+				checks,
+				summary.CheckEventThreshold(
+					opts.SessionSummaryEventCount,
+				),
+			)
+		}
+		if opts.SessionSummaryTokenCount > 0 {
+			checks = append(
+				checks,
+				summary.CheckTokenThreshold(
+					opts.SessionSummaryTokenCount,
+				),
+			)
+		}
+		if opts.SessionSummaryIdleThreshold > 0 {
+			checks = append(
+				checks,
+				summary.CheckTimeThreshold(
+					opts.SessionSummaryIdleThreshold,
+				),
+			)
+		}
+		if len(checks) == 0 {
+			checks = append(
+				checks,
+				summary.CheckEventThreshold(
+					defaultSessionSummaryEventThreshold,
+				),
+			)
+		}
+
+		policy, err := parseSummaryPolicy(opts.SessionSummaryPolicy)
+		if err != nil {
+			return nil, err
+		}
+		switch policy {
+		case summaryPolicyAll:
+			options = append(
+				options,
+				summary.WithChecksAll(checks...),
+			)
+		case summaryPolicyAny:
+			options = append(
+				options,
+				summary.WithChecksAny(checks...),
+			)
+		default:
+			return nil, fmt.Errorf(
+				"unsupported summary policy: %s", policy,
+			)
+		}
 	default:
-		return nil, fmt.Errorf("unsupported summary policy: %s", policy)
+		return nil, fmt.Errorf(
+			"unsupported session summary mode: %s", mode,
+		)
 	}
 
 	return summary.NewSummarizer(mdl, options...), nil

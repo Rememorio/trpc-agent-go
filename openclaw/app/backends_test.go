@@ -63,6 +63,56 @@ func TestNewSessionSummarizer_DefaultThreshold(t *testing.T) {
 	require.False(t, summarizer.ShouldSummarize(sess))
 }
 
+func TestNewSessionSummarizer_AutoMode(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	summarizer, err := newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled: true,
+		SessionSummaryMode:    "auto",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summarizer)
+
+	// With just one event and a small message, should not trigger.
+	sess := session.NewSession("app", "user", "sess")
+	sess.Events = append(sess.Events, event.Event{
+		Timestamp: time.Now(),
+	})
+	require.False(t, summarizer.ShouldSummarize(sess))
+}
+
+func TestNewSessionSummarizer_ManualMode(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	summarizer, err := newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled:    true,
+		SessionSummaryMode:       "manual",
+		SessionSummaryEventCount: 1,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summarizer)
+}
+
+func TestNewSessionSummarizer_InvalidMode(t *testing.T) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{ModelMode: modeMock})
+	require.NoError(t, err)
+
+	_, err = newSessionSummarizer(mdl, runOptions{
+		SessionSummaryEnabled: true,
+		SessionSummaryMode:    "invalid",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported session summary mode")
+}
+
 func TestNewAutoMemoryExtractor_RequiresModel(t *testing.T) {
 	t.Parallel()
 

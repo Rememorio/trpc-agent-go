@@ -54,6 +54,9 @@ const (
 	summaryPolicyAny = "any"
 	summaryPolicyAll = "all"
 
+	summaryModeAuto   = "auto"
+	summaryModeManual = "manual"
+
 	defaultSessionSummaryEventThreshold = 20
 	defaultSkillsLoadMode               = "turn"
 
@@ -203,6 +206,7 @@ type runOptions struct {
 	MemoryAutoTimeInterval     time.Duration
 
 	SessionSummaryEnabled       bool
+	SessionSummaryMode          string
 	SessionSummaryPolicy        string
 	SessionSummaryEventCount    int
 	SessionSummaryTokenCount    int
@@ -675,10 +679,16 @@ func parseRunOptions(args []string) (runOptions, error) {
 		"Enable session summarization (optional)",
 	)
 	fs.StringVar(
+		&opts.SessionSummaryMode,
+		"session-summary-mode",
+		"",
+		"Summary trigger mode: auto (context-window aware) or manual (explicit thresholds)",
+	)
+	fs.StringVar(
 		&opts.SessionSummaryPolicy,
 		"session-summary-policy",
 		summaryPolicyAny,
-		"Session summary gating policy: any|all",
+		"Session summary gating policy: any|all (only used in manual mode)",
 	)
 	fs.IntVar(
 		&opts.SessionSummaryEventCount,
@@ -1046,6 +1056,7 @@ type redisConfig struct {
 
 type summaryConfig struct {
 	Enabled        *bool   `yaml:"enabled,omitempty"`
+	Mode           *string `yaml:"mode,omitempty"`
 	Policy         *string `yaml:"policy,omitempty"`
 	EventThreshold *int    `yaml:"event_threshold,omitempty"`
 	TokenThreshold *int    `yaml:"token_threshold,omitempty"`
@@ -1794,6 +1805,9 @@ func applySessionSummary(
 
 	if cfg.Enabled != nil && !flagWasSet(set, "session-summary") {
 		opts.SessionSummaryEnabled = *cfg.Enabled
+	}
+	if cfg.Mode != nil && !flagWasSet(set, "session-summary-mode") {
+		opts.SessionSummaryMode = strings.TrimSpace(*cfg.Mode)
 	}
 	if cfg.Policy != nil && !flagWasSet(set, "session-summary-policy") {
 		opts.SessionSummaryPolicy = strings.TrimSpace(*cfg.Policy)
