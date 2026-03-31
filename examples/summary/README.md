@@ -230,7 +230,9 @@ sum := summary.NewSummarizer(model,
     summary.WithContextThreshold(), // Recommended for coding agents
     summary.WithMaxSummaryWords(200),
 )
+```
 
+```go
 // Basic configuration
 sum := summary.NewSummarizer(model,
     summary.WithMaxSummaryWords(500),

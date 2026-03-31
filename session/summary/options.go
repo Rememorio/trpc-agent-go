@@ -234,6 +234,23 @@ func WithToolResultFormatter(f ToolResultFormatter) Option {
 //	    summary.WithContextThresholdRatio(0.6)))
 func WithContextThreshold(opts ...ContextThresholdOption) Option {
 	return func(s *sessionSummarizer) {
+		// If no explicit fallback window is configured, try to resolve one
+		// from the summarizer's own model. This ensures that when invocation
+		// context is unavailable (e.g. manual CreateSessionSummary calls),
+		// the checker uses the summarizer model's context window instead of
+		// the conservative framework default (8192).
+		o := contextThresholdOptions{
+			fallbackContextWindow: defaultContextThresholdFallbackWindow,
+		}
+		for _, opt := range opts {
+			opt(&o)
+		}
+		if o.fallbackContextWindow == defaultContextThresholdFallbackWindow && s.model != nil {
+			name := s.model.Info().Name
+			if w, ok := model.LookupModelContextWindow(name); ok {
+				opts = append(opts, WithContextThresholdFallbackWindow(w))
+			}
+		}
 		s.checks = append(s.checks, CheckContextThreshold(opts...))
 	}
 }

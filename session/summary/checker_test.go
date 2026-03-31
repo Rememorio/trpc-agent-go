@@ -914,6 +914,45 @@ func TestWithContextThresholdRatio_InvalidValues(t *testing.T) {
 	assert.Equal(t, 1.0, o.thresholdRatio)
 }
 
+func TestWithContextThreshold_SummarizerModelFallback(t *testing.T) {
+	defer SetTokenCounter(nil)
+	// Fixed counter: every message = 70000 tokens.
+	SetTokenCounter(testFixedTokenCounter{tokens: 70000})
+
+	// Create summarizer with deepseek-chat model (contextWindow=131072).
+	// WithContextThreshold() should pick up the summarizer model's context
+	// window as the fallback, so even without invocation context the
+	// threshold is 131072 × 0.5 = 65536 rather than 8192 × 0.5 = 4096.
+	fakeModel := &fakeModelWithName{name: "deepseek-chat"}
+	sum := NewSummarizer(fakeModel, WithContextThreshold())
+
+	sess := &session.Session{
+		Events: []event.Event{
+			{
+				Author:    "user",
+				Timestamp: time.Now(),
+				Response: &model.Response{Choices: []model.Choice{{
+					Message: model.Message{Content: "hello"},
+				}}},
+			},
+		},
+	}
+
+	// Without invocation context, the old behavior (fallback=8192) would
+	// give threshold=4096, so 70000 > 4096 → true.
+	// With summarizer model fallback (131072), threshold=65536,
+	// so 70000 > 65536 → true (just barely).
+	result := sum.ShouldSummarize(sess)
+	assert.True(t, result)
+
+	// Now test with 5000 tokens — should NOT trigger with summarizer fallback.
+	SetTokenCounter(testFixedTokenCounter{tokens: 5000})
+	// 5000 < 65536 → false (summarizer fallback), whereas old 8192 fallback
+	// would give 5000 > 4096 → true.
+	result = sum.ShouldSummarize(sess)
+	assert.False(t, result)
+}
+
 // fakeModelWithName implements model.Model with a configurable name.
 type fakeModelWithName struct {
 	name string

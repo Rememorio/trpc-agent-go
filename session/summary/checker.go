@@ -398,7 +398,8 @@ func WithContextThresholdMinTokens(tokens int) ContextThresholdOption {
 // compress conversation history based on the model's capacity.
 //
 // When the model cannot be determined from ctx, falls back to
-// fallbackContextWindow (default 8192).
+// the summarizer model's context window (when used via WithContextThreshold),
+// then to the configured fallbackContextWindow (default 8192).
 func CheckContextThreshold(opts ...ContextThresholdOption) ContextChecker {
 	o := contextThresholdOptions{
 		thresholdRatio:        defaultContextThresholdRatio,
