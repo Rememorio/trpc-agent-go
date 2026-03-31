@@ -216,3 +216,24 @@ func WithToolResultFormatter(f ToolResultFormatter) Option {
 		s.toolResultFormatter = f
 	}
 }
+
+// WithContextThreshold enables automatic summarization based on the model's
+// context window, resolved dynamically at runtime from the invocation
+// context. This is the recommended zero-configuration option for most
+// use cases.
+//
+// The summarizer does not need to know the model name at creation time.
+// When the user switches models mid-session, the threshold adjusts
+// automatically because the checker reads the current model from the
+// invocation attached to each request's context.
+//
+// Usage:
+//
+//	summary.NewSummarizer(model, summary.WithContextThreshold())
+//	summary.NewSummarizer(model, summary.WithContextThreshold(
+//	    summary.WithContextThresholdRatio(0.6)))
+func WithContextThreshold(opts ...ContextThresholdOption) Option {
+	return func(s *sessionSummarizer) {
+		s.checks = append(s.checks, CheckContextThreshold(opts...))
+	}
+}
