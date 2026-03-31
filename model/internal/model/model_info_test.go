@@ -269,6 +269,58 @@ func TestLookupContextWindow(t *testing.T) {
 	}
 }
 
+func TestIsModelPrefixMatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		modelName string
+		prefix    string
+		expected  bool
+	}{
+		{
+			name:      "exact match",
+			modelName: "glm-5",
+			prefix:    "glm-5",
+			expected:  true,
+		},
+		{
+			name:      "hyphen separator match",
+			modelName: "qwen-max-2025-01-25",
+			prefix:    "qwen-max",
+			expected:  true,
+		},
+		{
+			name:      "at separator match",
+			modelName: "claude-opus-4-5@20251101",
+			prefix:    "claude-opus-4-5",
+			expected:  true,
+		},
+		{
+			name:      "colon separator match",
+			modelName: "glm-5:latest",
+			prefix:    "glm-5",
+			expected:  true,
+		},
+		{
+			name:      "prefix without valid separator",
+			modelName: "gpt-5.4x",
+			prefix:    "gpt-5.4",
+			expected:  false,
+		},
+		{
+			name:      "no prefix match",
+			modelName: "kimi-k2.5",
+			prefix:    "glm-5",
+			expected:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, isModelPrefixMatch(tt.modelName, tt.prefix))
+		})
+	}
+}
+
 func TestGetAllModelContextWindows(t *testing.T) {
 	// Test that GetAllModelContextWindows returns a copy
 	original := GetAllModelContextWindows()
