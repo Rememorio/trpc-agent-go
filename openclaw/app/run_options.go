@@ -205,13 +205,14 @@ type runOptions struct {
 	MemoryAutoMessageThreshold int
 	MemoryAutoTimeInterval     time.Duration
 
-	SessionSummaryEnabled       bool
-	SessionSummaryMode          string
-	SessionSummaryPolicy        string
-	SessionSummaryEventCount    int
-	SessionSummaryTokenCount    int
-	SessionSummaryIdleThreshold time.Duration
-	SessionSummaryMaxWords      int
+	SessionSummaryEnabled            bool
+	SessionSummaryMode               string
+	SessionSummaryPolicy             string
+	SessionSummaryEventCount         int
+	SessionSummaryTokenCount         int
+	SessionSummaryIdleThreshold      time.Duration
+	SessionSummaryMaxWords           int
+	SessionSummaryApproxRunesPerToken float64
 
 	EnableLocalExec     bool
 	EnableOpenClawTools bool
@@ -714,6 +715,13 @@ func parseRunOptions(args []string) (runOptions, error) {
 		0,
 		"Max summary words (0 means no limit)",
 	)
+	fs.Float64Var(
+		&opts.SessionSummaryApproxRunesPerToken,
+		"session-summary-approx-runes-per-token",
+		0,
+		"Approximate runes per token for summary token estimation "+
+			"(0 uses framework default 4.0; set ~2.0 for Chinese-heavy content)",
+	)
 	fs.BoolVar(
 		&opts.EnableLocalExec,
 		"enable-local-exec",
@@ -1055,13 +1063,14 @@ type redisConfig struct {
 }
 
 type summaryConfig struct {
-	Enabled        *bool   `yaml:"enabled,omitempty"`
-	Mode           *string `yaml:"mode,omitempty"`
-	Policy         *string `yaml:"policy,omitempty"`
-	EventThreshold *int    `yaml:"event_threshold,omitempty"`
-	TokenThreshold *int    `yaml:"token_threshold,omitempty"`
-	IdleThreshold  *string `yaml:"idle_threshold,omitempty"`
-	MaxWords       *int    `yaml:"max_words,omitempty"`
+	Enabled             *bool    `yaml:"enabled,omitempty"`
+	Mode                *string  `yaml:"mode,omitempty"`
+	Policy              *string  `yaml:"policy,omitempty"`
+	EventThreshold      *int     `yaml:"event_threshold,omitempty"`
+	TokenThreshold      *int     `yaml:"token_threshold,omitempty"`
+	IdleThreshold       *string  `yaml:"idle_threshold,omitempty"`
+	MaxWords            *int     `yaml:"max_words,omitempty"`
+	ApproxRunesPerToken *float64 `yaml:"approx_runes_per_token,omitempty"`
 }
 
 type memoryAuto struct {
@@ -1829,6 +1838,10 @@ func applySessionSummary(
 	}
 	if cfg.MaxWords != nil && !flagWasSet(set, "session-summary-max-words") {
 		opts.SessionSummaryMaxWords = *cfg.MaxWords
+	}
+	if cfg.ApproxRunesPerToken != nil &&
+		!flagWasSet(set, "session-summary-approx-runes-per-token") {
+		opts.SessionSummaryApproxRunesPerToken = *cfg.ApproxRunesPerToken
 	}
 	return nil
 }
