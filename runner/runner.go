@@ -13,6 +13,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/flush"
+	"trpc.group/trpc-go/trpc-agent-go/internal/state/steer"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -41,6 +43,24 @@ import (
 // Author types for events.
 const (
 	authorUser = "user"
+
+	errMsgEmptyRequestID = "runner: empty request id"
+	errMsgNilCancelFunc  = "runner: nil cancel function"
+)
+
+var (
+	// ErrRunNotFound indicates that the request ID is not active anymore.
+	ErrRunNotFound = errors.New("runner: request id not running")
+	// ErrQueuedUserMessageUnsupported indicates that the runner does not
+	// support safe-boundary user-message enqueue.
+	ErrQueuedUserMessageUnsupported = errors.New(
+		"runner: queued user messages unsupported",
+	)
+	// ErrInvalidQueuedUserMessage indicates that the message cannot be
+	// inserted as a user steer message.
+	ErrInvalidQueuedUserMessage = errors.New(
+		"runner: queued message must be a non-empty user message",
+	)
 )
 
 // Option is a function that configures a Runner.
@@ -135,6 +155,31 @@ type ManagedRunner interface {
 	RunStatus(requestID string) (RunStatus, bool)
 }
 
+// SteerableRunner extends ManagedRunner with safe-boundary user steering.
+//
+// EnqueueUserMessage never mutates the session immediately. The message is
+// queued and then appended by llmflow only after the current tool_call /
+// tool_response boundary is complete and before the next model request.
+type SteerableRunner interface {
+	ManagedRunner
+
+	// EnqueueUserMessage queues a user message for the active request.
+	EnqueueUserMessage(requestID string, message model.Message) error
+}
+
+// EnqueueUserMessage queues a user message on runners that support steering.
+func EnqueueUserMessage(
+	r Runner,
+	requestID string,
+	message model.Message,
+) error {
+	steerable, ok := r.(SteerableRunner)
+	if !ok {
+		return ErrQueuedUserMessageUnsupported
+	}
+	return steerable.EnqueueUserMessage(requestID, message)
+}
+
 // RunStatus is a snapshot of a running invocation.
 type RunStatus struct {
 	RequestID    string
@@ -168,6 +213,7 @@ type runner struct {
 
 type runHandle struct {
 	cancel context.CancelFunc
+	queue  *steer.Queue
 
 	mu     sync.RWMutex
 	status RunStatus
@@ -392,6 +438,9 @@ func (r *runner) Run(
 		agent.WithInvocationPlugins(r.pluginManager),
 	)
 
+	queuedUserMessages := steer.NewQueue()
+	steer.Attach(invocation, queuedUserMessages)
+
 	handle, err := r.registerRun(
 		ro.RequestID,
 		RunStatus{
@@ -402,6 +451,7 @@ func (r *runner) Run(
 			StartedAt:    time.Now(),
 		},
 		execCancel,
+		queuedUserMessages,
 	)
 	if err != nil {
 		execCancel()
@@ -431,6 +481,7 @@ func (r *runner) Run(
 				seedEvt,
 			)
 			if appendErr != nil {
+				steer.Clear(invocation)
 				r.unregisterRun(ro.RequestID)
 				execCancel()
 				return nil, appendErr
@@ -448,6 +499,7 @@ func (r *runner) Run(
 		agent.InjectIntoEvent(invocation, evt)
 		evt = r.applyEventPlugins(execCtx, invocation, evt)
 		if err := r.sessionService.AppendEvent(execCtx, sess, evt); err != nil {
+			steer.Clear(invocation)
 			r.unregisterRun(ro.RequestID)
 			execCancel()
 			return nil, err
@@ -490,6 +542,7 @@ func (r *runner) Run(
 			log.Errorf("failed to append agent run error event: %v", appendErr)
 		}
 
+		steer.Clear(invocation)
 		r.unregisterRun(ro.RequestID)
 		execCancel()
 		invocation.CleanupNotice(execCtx)
@@ -524,6 +577,29 @@ func (r *runner) RunStatus(requestID string) (RunStatus, bool) {
 	handle.mu.RLock()
 	defer handle.mu.RUnlock()
 	return handle.status, true
+}
+
+func (r *runner) EnqueueUserMessage(
+	requestID string,
+	message model.Message,
+) error {
+	if requestID == "" {
+		return fmt.Errorf(errMsgEmptyRequestID)
+	}
+
+	message, err := normalizeQueuedUserMessage(message)
+	if err != nil {
+		return err
+	}
+
+	handle := r.lookupRun(requestID)
+	if handle == nil {
+		return ErrRunNotFound
+	}
+	if handle.queue == nil || !handle.queue.Enqueue(message) {
+		return ErrRunNotFound
+	}
+	return nil
 }
 
 func (r *runner) newExecutionContext(
@@ -562,12 +638,13 @@ func (r *runner) registerRun(
 	requestID string,
 	status RunStatus,
 	cancel context.CancelFunc,
+	queue *steer.Queue,
 ) (*runHandle, error) {
 	if requestID == "" {
-		return nil, fmt.Errorf("runner: empty request id")
+		return nil, fmt.Errorf(errMsgEmptyRequestID)
 	}
 	if cancel == nil {
-		return nil, fmt.Errorf("runner: nil cancel function")
+		return nil, fmt.Errorf(errMsgNilCancelFunc)
 	}
 
 	r.runsMu.Lock()
@@ -581,7 +658,11 @@ func (r *runner) registerRun(
 			requestID,
 		)
 	}
-	handle := &runHandle{cancel: cancel, status: status}
+	handle := &runHandle{
+		cancel: cancel,
+		queue:  queue,
+		status: status,
+	}
 	r.runs[requestID] = handle
 	return handle, nil
 }
@@ -672,26 +753,26 @@ func (r *runner) getOrCreateSession(
 
 // eventLoopContext bundles all channels and state required by the event loop.
 type eventLoopContext struct {
-	sess                                       *session.Session
-	invocation                                 *agent.Invocation
-	agentEventCh                               <-chan *event.Event
-	flushChan                                  chan *flush.FlushRequest
-	processedEventCh                           chan *event.Event
-	runHandle                                  *runHandle
-	finalStateDelta                            map[string][]byte
-	finalChoices                               []model.Choice
-	fallbackChoices                            []model.Choice
-	fallbackResponseID                         string
-	fallbackStateDelta                         map[string][]byte
-	finalError                                 *model.ResponseError
-	graphCompletionSeen                        bool
-	filteredPersistedAssistantResponseIDs      map[string]struct{}
-	filteredPersistedAssistantChoiceSignatures map[string]struct{}
-	emittedAssistantChoiceSignatures           map[string]struct{}
-	visibleCompletionResponseIDs               map[string]struct{}
-	visibleCompletionChoiceSignatures          map[string]struct{}
-	sawTerminalError                           bool
-	streamFilter                               graph.StreamModeFilter
+	sess                               *session.Session
+	invocation                         *agent.Invocation
+	agentEventCh                       <-chan *event.Event
+	flushChan                          chan *flush.FlushRequest
+	processedEventCh                   chan *event.Event
+	runHandle                          *runHandle
+	finalStateDelta                    map[string][]byte
+	finalChoices                       []model.Choice
+	fallbackChoices                    []model.Choice
+	fallbackResponseID                 string
+	fallbackStateDelta                 map[string][]byte
+	finalError                         *model.ResponseError
+	graphCompletionSeen                bool
+	persistedAssistantResponseIDs      map[string]struct{}
+	persistedAssistantChoiceSignatures map[string]struct{}
+	emittedAssistantChoiceSignatures   map[string]struct{}
+	visibleCompletionResponseIDs       map[string]struct{}
+	visibleCompletionChoiceSignatures  map[string]struct{}
+	sawTerminalError                   bool
+	streamFilter                       graph.StreamModeFilter
 	// emittedAssistantResponseIDs tracks response IDs that already produced a
 	// non-partial assistant message event during this run.
 	//
@@ -734,10 +815,12 @@ func (r *runner) runEventLoop(ctx context.Context, loop *eventLoopContext) {
 			log.Errorf("panic in runner event loop: %v\n%s", rr, string(debug.Stack()))
 		}
 		// Agent event stream completed.
+		steer.Close(loop.invocation)
 		r.safeEmitRunnerCompletion(ctx, loop)
 		// Disable further flush requests for this invocation.
 		flush.Clear(loop.invocation)
 		appender.Clear(loop.invocation)
+		steer.Clear(loop.invocation)
 		r.unregisterRun(loop.invocation.RunOptions.RequestID)
 		close(loop.processedEventCh)
 		loop.invocation.CleanupNotice(ctx)
@@ -808,10 +891,9 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 
 	// Append qualifying events to session and trigger summarization.
 	persisted := r.handleEventPersistence(ctx, loop.invocation, loop.sess, agentEvent)
-	r.recordFilteredPersistedAssistantEvent(
+	r.recordPersistedAssistantEvent(
 		loop,
 		agentEvent,
-		shouldForwardEvent,
 		persisted,
 	)
 
@@ -837,13 +919,12 @@ func (r *runner) processSingleAgentEvent(ctx context.Context, loop *eventLoopCon
 	return nil
 }
 
-func (r *runner) recordFilteredPersistedAssistantEvent(
+func (r *runner) recordPersistedAssistantEvent(
 	loop *eventLoopContext,
 	agentEvent *event.Event,
-	shouldForwardEvent bool,
 	persisted bool,
 ) {
-	if loop == nil || agentEvent == nil || shouldForwardEvent || !persisted {
+	if loop == nil || agentEvent == nil || !persisted {
 		return
 	}
 	if isGraphCompletionEvent(agentEvent) {
@@ -855,25 +936,25 @@ func (r *runner) recordFilteredPersistedAssistantEvent(
 	if agentEvent.Response == nil {
 		return
 	}
-	if loop.filteredPersistedAssistantResponseIDs == nil {
-		loop.filteredPersistedAssistantResponseIDs = make(map[string]struct{})
+	if loop.persistedAssistantResponseIDs == nil {
+		loop.persistedAssistantResponseIDs = make(map[string]struct{})
 	}
 	if agentEvent.Response.ID != "" {
-		loop.filteredPersistedAssistantResponseIDs[agentEvent.Response.ID] = struct{}{}
+		loop.persistedAssistantResponseIDs[agentEvent.Response.ID] = struct{}{}
 	}
 	if graph.IsVisibleGraphCompletionEvent(agentEvent) {
 		if responseID := finalResponseIDFromStateDelta(agentEvent.StateDelta); responseID != "" {
-			loop.filteredPersistedAssistantResponseIDs[responseID] = struct{}{}
+			loop.persistedAssistantResponseIDs[responseID] = struct{}{}
 		}
 	}
 	signature := assistantChoiceSignature(agentEvent.Response.Choices)
 	if signature == "" {
 		return
 	}
-	if loop.filteredPersistedAssistantChoiceSignatures == nil {
-		loop.filteredPersistedAssistantChoiceSignatures = make(map[string]struct{})
+	if loop.persistedAssistantChoiceSignatures == nil {
+		loop.persistedAssistantChoiceSignatures = make(map[string]struct{})
 	}
-	loop.filteredPersistedAssistantChoiceSignatures[signature] = struct{}{}
+	loop.persistedAssistantChoiceSignatures[signature] = struct{}{}
 }
 
 func (r *runner) recordVisibleCompletionEmission(
@@ -1438,28 +1519,28 @@ func shouldClearRunnerCompletionChoicesInSession(
 	finalChoices []model.Choice,
 	finalStateDelta map[string][]byte,
 ) bool {
-	if loop == nil ||
-		loop.invocation == nil ||
-		!agent.IsGraphCompletionEventDisabled(loop.invocation) {
+	if loop == nil {
 		return false
 	}
 	finalResponseID := finalResponseIDFromStateDelta(finalStateDelta)
 	if finalResponseID != "" {
-		if _, ok := loop.filteredPersistedAssistantResponseIDs[finalResponseID]; ok {
+		if _, ok := loop.persistedAssistantResponseIDs[finalResponseID]; ok {
 			return true
 		}
-		_, ok := loop.emittedAssistantResponseIDs[finalResponseID]
-		return ok
+		return false
+	}
+	if loop.invocation == nil ||
+		!agent.IsGraphCompletionEventDisabled(loop.invocation) {
+		return false
 	}
 	signature := assistantChoiceSignature(finalChoices)
 	if signature == "" {
 		return false
 	}
-	if _, ok := loop.filteredPersistedAssistantChoiceSignatures[signature]; ok {
+	if _, ok := loop.persistedAssistantChoiceSignatures[signature]; ok {
 		return true
 	}
-	_, ok := loop.emittedAssistantChoiceSignatures[signature]
-	return ok
+	return false
 }
 
 func (r *runner) completionChoicesForRunner(
@@ -1604,18 +1685,7 @@ func assistantChoiceSignature(choices []model.Choice) string {
 }
 
 func finalResponseIDFromStateDelta(finalStateDelta map[string][]byte) string {
-	if finalStateDelta == nil {
-		return ""
-	}
-	raw, ok := finalStateDelta[graph.StateKeyLastResponseID]
-	if !ok || len(raw) == 0 {
-		return ""
-	}
-	var responseID string
-	if err := json.Unmarshal(raw, &responseID); err != nil {
-		return ""
-	}
-	return responseID
+	return graph.FinalResponseIDFromStateDelta(finalStateDelta)
 }
 
 func finalResponseTextFromStateDelta(finalStateDelta map[string][]byte) string {
@@ -1660,6 +1730,18 @@ func shouldAppendUserMessage(message model.Message, seed []model.Message) bool {
 		return !model.MessagesEqual(seed[i], message)
 	}
 	return true
+}
+
+func normalizeQueuedUserMessage(
+	message model.Message,
+) (model.Message, error) {
+	if message.Role == "" && model.HasPayload(message) {
+		message.Role = model.RoleUser
+	}
+	if message.Role != model.RoleUser || !model.HasPayload(message) {
+		return model.Message{}, ErrInvalidQueuedUserMessage
+	}
+	return message, nil
 }
 
 // ensureErrorEventContent ensures that error events have valid content.

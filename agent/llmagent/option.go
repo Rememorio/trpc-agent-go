@@ -15,6 +15,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/codeexecutor"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonschema"
 	"trpc.group/trpc-go/trpc-agent-go/internal/skillprofile"
@@ -95,6 +96,14 @@ const (
 	// equivalent to TimelineFilterCurrentInvocation + BranchFilterModeExact.
 	IsolatedInvocation
 )
+
+// EventMessageProjector projects one event-derived message into the
+// model-facing request view.
+type EventMessageProjector func(
+	inv *agent.Invocation,
+	evt event.Event,
+	msg model.Message,
+) model.Message
 
 var (
 	defaultOptions = Options{
@@ -250,6 +259,9 @@ type Options struct {
 	// Default is false, so same-branch events are merged into user context
 	// unless explicitly opted into preserving roles.
 	PreserveSameBranch bool
+	// EventMessageProjector rewrites one event-derived message before it
+	// is appended to the model request.
+	EventMessageProjector EventMessageProjector
 	// StructuredOutput defines how the model should produce structured output in normal runs.
 	StructuredOutput *model.StructuredOutput
 	// StructuredOutputType is the reflect.Type of the example pointer used to generate the schema.
@@ -308,6 +320,8 @@ type Options struct {
 
 	// skillsRepository enables agent skills when non-nil.
 	skillsRepository skill.Repository
+	// skillFilter narrows the visible skill set per run context.
+	skillFilter skill.VisibilityFilter
 	// skillToolProfile controls which built-in skill tools are registered.
 	skillToolProfile string
 	// skillsToolingGuidance overrides the built-in skills guidance block.
@@ -516,6 +530,15 @@ func WithRefreshToolSetsOnRun(refresh bool) Option {
 func WithSkills(repo skill.Repository) Option {
 	return func(opts *Options) {
 		opts.skillsRepository = repo
+	}
+}
+
+// WithSkillFilter narrows visible skills per run context without changing the
+// mounted repository roots. The filter is evaluated against skill summaries
+// and can read runtime state from ctx.
+func WithSkillFilter(filter skill.VisibilityFilter) Option {
+	return func(opts *Options) {
+		opts.skillFilter = filter
 	}
 }
 
@@ -859,6 +882,16 @@ func WithMaxHistoryRuns(maxRuns int) Option {
 func WithPreserveSameBranch(preserve bool) Option {
 	return func(opts *Options) {
 		opts.PreserveSameBranch = preserve
+	}
+}
+
+// WithEventMessageProjector rewrites one event-derived message before
+// it is appended to the model request.
+func WithEventMessageProjector(
+	projector EventMessageProjector,
+) Option {
+	return func(opts *Options) {
+		opts.EventMessageProjector = projector
 	}
 }
 
