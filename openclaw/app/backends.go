@@ -278,12 +278,18 @@ func newSessionSummarizer(
 		)
 	}
 
-	options := make([]summary.Option, 0, 4)
+	options := make([]summary.Option, 0, 6)
 	options = append(options, summary.WithName(appName))
 	options = append(
 		options,
 		summary.WithPreSummaryHook(
 			conversation.PreSummaryHook,
+		),
+	)
+	options = append(
+		options,
+		summary.WithToolResultFormatter(
+			summaryToolResultFormatter,
 		),
 	)
 	if opts.SessionSummaryMaxWords > 0 {
@@ -434,4 +440,26 @@ func newAutoMemoryExtractor(
 	}
 
 	return memextractor.NewExtractor(mdl, extOpts...), nil
+}
+
+const summaryToolResultMaxRunes = 2000
+
+// summaryToolResultFormatter truncates large tool results to avoid blowing
+// the summarizer model's context window. web_fetch and similar tools can
+// return 100 KB+ of HTML/Markdown; without truncation the conversation text
+// sent to the summary LLM will exceed small-to-medium model limits.
+func summaryToolResultFormatter(msg model.Message) string {
+	content := strings.TrimSpace(msg.Content)
+	if content == "" {
+		return ""
+	}
+	name := msg.ToolName
+	if name == "" {
+		name = "tool"
+	}
+	runes := []rune(content)
+	if len(runes) > summaryToolResultMaxRunes {
+		content = string(runes[:summaryToolResultMaxRunes]) + "... [truncated]"
+	}
+	return fmt.Sprintf("[%s returned: %s]", name, content)
 }

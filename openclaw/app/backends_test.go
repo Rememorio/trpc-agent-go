@@ -10,6 +10,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -536,4 +537,40 @@ func TestNewMemoryService_CustomBackendUsesConfig(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Close() })
 
 	require.Equal(t, "hello", gotNote)
+}
+
+func TestSummaryToolResultFormatter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty content", func(t *testing.T) {
+		msg := model.Message{ToolName: "web_fetch", Content: ""}
+		require.Equal(t, "", summaryToolResultFormatter(msg))
+	})
+
+	t.Run("short content", func(t *testing.T) {
+		msg := model.Message{ToolName: "web_fetch", Content: "hello"}
+		require.Equal(t, "[web_fetch returned: hello]", summaryToolResultFormatter(msg))
+	})
+
+	t.Run("fallback tool name", func(t *testing.T) {
+		msg := model.Message{Content: "result"}
+		require.Equal(t, "[tool returned: result]", summaryToolResultFormatter(msg))
+	})
+
+	t.Run("truncates large content", func(t *testing.T) {
+		long := strings.Repeat("x", summaryToolResultMaxRunes+500)
+		msg := model.Message{ToolName: "web_fetch", Content: long}
+		result := summaryToolResultFormatter(msg)
+		require.Contains(t, result, "... [truncated]")
+		runes := []rune(result)
+		require.Less(t, len(runes), summaryToolResultMaxRunes+100)
+	})
+
+	t.Run("truncates CJK at rune boundary", func(t *testing.T) {
+		long := strings.Repeat("中", summaryToolResultMaxRunes+100)
+		msg := model.Message{ToolName: "search", Content: long}
+		result := summaryToolResultFormatter(msg)
+		require.Contains(t, result, "... [truncated]")
+		require.True(t, len([]rune(result)) < summaryToolResultMaxRunes+100)
+	})
 }
