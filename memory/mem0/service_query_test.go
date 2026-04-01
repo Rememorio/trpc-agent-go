@@ -36,8 +36,8 @@ func TestService_ReadMemories_WithSmallLimit(t *testing.T) {
 	entries, err := svc.ReadMemories(context.Background(), userKey, 2)
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
-	assert.Equal(t, "b", entries[0].ID)
-	assert.Equal(t, "a", entries[1].ID)
+	assert.Equal(t, "c", entries[0].ID)
+	assert.Equal(t, "b", entries[1].ID)
 }
 
 func TestService_SearchMemories_WithUpdatedAt(t *testing.T) {
@@ -112,6 +112,39 @@ func TestService_ReadMemories_WithOrgProject(t *testing.T) {
 	entries, err := svc.ReadMemories(context.Background(), userKey, 0)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
+}
+
+func TestService_ReadMemories_WithLimitAndNilEntries(t *testing.T) {
+	userKey := memory.UserKey{AppName: testAppID, UserID: testUserID}
+	var requestedPages []string
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		page := q.Get(queryKeyPage)
+		requestedPages = append(requestedPages, page)
+		switch page {
+		case "1":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[
+				{"id":"a","memory":"","metadata":{},"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:01Z"},
+				{"id":"b","memory":"valid1","metadata":{},"created_at":"2025-01-01T00:00:02Z","updated_at":"2025-01-01T00:00:03Z"}
+			]`))
+		case "2":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[
+				{"id":"c","memory":"valid2","metadata":{},"created_at":"2025-01-01T00:00:04Z","updated_at":"2025-01-01T00:00:05Z"}
+			]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		}
+	})
+	svc := newTestService(t, srv.URL)
+	entries, err := svc.ReadMemories(context.Background(), userKey, 2)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	assert.Equal(t, "c", entries[0].ID)
+	assert.Equal(t, "b", entries[1].ID)
+	assert.Contains(t, requestedPages, "2")
 }
 
 func TestService_ClearMemories_WithOrgProject(t *testing.T) {

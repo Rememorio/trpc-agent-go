@@ -257,6 +257,11 @@ func TestClient_RetrySleep_NegativeAttempt(t *testing.T) {
 	assert.Equal(t, 2*retryBaseBackoff, d)
 }
 
+func TestClient_RetrySleep_AttemptZero(t *testing.T) {
+	d := retrySleep(0, nil)
+	assert.Equal(t, retryBaseBackoff, d)
+}
+
 func TestClient_DoJSONOnce_WithPayload(t *testing.T) {
 	var gotContentType string
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {

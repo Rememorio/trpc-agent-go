@@ -219,7 +219,7 @@ func (c *client) retrySleepDuration(attempt int) time.Duration {
 func retrySleep(attempt int, jitterFn func(max int64) int64) time.Duration {
 	base := retryBaseBackoff
 	max := retryMaxBackoff
-	if attempt <= 0 {
+	if attempt < 0 {
 		attempt = 1
 	}
 	pow := 1 << attempt

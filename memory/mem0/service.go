@@ -305,7 +305,7 @@ func (s *Service) ReadMemories(
 		pageSize = limit
 	}
 
-	var all []memoryRecord
+	var entries []*memory.Entry
 	page := 1
 	for {
 		q := url.Values{}
@@ -325,21 +325,15 @@ func (s *Service) ReadMemories(
 		if len(batch.Results) == 0 {
 			break
 		}
-		all = append(all, batch.Results...)
-		if limit > 0 && len(all) >= limit {
-			all = all[:limit]
+		for i := range batch.Results {
+			if entry := toEntry(userKey.AppName, userKey.UserID, &batch.Results[i]); entry != nil {
+				entries = append(entries, entry)
+			}
+		}
+		if limit > 0 && len(entries) >= limit {
 			break
 		}
 		page++
-	}
-
-	entries := make([]*memory.Entry, 0, len(all))
-	for i := range all {
-		entry := toEntry(userKey.AppName, userKey.UserID, &all[i])
-		if entry == nil {
-			continue
-		}
-		entries = append(entries, entry)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -348,6 +342,10 @@ func (s *Service) ReadMemories(
 		}
 		return entries[i].UpdatedAt.After(entries[j].UpdatedAt)
 	})
+
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
 
 	return entries, nil
 }
@@ -500,6 +498,7 @@ func applySimilarityThreshold(
 			filtered = append(filtered, result)
 		}
 	}
+	clear(results[len(filtered):])
 	return filtered
 }
 
