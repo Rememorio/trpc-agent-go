@@ -738,6 +738,10 @@ func mergeGatewayUsage(
 		}
 		return cloned
 	}
+	lastPrompt := accumulated.LastPromptTokens
+	if usage.PromptTokens > 0 {
+		lastPrompt = usage.PromptTokens
+	}
 	return &gwproto.Usage{
 		PromptTokens: accumulated.PromptTokens +
 			usage.PromptTokens,
@@ -745,7 +749,7 @@ func mergeGatewayUsage(
 			usage.CompletionTokens,
 		TotalTokens: accumulated.TotalTokens +
 			usage.TotalTokens,
-		LastPromptTokens: usage.PromptTokens,
+		LastPromptTokens: lastPrompt,
 	}
 }
 
