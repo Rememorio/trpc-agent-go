@@ -88,8 +88,10 @@ var defaultOptions = serviceOpts{
 	useExtractorForAutoMemory: true,
 }
 
+// ServiceOpt configures a mem0-backed memory service.
 type ServiceOpt func(*serviceOpts)
 
+// WithHost sets the mem0 API host or base URL.
 func WithHost(host string) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if host == "" {
@@ -99,6 +101,7 @@ func WithHost(host string) ServiceOpt {
 	}
 }
 
+// WithAPIKey sets the mem0 API key used for all requests.
 func WithAPIKey(apiKey string) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if apiKey == "" {
@@ -108,6 +111,7 @@ func WithAPIKey(apiKey string) ServiceOpt {
 	}
 }
 
+// WithOrgProject sets optional mem0 organization and project identifiers.
 func WithOrgProject(orgID, projectID string) ServiceOpt {
 	return func(opts *serviceOpts) {
 		opts.orgID = orgID
@@ -115,12 +119,14 @@ func WithOrgProject(orgID, projectID string) ServiceOpt {
 	}
 }
 
+// WithAsyncMode controls whether mem0 create/ingest requests are async.
 func WithAsyncMode(async bool) ServiceOpt {
 	return func(opts *serviceOpts) {
 		opts.asyncMode = async
 	}
 }
 
+// WithVersion sets the mem0 ingestion API version for create requests.
 func WithVersion(version string) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if version == "" {
@@ -130,6 +136,7 @@ func WithVersion(version string) ServiceOpt {
 	}
 }
 
+// WithTimeout sets the HTTP timeout for mem0 requests.
 func WithTimeout(timeout time.Duration) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if timeout <= 0 {
@@ -139,6 +146,7 @@ func WithTimeout(timeout time.Duration) ServiceOpt {
 	}
 }
 
+// WithHTTPClient injects a custom HTTP client for mem0 requests.
 func WithHTTPClient(c *http.Client) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if c == nil {
@@ -148,6 +156,7 @@ func WithHTTPClient(c *http.Client) ServiceOpt {
 	}
 }
 
+// WithCustomTool replaces the tool implementation for a memory tool.
 func WithCustomTool(toolName string, creator memory.ToolCreator) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if !imemory.IsValidToolName(toolName) || creator == nil {
@@ -168,6 +177,7 @@ func WithCustomTool(toolName string, creator memory.ToolCreator) ServiceOpt {
 	}
 }
 
+// WithToolEnabled enables or disables a supported memory tool.
 func WithToolEnabled(toolName string, enabled bool) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if !imemory.IsValidToolName(toolName) {
@@ -221,18 +231,21 @@ func WithToolExposed(toolName string, exposed bool) ServiceOpt {
 	}
 }
 
+// WithExtractor enables framework-driven auto memory extraction for mem0.
 func WithExtractor(e extractor.MemoryExtractor) ServiceOpt {
 	return func(opts *serviceOpts) {
 		opts.extractor = e
 	}
 }
 
+// WithUseExtractorForAutoMemory selects extractor-driven auto memory over mem0 ingestion.
 func WithUseExtractorForAutoMemory(enabled bool) ServiceOpt {
 	return func(opts *serviceOpts) {
 		opts.useExtractorForAutoMemory = enabled
 	}
 }
 
+// WithIngestEnabled controls whether mem0 ingestion workers are enabled.
 func WithIngestEnabled(enabled bool) ServiceOpt {
 	return func(opts *serviceOpts) {
 		opts.ingestEnabled = enabled
@@ -240,6 +253,7 @@ func WithIngestEnabled(enabled bool) ServiceOpt {
 	}
 }
 
+// WithAsyncMemoryNum sets the number of async mem0 ingestion workers.
 func WithAsyncMemoryNum(num int) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if num < 1 {
@@ -249,6 +263,7 @@ func WithAsyncMemoryNum(num int) ServiceOpt {
 	}
 }
 
+// WithMemoryQueueSize sets the queue size for async mem0 ingestion jobs.
 func WithMemoryQueueSize(size int) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if size < 1 {
@@ -258,6 +273,7 @@ func WithMemoryQueueSize(size int) ServiceOpt {
 	}
 }
 
+// WithMemoryJobTimeout sets the timeout used by synchronous ingest fallback jobs.
 func WithMemoryJobTimeout(timeout time.Duration) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if timeout <= 0 {

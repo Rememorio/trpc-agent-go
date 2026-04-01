@@ -368,88 +368,154 @@ func (s *Service) SearchMemories(
 		return []*memory.Entry{}, nil
 	}
 
-	maxResults := defaultSearchTopK
-	if searchOpts.MaxResults > 0 {
-		maxResults = searchOpts.MaxResults
-	}
-
-	results, err := s.executeSemanticSearch(ctx, userKey, searchOpts, maxResults)
+	maxResults := resolveMaxResults(searchOpts)
+	results, err := s.executeSearchPipeline(ctx, userKey, searchOpts, maxResults)
 	if err != nil {
 		return nil, err
 	}
+	return finalizeSearchResults(results, searchOpts, maxResults), nil
+}
 
-	if searchOpts.Kind != "" && searchOpts.KindFallback &&
-		len(results) < imemory.MinKindFallbackResults {
-		fallbackOpts := searchOpts
-		fallbackOpts.Kind = ""
-		fallbackOpts.KindFallback = false
-		fallbackResults, fallbackErr := s.executeSemanticSearch(
-			ctx,
-			userKey,
-			fallbackOpts,
-			maxResults,
-		)
-		if fallbackErr == nil && len(fallbackResults) > 0 {
-			results = imemory.MergeSearchResults(
-				results,
-				fallbackResults,
-				searchOpts.Kind,
-				maxResults,
-			)
-		}
+func resolveMaxResults(opts memory.SearchOptions) int {
+	if opts.MaxResults > 0 {
+		return opts.MaxResults
+	}
+	return defaultSearchTopK
+}
+
+func (s *Service) executeSearchPipeline(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+) ([]*memory.Entry, error) {
+	results, err := s.executeSemanticSearchWithFallback(ctx, userKey, opts, maxResults)
+	if err != nil {
+		return nil, err
+	}
+	return s.mergeHybridSearchResults(ctx, userKey, opts, maxResults, results), nil
+}
+
+func (s *Service) executeSemanticSearchWithFallback(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+) ([]*memory.Entry, error) {
+	results, err := s.executeSemanticSearch(ctx, userKey, opts, maxResults)
+	if err != nil {
+		return nil, err
+	}
+	if !shouldUseKindFallback(opts, results) {
+		return results, nil
 	}
 
-	if searchOpts.HybridSearch {
-		keywordResults, kwErr := s.executeKeywordSearch(
-			ctx,
-			userKey,
-			searchOpts,
-			maxResults,
-		)
-		if kwErr == nil && len(keywordResults) > 0 {
-			rrfK := searchOpts.HybridRRFK
-			if rrfK <= 0 {
-				rrfK = defaultRRFK
-			}
-			results = imemory.MergeHybridResults(
-				results,
-				keywordResults,
-				rrfK,
-				maxResults,
-			)
-		}
+	fallbackOpts := opts
+	fallbackOpts.Kind = ""
+	fallbackOpts.KindFallback = false
+	fallbackResults, fallbackErr := s.executeSemanticSearch(
+		ctx,
+		userKey,
+		fallbackOpts,
+		maxResults,
+	)
+	if fallbackErr != nil || len(fallbackResults) == 0 {
+		return results, nil
 	}
 
-	if searchOpts.SimilarityThreshold > 0 && !searchOpts.HybridSearch {
-		filtered := results[:0]
-		for _, result := range results {
-			if result.Score >= searchOpts.SimilarityThreshold {
-				filtered = append(filtered, result)
-			}
-		}
-		results = filtered
+	return imemory.MergeSearchResults(
+		results,
+		fallbackResults,
+		opts.Kind,
+		maxResults,
+	), nil
+}
+
+func shouldUseKindFallback(
+	opts memory.SearchOptions,
+	results []*memory.Entry,
+) bool {
+	return opts.Kind != "" &&
+		opts.KindFallback &&
+		len(results) < imemory.MinKindFallbackResults
+}
+
+func (s *Service) mergeHybridSearchResults(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+	results []*memory.Entry,
+) []*memory.Entry {
+	if !opts.HybridSearch {
+		return results
 	}
 
-	if len(results) > 1 {
-		if searchOpts.Kind != "" && searchOpts.KindFallback {
-			imemory.SortSearchResultsWithKindPriority(
-				results,
-				searchOpts.Kind,
-				searchOpts.OrderByEventTime,
-			)
-		} else {
-			imemory.SortSearchResults(results, searchOpts.OrderByEventTime)
-		}
+	keywordResults, err := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
+	if err != nil || len(keywordResults) == 0 {
+		return results
 	}
+	return imemory.MergeHybridResults(
+		results,
+		keywordResults,
+		resolveHybridRRFK(opts),
+		maxResults,
+	)
+}
 
-	if searchOpts.Deduplicate && len(results) > 1 {
+func resolveHybridRRFK(opts memory.SearchOptions) int {
+	if opts.HybridRRFK > 0 {
+		return opts.HybridRRFK
+	}
+	return defaultRRFK
+}
+
+func finalizeSearchResults(
+	results []*memory.Entry,
+	opts memory.SearchOptions,
+	maxResults int,
+) []*memory.Entry {
+	results = applySimilarityThreshold(results, opts)
+	sortSearchResults(results, opts)
+	if opts.Deduplicate && len(results) > 1 {
 		results = imemory.DeduplicateResults(results)
 	}
 	if maxResults > 0 && len(results) > maxResults {
-		results = results[:maxResults]
+		return results[:maxResults]
+	}
+	return results
+}
+
+func applySimilarityThreshold(
+	results []*memory.Entry,
+	opts memory.SearchOptions,
+) []*memory.Entry {
+	if opts.SimilarityThreshold <= 0 || opts.HybridSearch {
+		return results
 	}
 
-	return results, nil
+	filtered := results[:0]
+	for _, result := range results {
+		if result.Score >= opts.SimilarityThreshold {
+			filtered = append(filtered, result)
+		}
+	}
+	return filtered
+}
+
+func sortSearchResults(results []*memory.Entry, opts memory.SearchOptions) {
+	if len(results) <= 1 {
+		return
+	}
+	if opts.Kind != "" && opts.KindFallback {
+		imemory.SortSearchResultsWithKindPriority(
+			results,
+			opts.Kind,
+			opts.OrderByEventTime,
+		)
+		return
+	}
+	imemory.SortSearchResults(results, opts.OrderByEventTime)
 }
 
 func (s *Service) executeSemanticSearch(

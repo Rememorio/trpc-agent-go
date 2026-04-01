@@ -12,16 +12,16 @@ package mem0
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -60,9 +60,6 @@ type client struct {
 
 	hc      *http.Client
 	timeout time.Duration
-
-	rndMu sync.Mutex
-	rnd   *rand.Rand
 }
 
 func newClient(opts serviceOpts) (*client, error) {
@@ -75,7 +72,6 @@ func newClient(opts serviceOpts) (*client, error) {
 	}
 
 	host := strings.TrimRight(opts.host, "/")
-	seed := time.Now().UnixNano()
 
 	return &client{
 		host:      host,
@@ -84,7 +80,6 @@ func newClient(opts serviceOpts) (*client, error) {
 		projectID: opts.projectID,
 		hc:        hc,
 		timeout:   opts.timeout,
-		rnd:       rand.New(rand.NewSource(seed)),
 	}, nil
 }
 
@@ -216,30 +211,45 @@ func shouldRetry(err error) bool {
 	return false
 }
 
-// retrySleepDuration returns a jittered backoff duration for the
-// given attempt, protecting the internal rand source with a mutex.
+// retrySleepDuration returns a jittered backoff duration for the given attempt.
 func (c *client) retrySleepDuration(attempt int) time.Duration {
-	c.rndMu.Lock()
-	defer c.rndMu.Unlock()
-	return retrySleep(c.rnd, attempt)
+	return retrySleep(attempt, cryptoJitter)
 }
 
-func retrySleep(r *rand.Rand, attempt int) time.Duration {
+func retrySleep(attempt int, jitterFn func(max int64) int64) time.Duration {
 	base := retryBaseBackoff
 	max := retryMaxBackoff
 	if attempt <= 0 {
 		attempt = 1
 	}
 	pow := 1 << attempt
-	d := time.Duration(pow) * base
-	if d > max {
-		d = max
-	}
-	if r == nil {
+	d := min(time.Duration(pow)*base, max)
+	if jitterFn == nil || d <= 1 {
 		return d
 	}
-	jitter := time.Duration(r.Int63n(int64(d / 2)))
+	jitterMax := int64(d / 2)
+	if jitterMax <= 0 {
+		return d
+	}
+	jitter := time.Duration(jitterFn(jitterMax))
+	if jitter < 0 {
+		jitter = 0
+	}
+	if jitter > d/2 {
+		jitter = d / 2
+	}
 	return d/2 + jitter
+}
+
+func cryptoJitter(max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(max))
+	if err != nil {
+		return 0
+	}
+	return n.Int64()
 }
 
 func itoa(v int) string {

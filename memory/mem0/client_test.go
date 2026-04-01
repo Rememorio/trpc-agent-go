@@ -11,7 +11,6 @@ package mem0
 
 import (
 	"context"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -53,11 +52,11 @@ func TestClient_ShouldRetry(t *testing.T) {
 
 func TestClient_RetrySleep_NoRand(t *testing.T) {
 	const attempt = 1
-	d := retrySleep(nil, attempt)
+	d := retrySleep(attempt, nil)
 	assert.Equal(t, 2*retryBaseBackoff, d)
 
 	const bigAttempt = 10
-	d = retrySleep(nil, bigAttempt)
+	d = retrySleep(bigAttempt, nil)
 	assert.Equal(t, retryMaxBackoff, d)
 }
 
@@ -137,9 +136,10 @@ func TestClient_DoJSON_SuccessAndCancelRetry(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-func TestClient_RetrySleep_WithRand(t *testing.T) {
-	r := rand.New(rand.NewSource(1))
-	d := retrySleep(r, 1)
+func TestClient_RetrySleep_WithJitter(t *testing.T) {
+	d := retrySleep(1, func(max int64) int64 {
+		return max / 2
+	})
 	min := retryBaseBackoff
 	max := 2 * retryBaseBackoff
 	assert.GreaterOrEqual(t, d, min)
@@ -253,7 +253,7 @@ func TestClient_DoJSONOnce_UnmarshalError(t *testing.T) {
 }
 
 func TestClient_RetrySleep_NegativeAttempt(t *testing.T) {
-	d := retrySleep(nil, -1)
+	d := retrySleep(-1, nil)
 	assert.Equal(t, 2*retryBaseBackoff, d)
 }
 
