@@ -252,9 +252,11 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 	}
 
 	// 5. Skills processor - injects skill overview and loaded contents
-	// when a skills repository is configured. This ensures the model
-	// sees available skills (names/descriptions) and any loaded
-	// SKILL.md/doc texts before deciding on tool calls.
+	// when a skills repository is configured statically or resolved at
+	// invocation time. This ensures the model sees available skills
+	// (names/descriptions) and any loaded SKILL.md/doc texts before
+	// deciding on tool calls.
+	skillFlags := mustResolveSkillToolFlags(options)
 	var skillsOpts []processor.SkillsRequestProcessorOption
 	if options.skillsToolingGuidance != nil {
 		skillsOpts = append(
@@ -270,9 +272,7 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 			a.skillRepositoryForInvocation,
 		),
 		processor.WithSkillLoadMode(options.SkillLoadMode),
-		processor.WithSkillToolProfile(
-			skillprofile.Normalize(options.skillToolProfile),
-		),
+		processor.WithSkillToolFlags(skillFlags),
 	)
 	if options.MaxLoadedSkills > 0 {
 		skillsOpts = append(
@@ -286,12 +286,6 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		skillsOpts = append(
 			skillsOpts,
 			processor.WithSkillsLoadedContentInToolResults(true),
-		)
-	}
-	if !executorSupportsInteractive(options) {
-		skillsOpts = append(
-			skillsOpts,
-			processor.WithSkillExecToolsDisabled(),
 		)
 	}
 	skillsProcessor := processor.NewSkillsRequestProcessor(
@@ -528,6 +522,7 @@ func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
 		allTools,
 		options,
 		workspaceRegistry,
+		nil,
 	)
 	allTools = appendSkillTools(allTools, options, runTool)
 	return allTools, userToolNames
@@ -616,7 +611,7 @@ func appendSkillToolsWithRepo(
 		return allTools
 	}
 
-	skillFlags := skillprofile.ResolveFlags(options.skillToolProfile)
+	skillFlags := mustResolveSkillToolFlags(options)
 	if skillFlags.Load {
 		allTools = append(
 			allTools,
@@ -677,10 +672,37 @@ func appendSkillToolsWithRepo(
 	return allTools
 }
 
+func mustResolveSkillToolFlags(options *Options) skillprofile.Flags {
+	flags, err := skillprofile.ResolveFlags(
+		options.skillToolProfile,
+		options.allowedSkillTools,
+	)
+	if err != nil {
+		panic(fmt.Sprintf(
+			"Invalid LLMAgent configuration: %v",
+			err,
+		))
+	}
+
+	if options.skillRunRequireSkillLoaded &&
+		(flags.Run || flags.Exec) &&
+		!flags.Load {
+		panic("Invalid LLMAgent configuration: " +
+			"skill_run and skill_exec require skill_load when " +
+			"WithSkillRunRequireSkillLoaded is enabled")
+	}
+
+	if !executorSupportsInteractive(options) {
+		flags = flags.WithoutInteractiveExecution()
+	}
+	return flags
+}
+
 func appendWorkspaceExecTool(
 	allTools []tool.Tool,
 	options *Options,
 	reg *codeexecutor.WorkspaceRegistry,
+	inv *agent.Invocation,
 ) []tool.Tool {
 	if !executorSupportsWorkspaceExec(options) {
 		return allTools
@@ -692,8 +714,13 @@ func appendWorkspaceExecTool(
 	allTools = append(
 		allTools,
 		execTool,
-		toolworkspaceexec.NewPublishArtifactTool(execTool),
 	)
+	if toolworkspaceexec.SupportsArtifactSave(inv) {
+		allTools = append(
+			allTools,
+			toolworkspaceexec.NewSaveArtifactTool(execTool),
+		)
+	}
 	if executorSupportsWorkspaceExecSessions(options) {
 		allTools = append(
 			allTools,

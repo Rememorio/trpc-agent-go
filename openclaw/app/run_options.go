@@ -15,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,6 +54,9 @@ const (
 
 	summaryPolicyAny = "any"
 	summaryPolicyAll = "all"
+
+	summaryModeAuto   = "auto"
+	summaryModeManual = "manual"
 
 	defaultSessionSummaryEventThreshold = 20
 	defaultSkillsLoadMode               = "turn"
@@ -161,6 +165,7 @@ type runOptions struct {
 	OpenAIVariant      string
 	OpenAIBaseURL      string
 	ModelConfig        *yaml.Node
+	KnowledgesConfig   map[string]*yaml.Node
 	SkillsRoot         string
 	SkillsExtraDir     string
 	SkillsDebug        bool
@@ -201,12 +206,14 @@ type runOptions struct {
 	MemoryAutoMessageThreshold int
 	MemoryAutoTimeInterval     time.Duration
 
-	SessionSummaryEnabled       bool
-	SessionSummaryPolicy        string
-	SessionSummaryEventCount    int
-	SessionSummaryTokenCount    int
-	SessionSummaryIdleThreshold time.Duration
-	SessionSummaryMaxWords      int
+	SessionSummaryEnabled             bool
+	SessionSummaryMode                string
+	SessionSummaryPolicy              string
+	SessionSummaryEventCount          int
+	SessionSummaryTokenCount          int
+	SessionSummaryIdleThreshold       time.Duration
+	SessionSummaryMaxWords            int
+	SessionSummaryApproxRunesPerToken float64
 
 	EnableLocalExec     bool
 	EnableOpenClawTools bool
@@ -674,10 +681,16 @@ func parseRunOptions(args []string) (runOptions, error) {
 		"Enable session summarization (optional)",
 	)
 	fs.StringVar(
+		&opts.SessionSummaryMode,
+		"session-summary-mode",
+		"",
+		"Summary trigger mode: auto (context-window aware) or manual (explicit thresholds)",
+	)
+	fs.StringVar(
 		&opts.SessionSummaryPolicy,
 		"session-summary-policy",
 		summaryPolicyAny,
-		"Session summary gating policy: any|all",
+		"Session summary gating policy: any|all (only used in manual mode)",
 	)
 	fs.IntVar(
 		&opts.SessionSummaryEventCount,
@@ -702,6 +715,13 @@ func parseRunOptions(args []string) (runOptions, error) {
 		"session-summary-max-words",
 		0,
 		"Max summary words (0 means no limit)",
+	)
+	fs.Float64Var(
+		&opts.SessionSummaryApproxRunesPerToken,
+		"session-summary-approx-runes-per-token",
+		0,
+		"Approximate runes per token for summary token estimation "+
+			"(0 uses framework default 4.0; set ~2.0 for Chinese-heavy content)",
 	)
 	fs.BoolVar(
 		&opts.EnableLocalExec,
@@ -849,6 +869,7 @@ type fileConfig struct {
 	A2A           *a2aConfig           `yaml:"a2a,omitempty"`
 	Agent         *agentRunConfig      `yaml:"agent,omitempty"`
 	Model         *modelConfig         `yaml:"model,omitempty"`
+	Knowledges    *knowledgesConfig    `yaml:"knowledges,omitempty"`
 	Gateway       *gatewayConfig       `yaml:"gateway,omitempty"`
 	Channels      []filePluginSpec     `yaml:"channels,omitempty"`
 	Skills        *skillsConfig        `yaml:"skills,omitempty"`
@@ -1005,6 +1026,16 @@ type memoryConfig struct {
 	Config  *rawYAMLNode `yaml:"config,omitempty"`
 }
 
+type knowledgesConfig struct {
+	Entries []knowledgeEntryConfig `yaml:"entries,omitempty"`
+}
+
+type knowledgeEntryConfig struct {
+	Name        string       `yaml:"name,omitempty"`
+	Embedder    *rawYAMLNode `yaml:"embedder,omitempty"`
+	VectorStore *rawYAMLNode `yaml:"vector_store,omitempty"`
+}
+
 type pluginSpec struct {
 	Type   string     `yaml:"type,omitempty"`
 	Name   string     `yaml:"name,omitempty"`
@@ -1033,12 +1064,14 @@ type redisConfig struct {
 }
 
 type summaryConfig struct {
-	Enabled        *bool   `yaml:"enabled,omitempty"`
-	Policy         *string `yaml:"policy,omitempty"`
-	EventThreshold *int    `yaml:"event_threshold,omitempty"`
-	TokenThreshold *int    `yaml:"token_threshold,omitempty"`
-	IdleThreshold  *string `yaml:"idle_threshold,omitempty"`
-	MaxWords       *int    `yaml:"max_words,omitempty"`
+	Enabled             *bool    `yaml:"enabled,omitempty"`
+	Mode                *string  `yaml:"mode,omitempty"`
+	Policy              *string  `yaml:"policy,omitempty"`
+	EventThreshold      *int     `yaml:"event_threshold,omitempty"`
+	TokenThreshold      *int     `yaml:"token_threshold,omitempty"`
+	IdleThreshold       *string  `yaml:"idle_threshold,omitempty"`
+	MaxWords            *int     `yaml:"max_words,omitempty"`
+	ApproxRunesPerToken *float64 `yaml:"approx_runes_per_token,omitempty"`
 }
 
 type memoryAuto struct {
@@ -1340,6 +1373,13 @@ func (cfg *fileConfig) apply(
 		if cfg.Model.Config != nil {
 			opts.ModelConfig = cfg.Model.Config.Node
 		}
+	}
+	if cfg.Knowledges != nil {
+		knowledges, err := convertKnowledgeConfigs(cfg.Knowledges.Entries)
+		if err != nil {
+			return err
+		}
+		opts.KnowledgesConfig = knowledges
 	}
 
 	if cfg.Gateway != nil {
@@ -1695,6 +1735,75 @@ func convertSkillConfigs(
 	return out
 }
 
+func convertKnowledgeConfigs(
+	entries []knowledgeEntryConfig,
+) (map[string]*yaml.Node, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[string]*yaml.Node, len(entries))
+	for i := range entries {
+		entry := entries[i]
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			return nil, fmt.Errorf("knowledges.entries[%d].name is empty", i)
+		}
+		if _, exists := out[name]; exists {
+			return nil, fmt.Errorf("duplicate knowledge name: %s", name)
+		}
+
+		node := &yaml.Node{
+			Kind: yaml.MappingNode,
+			Tag:  "!!map",
+		}
+		if entry.Embedder != nil && entry.Embedder.Node != nil {
+			node.Content = append(
+				node.Content,
+				&yaml.Node{
+					Kind:  yaml.ScalarNode,
+					Tag:   "!!str",
+					Value: "embedder",
+				},
+				cloneYAMLNode(entry.Embedder.Node),
+			)
+		}
+		if entry.VectorStore != nil && entry.VectorStore.Node != nil {
+			node.Content = append(
+				node.Content,
+				&yaml.Node{
+					Kind:  yaml.ScalarNode,
+					Tag:   "!!str",
+					Value: "vector_store",
+				},
+				cloneYAMLNode(entry.VectorStore.Node),
+			)
+		}
+		if len(node.Content) == 0 {
+			continue
+		}
+		out[name] = node
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func cloneYAMLNode(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	cloned := *node
+	if len(node.Content) > 0 {
+		cloned.Content = make([]*yaml.Node, 0, len(node.Content))
+		for _, child := range node.Content {
+			cloned.Content = append(cloned.Content, cloneYAMLNode(child))
+		}
+	}
+	return &cloned
+}
+
 func applySessionSummary(
 	cfg *summaryConfig,
 	opts *runOptions,
@@ -1706,6 +1815,9 @@ func applySessionSummary(
 
 	if cfg.Enabled != nil && !flagWasSet(set, "session-summary") {
 		opts.SessionSummaryEnabled = *cfg.Enabled
+	}
+	if cfg.Mode != nil && !flagWasSet(set, "session-summary-mode") {
+		opts.SessionSummaryMode = strings.TrimSpace(*cfg.Mode)
 	}
 	if cfg.Policy != nil && !flagWasSet(set, "session-summary-policy") {
 		opts.SessionSummaryPolicy = strings.TrimSpace(*cfg.Policy)
@@ -1727,6 +1839,10 @@ func applySessionSummary(
 	}
 	if cfg.MaxWords != nil && !flagWasSet(set, "session-summary-max-words") {
 		opts.SessionSummaryMaxWords = *cfg.MaxWords
+	}
+	if cfg.ApproxRunesPerToken != nil &&
+		!flagWasSet(set, "session-summary-approx-runes-per-token") {
+		opts.SessionSummaryApproxRunesPerToken = *cfg.ApproxRunesPerToken
 	}
 	return nil
 }
@@ -1802,6 +1918,12 @@ func finalizeRunOptions(opts *runOptions) error {
 	opts.LangfuseTraceURLTemplate = strings.TrimSpace(
 		opts.LangfuseTraceURLTemplate,
 	)
+	if v := opts.SessionSummaryApproxRunesPerToken; math.IsNaN(v) ||
+		math.IsInf(v, 0) || v < 0 {
+		return fmt.Errorf(
+			"invalid session-summary-approx-runes-per-token: %v", v,
+		)
+	}
 	normalizeA2AOptions(opts)
 	return nil
 }

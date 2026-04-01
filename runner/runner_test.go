@@ -11,6 +11,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,6 +41,7 @@ import (
 	runnerlog "trpc.group/trpc-go/trpc-agent-go/log"
 	memoryinmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
@@ -209,6 +211,23 @@ func (m *emptyIDModel) Info() model.Info { return model.Info{Name: m.name} }
 type runnerStructuredOutputTypedPayload struct {
 	Answer string `json:"answer"`
 	Score  int    `json:"score"`
+}
+
+type realStructuredOutputComplexDetail struct {
+	City  string `json:"city"`
+	Codes []int  `json:"codes"`
+}
+
+type realStructuredOutputComplexPayload struct {
+	Answer string                             `json:"answer"`
+	Detail *realStructuredOutputComplexDetail `json:"detail"`
+	Tags   []string                           `json:"tags"`
+	Scores [2]int                             `json:"scores"`
+}
+
+type realStructuredOutputMapPayload struct {
+	Answer string            `json:"answer"`
+	Labels map[string]string `json:"labels"`
 }
 
 type capturedModelRequest struct {
@@ -817,6 +836,295 @@ func TestRunner_Run_WithRunStructuredOutputJSON_PassesThroughGraphAgent(t *testi
 	require.NotNil(t, captured.structuredOutput.JSONSchema)
 	require.Equal(t, "runnerStructuredOutputTypedPayload", captured.structuredOutput.JSONSchema.Name)
 	require.Equal(t, description, captured.structuredOutput.JSONSchema.Description)
+}
+
+func TestRunner_Run_WithRunStructuredOutputJSON_SupportsPointerSliceAndArrayFields_RealOpenAI(
+	t *testing.T,
+) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set, skipping real API test")
+	}
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	temperature := 0.0
+	maxTokens := 200
+	modelOptions := []openai.Option{openai.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		modelOptions = append(modelOptions, openai.WithBaseURL(baseURL))
+	}
+	modelInstance := openai.New("gpt-4o-mini", modelOptions...)
+	ag := llmagent.New(
+		"real-complex-structured-output-agent",
+		llmagent.WithModel(modelInstance),
+		llmagent.WithGenerationConfig(model.GenerationConfig{
+			MaxTokens:   &maxTokens,
+			Temperature: &temperature,
+			Stream:      false,
+		}),
+	)
+	r := NewRunner(
+		"real-complex-structured-output-app",
+		ag,
+		WithSessionService(sessioninmemory.NewSessionService()),
+	)
+	t.Cleanup(func() {
+		require.NoError(t, r.Close())
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	eventCh, err := r.Run(
+		ctx,
+		"user-real-complex",
+		"session-real-complex",
+		model.NewUserMessage(
+			"Return a JSON object that exactly matches the schema and uses exactly these values: "+
+				`answer="ok", detail.city="shenzhen", detail.codes=[1,2], tags=["alpha","beta"], scores=[7,9].`,
+		),
+		agent.WithStructuredOutputJSON(
+			new(realStructuredOutputComplexPayload),
+			true,
+			"Return one complex typed payload.",
+		),
+	)
+	require.NoError(t, err)
+	var structured any
+	for evt := range eventCh {
+		require.Nil(t, evt.Error, "unexpected runner event error: %+v", evt.Error)
+		if evt.StructuredOutput != nil {
+			structured = evt.StructuredOutput
+		}
+	}
+	payload, ok := structured.(*realStructuredOutputComplexPayload)
+	require.True(t, ok, "expected complex typed structured output payload, got %T", structured)
+	require.Equal(t, "ok", payload.Answer)
+	require.NotNil(t, payload.Detail)
+	require.Equal(t, "shenzhen", payload.Detail.City)
+	require.Equal(t, []int{1, 2}, payload.Detail.Codes)
+	require.Equal(t, []string{"alpha", "beta"}, payload.Tags)
+	require.Equal(t, [2]int{7, 9}, payload.Scores)
+}
+
+func TestRunner_Run_WithRunStructuredOutputJSON_SupportsPointerSliceAndArrayFields_NonStrict_RealOpenAI(
+	t *testing.T,
+) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set, skipping real API test")
+	}
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	temperature := 0.0
+	maxTokens := 200
+	modelOptions := []openai.Option{openai.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		modelOptions = append(modelOptions, openai.WithBaseURL(baseURL))
+	}
+	modelInstance := openai.New("gpt-4o-mini", modelOptions...)
+	ag := llmagent.New(
+		"real-complex-structured-output-nonstrict-agent",
+		llmagent.WithModel(modelInstance),
+		llmagent.WithGenerationConfig(model.GenerationConfig{
+			MaxTokens:   &maxTokens,
+			Temperature: &temperature,
+			Stream:      false,
+		}),
+	)
+	r := NewRunner(
+		"real-complex-structured-output-nonstrict-app",
+		ag,
+		WithSessionService(sessioninmemory.NewSessionService()),
+	)
+	t.Cleanup(func() {
+		require.NoError(t, r.Close())
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	eventCh, err := r.Run(
+		ctx,
+		"user-real-complex-nonstrict",
+		"session-real-complex-nonstrict",
+		model.NewUserMessage(
+			"Return a JSON object that exactly matches the schema and uses exactly these values: "+
+				`answer="ok", detail.city="shenzhen", detail.codes=[1,2], tags=["alpha","beta"], scores=[7,9].`,
+		),
+		agent.WithStructuredOutputJSON(
+			new(realStructuredOutputComplexPayload),
+			false,
+			"Return one complex typed payload.",
+		),
+	)
+	require.NoError(t, err)
+	var structured any
+	for evt := range eventCh {
+		require.Nil(t, evt.Error, "unexpected runner event error: %+v", evt.Error)
+		if evt.StructuredOutput != nil {
+			structured = evt.StructuredOutput
+		}
+	}
+	payload, ok := structured.(*realStructuredOutputComplexPayload)
+	require.True(t, ok, "expected complex typed structured output payload, got %T", structured)
+	require.Equal(t, "ok", payload.Answer)
+	require.NotNil(t, payload.Detail)
+	require.Equal(t, "shenzhen", payload.Detail.City)
+	require.Equal(t, []int{1, 2}, payload.Detail.Codes)
+	require.Equal(t, []string{"alpha", "beta"}, payload.Tags)
+	require.Equal(t, [2]int{7, 9}, payload.Scores)
+}
+
+func TestRunner_Run_WithRunStructuredOutputJSONSchema_LegacyNonStrictPointerSliceAndArrayFields_RealOpenAI(
+	t *testing.T,
+) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set, skipping real API test")
+	}
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	temperature := 0.0
+	maxTokens := 200
+	modelOptions := []openai.Option{openai.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		modelOptions = append(modelOptions, openai.WithBaseURL(baseURL))
+	}
+	modelInstance := openai.New("gpt-4o-mini", modelOptions...)
+	ag := llmagent.New(
+		"real-legacy-complex-structured-output-nonstrict-agent",
+		llmagent.WithModel(modelInstance),
+		llmagent.WithGenerationConfig(model.GenerationConfig{
+			MaxTokens:   &maxTokens,
+			Temperature: &temperature,
+			Stream:      false,
+		}),
+	)
+	r := NewRunner(
+		"real-legacy-complex-structured-output-nonstrict-app",
+		ag,
+		WithSessionService(sessioninmemory.NewSessionService()),
+	)
+	t.Cleanup(func() {
+		require.NoError(t, r.Close())
+	})
+	legacySchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"answer": map[string]any{"type": "string"},
+			"detail": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"city": map[string]any{"type": "string"},
+					"codes": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"type": "integer"},
+					},
+				},
+				"required":             []string{"city"},
+				"additionalProperties": false,
+			},
+			"tags": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+			},
+			"scores": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "integer"},
+			},
+		},
+		"required":             []string{"answer", "scores"},
+		"additionalProperties": false,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	eventCh, err := r.Run(
+		ctx,
+		"user-real-legacy-complex-nonstrict",
+		"session-real-legacy-complex-nonstrict",
+		model.NewUserMessage(
+			"Return a JSON object that exactly matches the schema and uses exactly these values: "+
+				`answer="ok", detail.city="shenzhen", detail.codes=[1,2], tags=["alpha","beta"], scores=[7,9].`,
+		),
+		agent.WithStructuredOutputJSONSchema(
+			"legacy_complex_payload",
+			legacySchema,
+			false,
+			"Return one complex typed payload.",
+		),
+	)
+	require.NoError(t, err)
+	var structured any
+	for evt := range eventCh {
+		require.Nil(t, evt.Error, "unexpected runner event error: %+v", evt.Error)
+		if evt.StructuredOutput != nil {
+			structured = evt.StructuredOutput
+		}
+	}
+	require.NotNil(t, structured, "expected structured output payload")
+	body, err := json.Marshal(structured)
+	require.NoError(t, err)
+	require.JSONEq(
+		t,
+		`{"answer":"ok","detail":{"city":"shenzhen","codes":[1,2]},"tags":["alpha","beta"],"scores":[7,9]}`,
+		string(body),
+	)
+}
+
+func TestRunner_Run_WithRunStructuredOutputJSON_SupportsStringMap_RealOpenAI(
+	t *testing.T,
+) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("OPENAI_API_KEY not set, skipping real API test")
+	}
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	temperature := 0.0
+	maxTokens := 200
+	modelOptions := []openai.Option{openai.WithAPIKey(apiKey)}
+	if baseURL != "" {
+		modelOptions = append(modelOptions, openai.WithBaseURL(baseURL))
+	}
+	modelInstance := openai.New("gpt-4o-mini", modelOptions...)
+	ag := llmagent.New(
+		"real-map-structured-output-agent",
+		llmagent.WithModel(modelInstance),
+		llmagent.WithGenerationConfig(model.GenerationConfig{
+			MaxTokens:   &maxTokens,
+			Temperature: &temperature,
+			Stream:      false,
+		}),
+	)
+	r := NewRunner(
+		"real-map-structured-output-app",
+		ag,
+		WithSessionService(sessioninmemory.NewSessionService()),
+	)
+	t.Cleanup(func() {
+		require.NoError(t, r.Close())
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	eventCh, err := r.Run(
+		ctx,
+		"user-real-map",
+		"session-real-map",
+		model.NewUserMessage(
+			"Return a JSON object that exactly matches the schema and uses exactly these values: "+
+				`answer="ok", labels={"env":"test","region":"sz"}.`,
+		),
+		agent.WithStructuredOutputJSON(
+			new(realStructuredOutputMapPayload),
+			true,
+			"Return one typed payload with a string map.",
+		),
+	)
+	require.NoError(t, err)
+	var structured any
+	for evt := range eventCh {
+		require.Nil(t, evt.Error, "unexpected runner event error: %+v", evt.Error)
+		if evt.StructuredOutput != nil {
+			structured = evt.StructuredOutput
+		}
+	}
+	payload, ok := structured.(*realStructuredOutputMapPayload)
+	require.True(t, ok, "expected typed structured output payload, got %T", structured)
+	require.Equal(t, "ok", payload.Answer)
+	require.Equal(t, map[string]string{"env": "test", "region": "sz"}, payload.Labels)
 }
 
 func TestRunner_SessionIntegration(t *testing.T) {
@@ -4230,7 +4538,7 @@ func TestShouldClearRunnerCompletionChoicesInSession_DoesNotDedupMismatchedRespo
 	t *testing.T,
 ) {
 	loop := &eventLoopContext{
-		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
+		persistedAssistantChoiceSignatures: map[string]struct{}{
 			assistantChoiceSignature([]model.Choice{{
 				Index:   0,
 				Message: model.NewAssistantMessage("wrapped-final"),
@@ -4260,7 +4568,7 @@ func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignatureW
 				agent.WithDisableGraphCompletionEvent(true),
 			)),
 		),
-		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
+		persistedAssistantChoiceSignatures: map[string]struct{}{
 			assistantChoiceSignature([]model.Choice{{
 				Index:   0,
 				Message: model.NewAssistantMessage("wrapped-final"),
@@ -4278,7 +4586,7 @@ func TestShouldClearRunnerCompletionChoicesInSession_FallsBackToChoiceSignatureW
 	))
 }
 
-func TestShouldClearRunnerCompletionChoicesInSession_PreservesLegacyChoicesWithoutHiddenCompletion(
+func TestShouldClearRunnerCompletionChoicesInSession_DedupsByPersistedResponseIDEvenWhenGraphCompletionEventIsVisible(
 	t *testing.T,
 ) {
 	loop := &eventLoopContext{
@@ -4287,7 +4595,61 @@ func TestShouldClearRunnerCompletionChoicesInSession_PreservesLegacyChoicesWitho
 				agent.WithGraphEmitFinalModelResponses(true),
 			)),
 		),
-		filteredPersistedAssistantChoiceSignatures: map[string]struct{}{
+		persistedAssistantResponseIDs: map[string]struct{}{
+			"response-from-state": {},
+		},
+	}
+	finalChoices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("wrapped-final"),
+	}}
+	finalStateDelta := map[string][]byte{
+		graph.StateKeyLastResponseID: []byte(`"response-from-state"`),
+	}
+	require.True(t, shouldClearRunnerCompletionChoicesInSession(
+		loop,
+		finalChoices,
+		finalStateDelta,
+	))
+}
+
+func TestShouldClearRunnerCompletionChoicesInSession_DoesNotDedupUsingEmittedResponseIDWithoutPersistence(
+	t *testing.T,
+) {
+	loop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithGraphEmitFinalModelResponses(true),
+			)),
+		),
+		emittedAssistantResponseIDs: map[string]struct{}{
+			"response-from-state": {},
+		},
+	}
+	finalChoices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("wrapped-final"),
+	}}
+	finalStateDelta := map[string][]byte{
+		graph.StateKeyLastResponseID: []byte(`"response-from-state"`),
+	}
+	require.False(t, shouldClearRunnerCompletionChoicesInSession(
+		loop,
+		finalChoices,
+		finalStateDelta,
+	))
+}
+
+func TestShouldClearRunnerCompletionChoicesInSession_PreservesVisibleChoicesWhenResponseIDMissing(
+	t *testing.T,
+) {
+	loop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithGraphEmitFinalModelResponses(true),
+			)),
+		),
+		persistedAssistantChoiceSignatures: map[string]struct{}{
 			assistantChoiceSignature([]model.Choice{{
 				Index:   0,
 				Message: model.NewAssistantMessage("wrapped-final"),
@@ -4303,6 +4665,424 @@ func TestShouldClearRunnerCompletionChoicesInSession_PreservesLegacyChoicesWitho
 		finalChoices,
 		nil,
 	))
+}
+
+func TestShouldMarkCompletionSnapshotOnly_ResumeRunWithoutNewAssistantContent(t *testing.T) {
+	loop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithRuntimeState(graph.State{
+					graph.StateKeyCommand: graph.NewResumeCommand().WithResume("approve"),
+				}),
+			)),
+		),
+		baselineFinalResponseID: "resp-1",
+		priorAssistantResponseIDs: map[string]struct{}{
+			"resp-1": {},
+		},
+	}
+	choices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("stale-final"),
+	}}
+	finalStateDelta := map[string][]byte{
+		graph.StateKeyLastResponseID: []byte(`"resp-1"`),
+	}
+
+	require.True(t, shouldMarkCompletionSnapshotOnly(loop, choices, finalStateDelta))
+}
+
+func TestShouldMarkCompletionSnapshotOnly_SkipsNormalRunsAndFreshAssistantRuns(t *testing.T) {
+	choices := []model.Choice{{
+		Index:   0,
+		Message: model.NewAssistantMessage("fresh-final"),
+	}}
+	finalStateDelta := map[string][]byte{
+		graph.StateKeyLastResponseID: []byte(`"resp-2"`),
+	}
+
+	t.Run("normal run", func(t *testing.T) {
+		loop := &eventLoopContext{
+			invocation: agent.NewInvocation(),
+		}
+		require.False(t, shouldMarkCompletionSnapshotOnly(loop, choices, finalStateDelta))
+	})
+
+	t.Run("resume with assistant content produced", func(t *testing.T) {
+		loop := &eventLoopContext{
+			invocation: agent.NewInvocation(
+				agent.WithInvocationRunOptions(agent.NewRunOptions(
+					agent.WithRuntimeState(graph.State{
+						graph.StateKeyCommand: graph.NewResumeCommand().WithResume("approve"),
+					}),
+				)),
+			),
+			baselineFinalResponseID:       "resp-2",
+			freshAssistantContentProduced: true,
+		}
+		require.False(t, shouldMarkCompletionSnapshotOnly(loop, choices, finalStateDelta))
+	})
+
+	t.Run("resume with only snapshot-only visible completion recorded", func(t *testing.T) {
+		loop := &eventLoopContext{
+			invocation: agent.NewInvocation(
+				agent.WithInvocationRunOptions(agent.NewRunOptions(
+					agent.WithRuntimeState(graph.State{
+						graph.StateKeyCommand: graph.NewResumeCommand().WithResume("approve"),
+					}),
+				)),
+			),
+			baselineFinalResponseID: "resp-2",
+			priorAssistantResponseIDs: map[string]struct{}{
+				"resp-2": {},
+			},
+			persistedAssistantResponseIDs: map[string]struct{}{
+				"resp-2": {},
+			},
+		}
+		require.True(t, shouldMarkCompletionSnapshotOnly(loop, choices, finalStateDelta))
+	})
+
+	t.Run("resume with fresh completion identity", func(t *testing.T) {
+		loop := &eventLoopContext{
+			invocation: agent.NewInvocation(
+				agent.WithInvocationRunOptions(agent.NewRunOptions(
+					agent.WithRuntimeState(graph.State{
+						graph.StateKeyCommand: graph.NewResumeCommand().WithResume("approve"),
+					}),
+				)),
+			),
+			baselineFinalResponseID: "resp-1",
+		}
+		require.False(t, shouldMarkCompletionSnapshotOnly(loop, choices, finalStateDelta))
+	})
+
+	t.Run("resume without baseline identity", func(t *testing.T) {
+		loop := &eventLoopContext{
+			invocation: agent.NewInvocation(
+				agent.WithInvocationRunOptions(agent.NewRunOptions(
+					agent.WithRuntimeState(graph.State{
+						graph.StateKeyCommand: graph.NewResumeCommand().WithResume("approve"),
+					}),
+				)),
+			),
+		}
+		require.False(t, shouldMarkCompletionSnapshotOnly(loop, choices, finalStateDelta))
+	})
+}
+
+func TestBaselineFinalResponseIDFromRuntimeState(t *testing.T) {
+	t.Run("state key string", func(t *testing.T) {
+		runtimeState := map[string]any{
+			graph.StateKeyLastResponseID: "resp-1",
+		}
+		require.Equal(t, "resp-1", baselineFinalResponseIDFromRuntimeState(runtimeState))
+	})
+
+	t.Run("completion metadata bytes", func(t *testing.T) {
+		runtimeState := map[string]any{
+			graph.MetadataKeyCompletion: []byte(`{"finalResponseID":"resp-meta"}`),
+		}
+		require.Equal(t, "resp-meta", baselineFinalResponseIDFromRuntimeState(runtimeState))
+	})
+
+	t.Run("invalid state key falls back to metadata", func(t *testing.T) {
+		runtimeState := map[string]any{
+			graph.StateKeyLastResponseID: []byte("{"),
+			graph.MetadataKeyCompletion:  []byte(`{"finalResponseID":"resp-meta"}`),
+		}
+		require.Equal(t, "resp-meta", baselineFinalResponseIDFromRuntimeState(runtimeState))
+	})
+}
+
+func TestBaselineFinalResponseID(t *testing.T) {
+	t.Run("session state takes precedence", func(t *testing.T) {
+		sess := &session.Session{
+			State: session.StateMap{
+				graph.StateKeyLastResponseID: []byte(`"resp-from-session"`),
+			},
+		}
+		runtimeState := map[string]any{
+			graph.StateKeyLastResponseID: "resp-from-runtime",
+		}
+		require.Equal(t, "resp-from-session", baselineFinalResponseID(sess, runtimeState))
+	})
+
+	t.Run("falls back to runtime state", func(t *testing.T) {
+		runtimeState := map[string]any{
+			graph.StateKeyLastResponseID: "resp-from-runtime",
+		}
+		require.Equal(t, "resp-from-runtime", baselineFinalResponseID(nil, runtimeState))
+	})
+}
+
+func TestCollectPriorAssistantResponseIDs(t *testing.T) {
+	sess := &session.Session{
+		Events: []event.Event{
+			{
+				Response: &model.Response{
+					ID: "resp-1",
+					Choices: []model.Choice{{
+						Message: model.NewAssistantMessage("assistant-1"),
+					}},
+				},
+			},
+			{
+				Response: &model.Response{
+					Object: model.ObjectTypeRunnerCompletion,
+					Done:   true,
+					Choices: []model.Choice{{
+						Message: model.NewAssistantMessage("runner-completion"),
+					}},
+				},
+				Author: "app",
+			},
+			func() event.Event {
+				raw := graph.NewGraphCompletionEvent(
+					graph.WithCompletionEventInvocationID("inv"),
+					graph.WithCompletionEventFinalState(graph.State{
+						graph.StateKeyLastResponse:   "visible-final",
+						graph.StateKeyLastResponseID: "visible-resp",
+					}),
+				)
+				visible, ok := graph.VisibleGraphCompletionEventForAuthor(raw, "graph-child")
+				require.True(t, ok)
+				return *visible
+			}(),
+		},
+	}
+
+	ids := collectPriorAssistantResponseIDs(sess)
+	require.Contains(t, ids, "resp-1")
+	require.Contains(t, ids, "visible-resp")
+	require.Len(t, ids, 2)
+}
+
+func TestCollectPriorAssistantResponseIDs_SkipsNonAssistantBranches(t *testing.T) {
+	sess := &session.Session{
+		Events: []event.Event{
+			{},
+			{
+				Response: &model.Response{
+					ID:        "partial-resp",
+					IsPartial: true,
+					Choices: []model.Choice{{
+						Message: model.NewAssistantMessage("partial"),
+					}},
+				},
+			},
+			{
+				Response: &model.Response{
+					ID: "user-resp",
+					Choices: []model.Choice{{
+						Message: model.NewUserMessage("user"),
+					}},
+				},
+			},
+			func() event.Event {
+				evt := graph.NewGraphCompletionEvent(
+					graph.WithCompletionEventInvocationID("inv-skip"),
+					graph.WithCompletionEventFinalState(graph.State{
+						graph.StateKeyLastResponse:   "graph-completion",
+						graph.StateKeyLastResponseID: "graph-completion-id",
+					}),
+				)
+				return *evt
+			}(),
+			{
+				Response: &model.Response{
+					Choices: []model.Choice{{
+						Message: model.NewAssistantMessage("missing-id"),
+					}},
+				},
+			},
+		},
+	}
+
+	require.Nil(t, collectPriorAssistantResponseIDs(nil))
+	require.Nil(t, collectPriorAssistantResponseIDs(&session.Session{}))
+	require.Nil(t, collectPriorAssistantResponseIDs(sess))
+}
+
+func TestStringValueFromRuntimeState(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  any
+		want   string
+		wantOK bool
+	}{
+		{name: "plain string", input: "resp-1", want: "resp-1", wantOK: true},
+		{name: "empty string", input: "", wantOK: false},
+		{name: "json encoded bytes", input: []byte(`"resp-2"`), want: "resp-2", wantOK: true},
+		{name: "plain bytes", input: []byte(`resp-3`), want: "resp-3", wantOK: true},
+		{name: "empty bytes", input: []byte{}, wantOK: false},
+		{name: "object bytes", input: []byte(`{}`), wantOK: false},
+		{name: "array bytes", input: []byte(`[]`), wantOK: false},
+		{name: "quoted raw bytes", input: []byte(`"x`), wantOK: false},
+		{name: "unsupported type", input: 123, wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := stringValueFromRuntimeState(tt.input)
+			require.Equal(t, tt.wantOK, ok)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCompletionMetadataFinalResponseID(t *testing.T) {
+	tests := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{name: "metadata struct", input: graph.CompletionMetadata{FinalResponseID: "resp-1"}, want: "resp-1"},
+		{name: "metadata pointer", input: &graph.CompletionMetadata{FinalResponseID: "resp-2"}, want: "resp-2"},
+		{name: "nil metadata pointer", input: (*graph.CompletionMetadata)(nil), want: ""},
+		{name: "map value", input: map[string]any{"finalResponseID": "resp-3"}, want: "resp-3"},
+		{name: "map missing", input: map[string]any{"other": "x"}, want: ""},
+		{name: "json string", input: `{"finalResponseID":"resp-4"}`, want: "resp-4"},
+		{name: "invalid string", input: `{`, want: ""},
+		{name: "json bytes", input: []byte(`{"finalResponseID":"resp-5"}`), want: "resp-5"},
+		{name: "invalid bytes", input: []byte(`{`), want: ""},
+		{name: "unsupported type", input: 1, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, completionMetadataFinalResponseID(tt.input))
+		})
+	}
+}
+
+func TestIsResumeRunAndRunProducedAssistantContent(t *testing.T) {
+	require.False(t, isResumeRun(nil))
+	require.False(t, isResumeRun(&eventLoopContext{invocation: agent.NewInvocation()}))
+
+	cmdLoop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithRuntimeState(graph.State{
+					graph.StateKeyCommand: &graph.Command{ResumeMap: map[string]any{"k": "v"}},
+				}),
+			)),
+		),
+	}
+	require.True(t, isResumeRun(cmdLoop))
+
+	cmdValueLoop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithRuntimeState(graph.State{
+					graph.StateKeyCommand: graph.Command{ResumeMap: map[string]any{"k": "v"}},
+				}),
+			)),
+		),
+	}
+	require.True(t, isResumeRun(cmdValueLoop))
+
+	resumeLoop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithRuntimeState(graph.State{
+					graph.StateKeyCommand: graph.NewResumeCommand().WithResume("ok"),
+				}),
+			)),
+		),
+	}
+	require.True(t, isResumeRun(resumeLoop))
+
+	resumeValueLoop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithRuntimeState(graph.State{
+					graph.StateKeyCommand: graph.ResumeCommand{Resume: "ok"},
+				}),
+			)),
+		),
+	}
+	require.True(t, isResumeRun(resumeValueLoop))
+
+	require.False(t, runProducedAssistantContent(nil))
+	require.False(t, runProducedAssistantContent(&eventLoopContext{}))
+	require.True(t, runProducedAssistantContent(&eventLoopContext{
+		freshAssistantContentProduced: true,
+	}))
+}
+
+func TestMarkCompletionSnapshotOnly(t *testing.T) {
+	rr := NewRunner("app", &noOpAgent{name: "a"}).(*runner)
+
+	require.NotPanics(t, func() {
+		rr.markCompletionSnapshotOnly(nil, nil)
+	})
+
+	loop := &eventLoopContext{
+		invocation: agent.NewInvocation(
+			agent.WithInvocationRunOptions(agent.NewRunOptions(
+				agent.WithRuntimeState(graph.State{
+					graph.StateKeyCommand: graph.NewResumeCommand().WithResume("approve"),
+				}),
+			)),
+		),
+		priorAssistantResponseIDs: map[string]struct{}{"resp-1": {}},
+	}
+
+	nonGraph := event.NewResponseEvent("inv", "agent", &model.Response{
+		ID: "resp-1",
+		Choices: []model.Choice{{
+			Message: model.NewAssistantMessage("assistant"),
+		}},
+	})
+	rr.markCompletionSnapshotOnly(loop, nonGraph)
+	require.False(t, graph.CompletionSnapshotOnlyFromStateDelta(nonGraph.StateDelta))
+
+	graphEvt := graph.NewGraphCompletionEvent(
+		graph.WithCompletionEventInvocationID("inv"),
+		graph.WithCompletionEventFinalState(graph.State{
+			graph.StateKeyLastResponse:   "assistant",
+			graph.StateKeyLastResponseID: "resp-1",
+		}),
+	)
+	rr.markCompletionSnapshotOnly(loop, graphEvt)
+	require.True(t, graph.CompletionSnapshotOnlyFromStateDelta(graphEvt.StateDelta))
+}
+
+func TestRecordPersistedAssistantEvent_DoesNotCountSnapshotOnlyVisibleCompletionAsFreshContent(t *testing.T) {
+	rr := NewRunner("app", &noOpAgent{name: "a"}).(*runner)
+
+	loop := &eventLoopContext{}
+	snapshotOnlyVisible, ok := graph.VisibleGraphCompletionEventForAuthor(
+		graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID("inv"),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse:   "assistant",
+				graph.StateKeyLastResponseID: "resp-1",
+			}),
+			graph.WithCompletionEventSnapshotOnly(true),
+		),
+		"graph-child",
+	)
+	require.True(t, ok)
+
+	rr.recordPersistedAssistantEvent(loop, snapshotOnlyVisible, true)
+	require.False(t, loop.freshAssistantContentProduced)
+	require.Contains(t, loop.persistedAssistantResponseIDs, "resp-1")
+
+	freshVisible, ok := graph.VisibleGraphCompletionEventForAuthor(
+		graph.NewGraphCompletionEvent(
+			graph.WithCompletionEventInvocationID("inv"),
+			graph.WithCompletionEventFinalState(graph.State{
+				graph.StateKeyLastResponse:   "assistant",
+				graph.StateKeyLastResponseID: "resp-2",
+			}),
+		),
+		"graph-child",
+	)
+	require.True(t, ok)
+
+	rr.recordPersistedAssistantEvent(loop, freshVisible, true)
+	require.True(t, loop.freshAssistantContentProduced)
+	require.Contains(t, loop.persistedAssistantResponseIDs, "resp-2")
 }
 
 func TestAssistantChoiceSignature_UsesAllAssistantChoices(t *testing.T) {
@@ -4946,11 +5726,26 @@ func TestFinalResponseIDFromStateDelta_Cases(t *testing.T) {
 		require.Equal(t, "", finalResponseIDFromStateDelta(delta))
 	})
 
+	t.Run("invalid json falls back to completion metadata", func(t *testing.T) {
+		delta := map[string][]byte{
+			graph.StateKeyLastResponseID: []byte(invalidJSON),
+			graph.MetadataKeyCompletion:  []byte(`{"finalResponseID":"resp-from-metadata"}`),
+		}
+		require.Equal(t, "resp-from-metadata", finalResponseIDFromStateDelta(delta))
+	})
+
 	t.Run("valid json", func(t *testing.T) {
 		delta := map[string][]byte{
 			graph.StateKeyLastResponseID: []byte(responseIDJSON),
 		}
 		require.Equal(t, responseID, finalResponseIDFromStateDelta(delta))
+	})
+
+	t.Run("completion metadata fallback", func(t *testing.T) {
+		delta := map[string][]byte{
+			graph.MetadataKeyCompletion: []byte(`{"finalResponseID":"resp-from-metadata"}`),
+		}
+		require.Equal(t, "resp-from-metadata", finalResponseIDFromStateDelta(delta))
 	})
 }
 
@@ -6288,6 +7083,70 @@ func TestRunner_Run_WithSurfacePatchForNode_AppliesGraphChildAgentPatch(
 	)
 }
 
+func TestRunner_GraphChildAgentNode_PersistedRunnerCompletionDoesNotReplayIntoNextTurnHistory(
+	t *testing.T,
+) {
+	const (
+		appName    = "app"
+		userID     = "u"
+		sessionID  = "session-graph-child-replay"
+		firstReply = "child first"
+	)
+
+	childModel := &scriptedSurfaceModel{
+		name: "graph-child-history",
+		responses: []model.Message{
+			model.NewAssistantMessage(firstReply),
+			model.NewAssistantMessage("child second"),
+		},
+	}
+	child := llmagent.New("researcher", llmagent.WithModel(childModel))
+
+	builder := graph.NewStateGraph(graph.MessagesStateSchema())
+	builder.AddAgentNode("researcher")
+	builder.SetEntryPoint("researcher")
+	builder.SetFinishPoint("researcher")
+	parent, err := graphagent.New(
+		"assistant",
+		builder.MustCompile(),
+		graphagent.WithSubAgents([]agent.Agent{child}),
+	)
+	require.NoError(t, err)
+
+	svc := sessioninmemory.NewSessionService()
+	r := NewRunner(appName, parent, WithSessionService(svc))
+
+	firstTurn, err := r.Run(
+		context.Background(),
+		userID,
+		sessionID,
+		model.NewUserMessage("hello"),
+	)
+	require.NoError(t, err)
+	firstCompletion := collectRunnerCompletionEvent(t, firstTurn)
+	require.NotNil(t, firstCompletion.Response)
+	require.Len(t, firstCompletion.Response.Choices, 1)
+	require.Equal(t, firstReply, firstCompletion.Response.Choices[0].Message.Content)
+	assertSessionKeepsSingleFinalAssistantEvent(t, svc, sessionID, firstReply)
+
+	secondTurn, err := r.Run(
+		context.Background(),
+		userID,
+		sessionID,
+		model.NewUserMessage("next"),
+	)
+	require.NoError(t, err)
+	_ = collectRunnerCompletionEvent(t, secondTurn)
+
+	requests := childModel.Requests()
+	require.Len(t, requests, 2)
+	require.Equal(
+		t,
+		[]string{"user:hello", "assistant:" + firstReply, "user:next"},
+		surfaceRoleContentSummaries(requests[1].messages),
+	)
+}
+
 func cloneSurfaceCapturedRequest(req *model.Request) *surfaceCapturedRequest {
 	if req == nil {
 		return nil
@@ -6387,6 +7246,17 @@ func surfaceMessageContents(messages []model.Message) []string {
 		}
 	}
 	return contents
+}
+
+func surfaceRoleContentSummaries(messages []model.Message) []string {
+	summaries := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.Content == "" {
+			continue
+		}
+		summaries = append(summaries, string(message.Role)+":"+message.Content)
+	}
+	return summaries
 }
 
 func countStringValues(values []string, target string) int {
