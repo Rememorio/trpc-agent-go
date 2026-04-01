@@ -55,11 +55,11 @@ nav:
       - Event: event.md
       - Evaluation: evaluation.md
   - Server:
-    - Gateway: gateway.md
-    - AG-UI: agui.md
-    - A2A: a2a.md
-    - A2UI: a2ui.md
-    - OpenClaw Runtime: openclaw-runtime.md
+      - Gateway: gateway.md
+      - AG-UI: agui.md
+      - A2A: a2a.md
+      - A2UI: a2ui.md
+      - OpenClaw Runtime: openclaw-runtime.md
   - Observability: observability.md
   - Ecosystem: ecosystem.md
 
@@ -126,11 +126,11 @@ plugins:
                 - Event: event.md
                 - Evaluation: evaluation.md
             - 服务:
-              - Gateway: gateway.md
-              - AG-UI: agui.md
-              - A2A: a2a.md
-              - A2UI: a2ui.md
-              - OpenClaw Runtime: openclaw-runtime.md
+                - Gateway: gateway.md
+                - AG-UI: agui.md
+                - A2A: a2a.md
+                - A2UI: a2ui.md
+                - OpenClaw Runtime: openclaw-runtime.md
             - 可观测: observability.md
             - 生态: ecosystem.md
   - git-revision-date-localized:
@@ -161,6 +161,7 @@ theme:
         name: Switch to light mode
 
 markdown_extensions:
+  - admonition
   - pymdownx.arithmatex:
       generic: true
   - pymdownx.highlight:
