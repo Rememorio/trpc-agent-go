@@ -84,6 +84,85 @@ func (s *summaryFailingService) Calls() int {
 	return s.calls
 }
 
+type summaryPartialFailureService struct {
+	session.Service
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (s *summaryPartialFailureService) CreateSessionSummary(
+	_ context.Context,
+	sess *session.Session,
+	filterKey string,
+	_ bool,
+) error {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+
+	sess.SummariesMu.Lock()
+	defer sess.SummariesMu.Unlock()
+	if sess.Summaries == nil {
+		sess.Summaries = make(map[string]*session.Summary)
+	}
+	sess.Summaries[filterKey] = &session.Summary{
+		Summary:   "compressed despite persistence failure",
+		UpdatedAt: time.Now().Add(time.Minute),
+	}
+	return s.err
+}
+
+func (s *summaryPartialFailureService) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+type countingRequestProcessor struct {
+	mu       sync.Mutex
+	calls    int
+	messages []model.Message
+}
+
+func (p *countingRequestProcessor) ProcessRequest(
+	_ context.Context,
+	_ *agent.Invocation,
+	req *model.Request,
+	_ chan<- *event.Event,
+) {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	if req == nil {
+		return
+	}
+	req.Messages = append(req.Messages, p.messages...)
+}
+
+func (p *countingRequestProcessor) Calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+type unsafeTailRequestProcessor struct {
+	calls int
+}
+
+func (p *unsafeTailRequestProcessor) ProcessRequest(
+	_ context.Context,
+	_ *agent.Invocation,
+	req *model.Request,
+	_ chan<- *event.Event,
+) {
+	p.calls++
+	if req == nil {
+		return
+	}
+	req.Messages = append(req.Messages, model.NewSystemMessage("unsafe tail"))
+}
+
 type compactingModel struct {
 	name string
 }
@@ -150,7 +229,7 @@ func TestMaybeCompactContextBeforeLLM_RebuildsRequestWithSummary(t *testing.T) {
 	)
 
 	req := &model.Request{}
-	f.preprocess(context.Background(), inv, req, nil)
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
 	require.Len(t, req.Messages, 2)
 	require.Contains(t, req.Messages[0].Content, longContent)
 
@@ -158,6 +237,7 @@ func TestMaybeCompactContextBeforeLLM_RebuildsRequestWithSummary(t *testing.T) {
 		context.Background(),
 		inv,
 		req,
+		rebuildPlan,
 	)
 
 	require.Equal(t, 1, service.Calls())
@@ -200,11 +280,12 @@ func TestMaybeCompactContextBeforeLLM_SkipsWithoutSummaryAwareProcessor(t *testi
 	)
 
 	req := &model.Request{}
-	f.preprocess(context.Background(), inv, req, nil)
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
 	rebuilt := f.maybeCompactContextBeforeLLM(
 		context.Background(),
 		inv,
 		req,
+		rebuildPlan,
 	)
 
 	require.Equal(t, 0, service.Calls())
@@ -262,12 +343,13 @@ func TestMaybeCompactContextBeforeLLM_SkipsWhenSummaryInjectionDisabled(t *testi
 	)
 
 	req := &model.Request{}
-	f.preprocess(context.Background(), inv, req, nil)
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
 
 	rebuilt := f.maybeCompactContextBeforeLLM(
 		context.Background(),
 		inv,
 		req,
+		rebuildPlan,
 	)
 
 	require.Equal(t, 0, service.Calls())
@@ -326,16 +408,217 @@ func TestMaybeCompactContextBeforeLLM_SkipsWhenSummaryRefreshFails(t *testing.T)
 	)
 
 	req := &model.Request{}
-	f.preprocess(context.Background(), inv, req, nil)
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
 
 	rebuilt := f.maybeCompactContextBeforeLLM(
 		context.Background(),
 		inv,
 		req,
+		rebuildPlan,
 	)
 
 	require.Equal(t, 1, service.Calls())
 	require.Same(t, req, rebuilt)
+}
+
+func TestMaybeCompactContextBeforeLLM_RebuildsWithoutReplayingEarlierProcessors(t *testing.T) {
+	modelName := "compact-retry-safe-rebuild"
+	model.RegisterModelContextWindow(modelName, 10000)
+
+	baseSvc := inmemory.NewSessionService()
+	t.Cleanup(func() {
+		require.NoError(t, baseSvc.Close())
+	})
+
+	service := &summaryInjectingService{Service: baseSvc}
+	prefixProcessor := &countingRequestProcessor{
+		messages: []model.Message{model.NewSystemMessage("prefix guidance")},
+	}
+	longContent := strings.Repeat("history ", 2000)
+	sess := &session.Session{
+		Events: []event.Event{{
+			RequestID: "req-old",
+			Timestamp: time.Now().Add(-time.Hour),
+			Response: &model.Response{
+				Done: true,
+				Choices: []model.Choice{{
+					Message: model.NewUserMessage(longContent),
+				}},
+			},
+		}},
+	}
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationSessionService(service),
+		agent.WithInvocationMessage(model.NewUserMessage("current")),
+		agent.WithInvocationRunOptions(agent.RunOptions{RequestID: "req-current"}),
+		agent.WithInvocationModel(&compactingModel{name: modelName}),
+		agent.WithInvocationEventFilterKey("branch/test"),
+	)
+
+	f := New(
+		[]flow.RequestProcessor{
+			prefixProcessor,
+			processor.NewContentRequestProcessor(
+				processor.WithAddSessionSummary(true),
+			),
+			processor.NewTimeRequestProcessor(
+				processor.WithAddCurrentTime(true),
+			),
+		},
+		nil,
+		Options{
+			EnableContextCompaction:         true,
+			ContextCompactionThresholdRatio: 0.2,
+		},
+	)
+
+	req := &model.Request{}
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
+	require.Equal(t, 1, prefixProcessor.Calls())
+
+	rebuilt := f.maybeCompactContextBeforeLLM(
+		context.Background(),
+		inv,
+		req,
+		rebuildPlan,
+	)
+
+	require.Equal(t, 1, prefixProcessor.Calls())
+	require.Equal(t, 1, service.Calls())
+	require.NotSame(t, req, rebuilt)
+	require.Contains(t, rebuilt.Messages[0].Content, "prefix guidance")
+	require.Contains(t, rebuilt.Messages[0].Content, "compressed history")
+	require.Contains(t, rebuilt.Messages[0].Content, "The current time is:")
+	require.Equal(t, "current", rebuilt.Messages[len(rebuilt.Messages)-1].Content)
+}
+
+func TestMaybeCompactContextBeforeLLM_SkipsWhenUnsafeTailProcessorPresent(t *testing.T) {
+	modelName := "compact-retry-unsafe-tail"
+	model.RegisterModelContextWindow(modelName, 10000)
+
+	baseSvc := inmemory.NewSessionService()
+	t.Cleanup(func() {
+		require.NoError(t, baseSvc.Close())
+	})
+
+	service := &summaryInjectingService{Service: baseSvc}
+	longContent := strings.Repeat("history ", 2000)
+	sess := &session.Session{
+		Events: []event.Event{{
+			RequestID: "req-old",
+			Timestamp: time.Now().Add(-time.Hour),
+			Response: &model.Response{
+				Done: true,
+				Choices: []model.Choice{{
+					Message: model.NewUserMessage(longContent),
+				}},
+			},
+		}},
+	}
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationSessionService(service),
+		agent.WithInvocationMessage(model.NewUserMessage("current")),
+		agent.WithInvocationRunOptions(agent.RunOptions{RequestID: "req-current"}),
+		agent.WithInvocationModel(&compactingModel{name: modelName}),
+		agent.WithInvocationEventFilterKey("branch/test"),
+	)
+
+	f := New(
+		[]flow.RequestProcessor{
+			processor.NewContentRequestProcessor(
+				processor.WithAddSessionSummary(true),
+			),
+			&unsafeTailRequestProcessor{},
+		},
+		nil,
+		Options{
+			EnableContextCompaction:         true,
+			ContextCompactionThresholdRatio: 0.2,
+		},
+	)
+
+	req := &model.Request{}
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
+	require.Nil(t, rebuildPlan)
+
+	rebuilt := f.maybeCompactContextBeforeLLM(
+		context.Background(),
+		inv,
+		req,
+		rebuildPlan,
+	)
+
+	require.Equal(t, 0, service.Calls())
+	require.Same(t, req, rebuilt)
+}
+
+func TestMaybeCompactContextBeforeLLM_RebuildsAfterPartialSummaryFailure(t *testing.T) {
+	modelName := "compact-retry-partial-summary-error"
+	model.RegisterModelContextWindow(modelName, 10000)
+
+	baseSvc := inmemory.NewSessionService()
+	t.Cleanup(func() {
+		require.NoError(t, baseSvc.Close())
+	})
+
+	service := &summaryPartialFailureService{
+		Service: baseSvc,
+		err:     context.DeadlineExceeded,
+	}
+	longContent := strings.Repeat("history ", 2000)
+	sess := &session.Session{
+		Events: []event.Event{{
+			RequestID: "req-old",
+			Timestamp: time.Now().Add(-time.Hour),
+			Response: &model.Response{
+				Done: true,
+				Choices: []model.Choice{{
+					Message: model.NewUserMessage(longContent),
+				}},
+			},
+		}},
+	}
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationSessionService(service),
+		agent.WithInvocationMessage(model.NewUserMessage("current")),
+		agent.WithInvocationRunOptions(agent.RunOptions{RequestID: "req-current"}),
+		agent.WithInvocationModel(&compactingModel{name: modelName}),
+		agent.WithInvocationEventFilterKey("branch/test"),
+	)
+
+	f := New(
+		[]flow.RequestProcessor{
+			processor.NewContentRequestProcessor(
+				processor.WithAddSessionSummary(true),
+			),
+		},
+		nil,
+		Options{
+			EnableContextCompaction:         true,
+			ContextCompactionThresholdRatio: 0.2,
+		},
+	)
+
+	req := &model.Request{}
+	rebuildPlan := f.preprocess(context.Background(), inv, req, nil)
+
+	rebuilt := f.maybeCompactContextBeforeLLM(
+		context.Background(),
+		inv,
+		req,
+		rebuildPlan,
+	)
+
+	require.Equal(t, 1, service.Calls())
+	require.NotSame(t, req, rebuilt)
+	require.Contains(t, rebuilt.Messages[0].Content, "compressed despite persistence failure")
+	require.Equal(t, "current", rebuilt.Messages[1].Content)
 }
 
 func TestMaybeCompactContextBeforeLLM_InitialGuards(t *testing.T) {
@@ -361,21 +644,22 @@ func TestMaybeCompactContextBeforeLLM_InitialGuards(t *testing.T) {
 		require.NoError(t, inv.SessionService.Close())
 	})
 
-	require.Nil(t, f.maybeCompactContextBeforeLLM(context.Background(), inv, nil))
+	require.Nil(t, f.maybeCompactContextBeforeLLM(context.Background(), inv, nil, nil))
 
 	disabled := New(
 		f.requestProcessors,
 		nil,
 		Options{EnableContextCompaction: false},
 	)
-	require.Same(t, req, disabled.maybeCompactContextBeforeLLM(context.Background(), inv, req))
-	require.Same(t, req, f.maybeCompactContextBeforeLLM(context.Background(), nil, req))
+	require.Same(t, req, disabled.maybeCompactContextBeforeLLM(context.Background(), inv, req, nil))
+	require.Same(t, req, f.maybeCompactContextBeforeLLM(context.Background(), nil, req, nil))
 	require.Same(t, req, f.maybeCompactContextBeforeLLM(
 		context.Background(),
 		agent.NewInvocation(
 			agent.WithInvocationSessionService(inmemory.NewSessionService()),
 		),
 		req,
+		nil,
 	))
 	require.Same(t, req, f.maybeCompactContextBeforeLLM(
 		context.Background(),
@@ -383,6 +667,7 @@ func TestMaybeCompactContextBeforeLLM_InitialGuards(t *testing.T) {
 			agent.WithInvocationSession(&session.Session{}),
 		),
 		req,
+		nil,
 	))
 }
 

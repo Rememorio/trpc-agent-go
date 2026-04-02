@@ -104,6 +104,16 @@ func (p *PostToolRequestProcessor) ProcessRequest(
 	}
 }
 
+// RebuildRequestForContextCompaction re-applies post-tool prompting during the
+// safe sync-summary rebuild path without replaying the full processor chain.
+func (p *PostToolRequestProcessor) RebuildRequestForContextCompaction(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	req *model.Request,
+) {
+	p.ProcessRequest(ctx, invocation, req, nil)
+}
+
 // hasPendingToolResultMessages returns true when the latest non-system message
 // in the request is a tool result. Historical tool results that are followed
 // by assistant or user messages do not count as pending.

@@ -106,6 +106,16 @@ func (p *TimeRequestProcessor) ProcessRequest(
 	p.addTimeToSystemMessage(req, timeContent)
 }
 
+// RebuildRequestForContextCompaction re-applies time decoration during the
+// safe sync-summary rebuild path without replaying the full processor chain.
+func (p *TimeRequestProcessor) RebuildRequestForContextCompaction(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	req *model.Request,
+) {
+	p.ProcessRequest(ctx, invocation, req, nil)
+}
+
 // getCurrentTime returns the current time string with timezone support.
 func (p *TimeRequestProcessor) getCurrentTime() string {
 	var loc *time.Location

@@ -33,6 +33,7 @@ import (
 	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -80,6 +81,26 @@ type Flow struct {
 	syncSummaryIntraRun             bool
 	enableContextCompaction         bool
 	contextCompactionThresholdRatio float64
+}
+
+type contextCompactionTailProcessor interface {
+	RebuildRequestForContextCompaction(
+		ctx context.Context,
+		invocation *agent.Invocation,
+		req *model.Request,
+	)
+}
+
+type contextCompactionRebuildPlan struct {
+	beforeContent    *model.Request
+	contentProcessor *processor.ContentRequestProcessor
+	tailProcessors   []contextCompactionTailProcessor
+}
+
+type summarySnapshot struct {
+	exists    bool
+	summary   string
+	updatedAt time.Time
 }
 
 // New creates a new basic flow instance with the provided processors.
@@ -447,11 +468,16 @@ func (f *Flow) runOneStep(
 		Tools: make(map[string]tool.Tool), // Initialize tools map
 	}
 	// 1. Preprocess (prepare request).
-	f.preprocess(ctx, invocation, llmRequest, eventChan)
+	rebuildPlan := f.preprocess(ctx, invocation, llmRequest, eventChan)
 	if invocation.EndInvocation {
 		return lastEvent, nil
 	}
-	llmRequest = f.maybeCompactContextBeforeLLM(ctx, invocation, llmRequest)
+	llmRequest = f.maybeCompactContextBeforeLLM(
+		ctx,
+		invocation,
+		llmRequest,
+		rebuildPlan,
+	)
 	if invocation.EndInvocation {
 		return lastEvent, nil
 	}
@@ -845,10 +871,30 @@ func (f *Flow) preprocess(
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
 	eventChan chan<- *event.Event,
-) {
+) *contextCompactionRebuildPlan {
+	var rebuildPlan *contextCompactionRebuildPlan
+
 	// Run request processors - they send events directly to the channel.
-	for _, processor := range f.requestProcessors {
-		processor.ProcessRequest(ctx, invocation, llmRequest, eventChan)
+	for _, requestProcessor := range f.requestProcessors {
+		if rebuildPlan == nil {
+			contentProcessor, ok := requestProcessor.(*processor.ContentRequestProcessor)
+			if ok &&
+				contentProcessor.AddSessionSummary &&
+				contentProcessor.TimelineFilterMode == processor.TimelineFilterAll {
+				rebuildPlan = &contextCompactionRebuildPlan{
+					beforeContent:    cloneRequestForContextCompaction(llmRequest),
+					contentProcessor: contentProcessor,
+				}
+			}
+		} else {
+			tailProcessor, ok := requestProcessor.(contextCompactionTailProcessor)
+			if !ok {
+				rebuildPlan = nil
+			} else {
+				rebuildPlan.tailProcessors = append(rebuildPlan.tailProcessors, tailProcessor)
+			}
+		}
+		requestProcessor.ProcessRequest(ctx, invocation, llmRequest, eventChan)
 	}
 	// Add tools to the request with optional filtering.
 	if invocation.Agent != nil {
@@ -859,6 +905,7 @@ func (f *Flow) preprocess(
 	}
 	// Sanitize invalid tool calls in history to avoid poisoning future requests.
 	llmRequest.Messages = toolcall.SanitizeMessagesWithTools(llmRequest.Messages, llmRequest.Tools)
+	return rebuildPlan
 }
 
 func normalizeContextCompactionThresholdRatio(ratio float64) float64 {
@@ -872,10 +919,12 @@ func (f *Flow) maybeCompactContextBeforeLLM(
 	ctx context.Context,
 	invocation *agent.Invocation,
 	req *model.Request,
+	rebuildPlan *contextCompactionRebuildPlan,
 ) *model.Request {
 	if req == nil || !f.enableContextCompaction || invocation == nil ||
 		invocation.Session == nil || invocation.SessionService == nil ||
-		!f.supportsSyncSummaryRetry() {
+		!f.supportsSyncSummaryRetry() || rebuildPlan == nil ||
+		rebuildPlan.beforeContent == nil || rebuildPlan.contentProcessor == nil {
 		return req
 	}
 	if !shouldSyncCompactContext(
@@ -887,19 +936,49 @@ func (f *Flow) maybeCompactContextBeforeLLM(
 		return req
 	}
 
-	if err := invocation.SessionService.CreateSessionSummary(
+	filterKey := invocation.GetEventFilterKey()
+	before := snapshotSummary(invocation.Session, filterKey)
+	err := invocation.SessionService.CreateSessionSummary(
 		ctx,
 		invocation.Session,
-		invocation.GetEventFilterKey(),
+		filterKey,
 		false,
-	); err != nil {
+	)
+	after := snapshotSummary(invocation.Session, filterKey)
+	if !before.advanced(after) {
+		if err != nil {
+			log.DebugfContext(
+				ctx,
+				"Pre-LLM context compaction skipped for agent %s: %v",
+				invocation.AgentName,
+				err,
+			)
+		}
+		return req
+	}
+
+	rebuilt := f.rebuildRequestForContextCompaction(
+		ctx,
+		invocation,
+		rebuildPlan,
+	)
+	if rebuilt == nil {
 		log.DebugfContext(
 			ctx,
-			"Pre-LLM context compaction skipped for agent %s: %v",
+			"Pre-LLM context compaction skipped for agent %s: safe rebuild unavailable",
+			invocation.AgentName,
+		)
+		return req
+	}
+
+	if err != nil {
+		log.WarnfContext(
+			ctx,
+			"Pre-LLM context compaction rebuilt request for agent %s after in-memory summary update; persistence failed: %v",
 			invocation.AgentName,
 			err,
 		)
-		return req
+		return rebuilt
 	}
 
 	log.DebugfContext(
@@ -907,11 +986,43 @@ func (f *Flow) maybeCompactContextBeforeLLM(
 		"Pre-LLM context compaction rebuilt request for agent %s",
 		invocation.AgentName,
 	)
+	return rebuilt
+}
 
-	rebuilt := &model.Request{
-		Tools: make(map[string]tool.Tool),
+func (f *Flow) rebuildRequestForContextCompaction(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	rebuildPlan *contextCompactionRebuildPlan,
+) *model.Request {
+	if rebuildPlan == nil || rebuildPlan.beforeContent == nil ||
+		rebuildPlan.contentProcessor == nil {
+		return nil
 	}
-	f.preprocess(ctx, invocation, rebuilt, nil)
+
+	rebuilt := cloneRequestForContextCompaction(rebuildPlan.beforeContent)
+	if rebuilt == nil {
+		return nil
+	}
+	rebuildPlan.contentProcessor.ProcessRequest(ctx, invocation, rebuilt, nil)
+	for _, tailProcessor := range rebuildPlan.tailProcessors {
+		tailProcessor.RebuildRequestForContextCompaction(
+			ctx,
+			invocation,
+			rebuilt,
+		)
+	}
+	if rebuilt.Tools == nil {
+		rebuilt.Tools = make(map[string]tool.Tool)
+	}
+	if invocation.Agent != nil {
+		for _, t := range f.getFilteredTools(ctx, invocation) {
+			rebuilt.Tools[t.Declaration().Name] = t
+		}
+	}
+	rebuilt.Messages = toolcall.SanitizeMessagesWithTools(
+		rebuilt.Messages,
+		rebuilt.Tools,
+	)
 	return rebuilt
 }
 
@@ -927,6 +1038,57 @@ func (f *Flow) supportsSyncSummaryRetry() bool {
 		}
 	}
 	return false
+}
+
+func cloneRequestForContextCompaction(req *model.Request) *model.Request {
+	if req == nil {
+		return nil
+	}
+
+	cloned := &model.Request{
+		Messages:         append([]model.Message(nil), req.Messages...),
+		GenerationConfig: req.GenerationConfig,
+		StructuredOutput: req.StructuredOutput,
+	}
+	if len(req.Tools) > 0 {
+		cloned.Tools = make(map[string]tool.Tool, len(req.Tools))
+		for name, t := range req.Tools {
+			cloned.Tools[name] = t
+		}
+	}
+	return cloned
+}
+
+func snapshotSummary(sess *session.Session, filterKey string) summarySnapshot {
+	if sess == nil {
+		return summarySnapshot{}
+	}
+
+	sess.SummariesMu.RLock()
+	defer sess.SummariesMu.RUnlock()
+
+	summary := sess.Summaries[filterKey]
+	if summary == nil {
+		return summarySnapshot{}
+	}
+	return summarySnapshot{
+		exists:    true,
+		summary:   summary.Summary,
+		updatedAt: summary.UpdatedAt,
+	}
+}
+
+func (s summarySnapshot) advanced(next summarySnapshot) bool {
+	if !next.exists {
+		return false
+	}
+	if !s.exists {
+		return true
+	}
+	if next.updatedAt.After(s.updatedAt) {
+		return true
+	}
+	return next.summary != s.summary
 }
 
 func shouldSyncCompactContext(
