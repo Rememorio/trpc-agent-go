@@ -84,6 +84,9 @@ type Flow struct {
 }
 
 type contextCompactionTailProcessor interface {
+	SupportsContextCompactionRebuild(
+		invocation *agent.Invocation,
+	) bool
 	RebuildRequestForContextCompaction(
 		ctx context.Context,
 		invocation *agent.Invocation,
@@ -888,7 +891,8 @@ func (f *Flow) preprocess(
 			}
 		} else {
 			tailProcessor, ok := requestProcessor.(contextCompactionTailProcessor)
-			if !ok {
+			if !ok ||
+				!tailProcessor.SupportsContextCompactionRebuild(invocation) {
 				rebuildPlan = nil
 			} else {
 				rebuildPlan.tailProcessors = append(rebuildPlan.tailProcessors, tailProcessor)
@@ -1003,6 +1007,9 @@ func (f *Flow) rebuildRequestForContextCompaction(
 	if rebuilt == nil {
 		return nil
 	}
+	if rebuilt.Tools == nil {
+		rebuilt.Tools = make(map[string]tool.Tool)
+	}
 	rebuildPlan.contentProcessor.ProcessRequest(ctx, invocation, rebuilt, nil)
 	for _, tailProcessor := range rebuildPlan.tailProcessors {
 		tailProcessor.RebuildRequestForContextCompaction(
@@ -1010,9 +1017,6 @@ func (f *Flow) rebuildRequestForContextCompaction(
 			invocation,
 			rebuilt,
 		)
-	}
-	if rebuilt.Tools == nil {
-		rebuilt.Tools = make(map[string]tool.Tool)
 	}
 	if invocation.Agent != nil {
 		for _, t := range f.getFilteredTools(ctx, invocation) {
@@ -1045,16 +1049,161 @@ func cloneRequestForContextCompaction(req *model.Request) *model.Request {
 		return nil
 	}
 
-	cloned := &model.Request{
-		Messages:         append([]model.Message(nil), req.Messages...),
-		GenerationConfig: req.GenerationConfig,
-		StructuredOutput: req.StructuredOutput,
-	}
-	if len(req.Tools) > 0 {
+	cloned := *req
+	cloned.Messages = cloneMessagesForContextCompaction(req.Messages)
+	cloned.GenerationConfig = cloneGenerationConfigForContextCompaction(
+		req.GenerationConfig,
+	)
+	cloned.StructuredOutput = cloneStructuredOutputForContextCompaction(
+		req.StructuredOutput,
+	)
+	if req.Tools != nil {
 		cloned.Tools = make(map[string]tool.Tool, len(req.Tools))
 		for name, t := range req.Tools {
 			cloned.Tools[name] = t
 		}
+	}
+	return &cloned
+}
+
+func cloneMessagesForContextCompaction(msgs []model.Message) []model.Message {
+	if msgs == nil {
+		return nil
+	}
+
+	cloned := make([]model.Message, len(msgs))
+	for i := range msgs {
+		cloned[i] = cloneMessageForContextCompaction(msgs[i])
+	}
+	return cloned
+}
+
+func cloneMessageForContextCompaction(msg model.Message) model.Message {
+	cloned := msg
+	cloned.ContentParts = cloneContentPartsForContextCompaction(
+		msg.ContentParts,
+	)
+	cloned.ToolCalls = cloneToolCallsForContextCompaction(msg.ToolCalls)
+	return cloned
+}
+
+func cloneContentPartsForContextCompaction(
+	parts []model.ContentPart,
+) []model.ContentPart {
+	if parts == nil {
+		return nil
+	}
+
+	cloned := make([]model.ContentPart, len(parts))
+	for i := range parts {
+		cloned[i] = cloneContentPartForContextCompaction(parts[i])
+	}
+	return cloned
+}
+
+func cloneContentPartForContextCompaction(
+	part model.ContentPart,
+) model.ContentPart {
+	cloned := part
+	if part.Text != nil {
+		text := *part.Text
+		cloned.Text = &text
+	}
+	if part.Image != nil {
+		image := *part.Image
+		if part.Image.Data != nil {
+			image.Data = append([]byte(nil), part.Image.Data...)
+		}
+		cloned.Image = &image
+	}
+	if part.Audio != nil {
+		audio := *part.Audio
+		if part.Audio.Data != nil {
+			audio.Data = append([]byte(nil), part.Audio.Data...)
+		}
+		cloned.Audio = &audio
+	}
+	if part.File != nil {
+		file := *part.File
+		if part.File.Data != nil {
+			file.Data = append([]byte(nil), part.File.Data...)
+		}
+		cloned.File = &file
+	}
+	return cloned
+}
+
+func cloneToolCallsForContextCompaction(
+	toolCalls []model.ToolCall,
+) []model.ToolCall {
+	if toolCalls == nil {
+		return nil
+	}
+
+	cloned := make([]model.ToolCall, len(toolCalls))
+	for i := range toolCalls {
+		cloned[i] = toolCalls[i]
+		if toolCalls[i].Function.Arguments != nil {
+			cloned[i].Function.Arguments = append(
+				[]byte(nil),
+				toolCalls[i].Function.Arguments...,
+			)
+		}
+		if toolCalls[i].Index != nil {
+			index := *toolCalls[i].Index
+			cloned[i].Index = &index
+		}
+		cloned[i].ExtraFields = cloneJSONMapForContextCompaction(
+			toolCalls[i].ExtraFields,
+		)
+	}
+	return cloned
+}
+
+func cloneGenerationConfigForContextCompaction(
+	cfg model.GenerationConfig,
+) model.GenerationConfig {
+	cloned := cfg
+	if cfg.Stop != nil {
+		cloned.Stop = append([]string(nil), cfg.Stop...)
+	}
+	return cloned
+}
+
+func cloneStructuredOutputForContextCompaction(
+	out *model.StructuredOutput,
+) *model.StructuredOutput {
+	if out == nil {
+		return nil
+	}
+
+	cloned := *out
+	if out.JSONSchema != nil {
+		schema := *out.JSONSchema
+		schema.Schema = cloneJSONMapForContextCompaction(out.JSONSchema.Schema)
+		cloned.JSONSchema = &schema
+	}
+	return &cloned
+}
+
+func cloneJSONMapForContextCompaction(
+	src map[string]any,
+) map[string]any {
+	if src == nil {
+		return nil
+	}
+
+	raw, err := json.Marshal(src)
+	if err == nil {
+		var cloned map[string]any
+		if err = json.Unmarshal(raw, &cloned); err == nil {
+			return cloned
+		}
+	}
+
+	cloned := make(map[string]any, len(src))
+	for k, v := range src {
+		cloned[k] = v
 	}
 	return cloned
 }

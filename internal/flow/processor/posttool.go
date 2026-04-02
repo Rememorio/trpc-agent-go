@@ -104,6 +104,14 @@ func (p *PostToolRequestProcessor) ProcessRequest(
 	}
 }
 
+// SupportsContextCompactionRebuild reports that post-tool prompting can be
+// safely replayed during the sync-summary rebuild path.
+func (p *PostToolRequestProcessor) SupportsContextCompactionRebuild(
+	_ *agent.Invocation,
+) bool {
+	return true
+}
+
 // RebuildRequestForContextCompaction re-applies post-tool prompting during the
 // safe sync-summary rebuild path without replaying the full processor chain.
 func (p *PostToolRequestProcessor) RebuildRequestForContextCompaction(
