@@ -11,6 +11,7 @@ package conversationscope
 
 import (
 	"context"
+	"fmt"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -40,13 +41,18 @@ func (s *sessionService) CreateSession(
 	if err != nil || sess == nil {
 		return sess, err
 	}
-	_ = RememberIndexedStorageUser(
+	if err := RememberIndexedStorageUser(
 		ctx,
 		s.next,
 		key.AppName,
 		key.UserID,
 		storageKey.UserID,
-	)
+	); err != nil {
+		return nil, fmt.Errorf(
+			"remember indexed storage user for create session: %w",
+			err,
+		)
+	}
 	return rewriteSessionForUser(sess, key.UserID), nil
 }
 
@@ -60,13 +66,18 @@ func (s *sessionService) GetSession(
 	if err != nil || sess == nil {
 		return sess, err
 	}
-	_ = RememberIndexedStorageUser(
+	if err := RememberIndexedStorageUser(
 		ctx,
 		s.next,
 		key.AppName,
 		key.UserID,
 		storageKey.UserID,
-	)
+	); err != nil {
+		return nil, fmt.Errorf(
+			"remember indexed storage user for get session: %w",
+			err,
+		)
+	}
 	return rewriteSessionForUser(sess, key.UserID), nil
 }
 

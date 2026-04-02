@@ -44,6 +44,7 @@ type recordingSessionService struct {
 	listAppName         string
 	updateUserKey       session.UserKey
 	updateUserState     session.StateMap
+	updateUserStateErr  error
 	listUserKey         session.UserKey
 	listUserStates      session.StateMap
 	listUserStatesErr   error
@@ -162,6 +163,9 @@ func (r *recordingSessionService) UpdateUserState(
 ) error {
 	r.updateUserKey = userKey
 	r.updateUserState = state
+	if r.updateUserStateErr != nil {
+		return r.updateUserStateErr
+	}
 	return nil
 }
 
@@ -752,4 +756,67 @@ func TestWrapSessionService_ListSessions_PropagatesErrors(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, listed)
 	require.Contains(t, err.Error(), "list sessions boom")
+}
+
+func TestWrapSessionService_CreateSession_PropagatesIndexingError(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingSessionService{
+		updateUserStateErr: errors.New("index boom"),
+	}
+	wrapped := WrapSessionService(rec)
+
+	sess, err := wrapped.CreateSession(
+		WithStorageUserID(context.Background(), "chat-scope"),
+		session.Key{
+			AppName:   "demo-app",
+			UserID:    "canonical-user",
+			SessionID: "sess-1",
+		},
+		nil,
+	)
+	require.Error(t, err)
+	require.Nil(t, sess)
+	require.Equal(
+		t,
+		session.UserKey{AppName: "demo-app", UserID: "canonical-user"},
+		rec.updateUserKey,
+	)
+	require.Contains(
+		t,
+		err.Error(),
+		"remember indexed storage user for create session",
+	)
+	require.Contains(t, err.Error(), "index boom")
+}
+
+func TestWrapSessionService_GetSession_PropagatesIndexingError(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingSessionService{
+		updateUserStateErr: errors.New("index boom"),
+	}
+	wrapped := WrapSessionService(rec)
+
+	sess, err := wrapped.GetSession(
+		WithStorageUserID(context.Background(), "chat-scope"),
+		session.Key{
+			AppName:   "demo-app",
+			UserID:    "canonical-user",
+			SessionID: "sess-1",
+		},
+	)
+	require.Error(t, err)
+	require.Nil(t, sess)
+	require.Equal(
+		t,
+		session.UserKey{AppName: "demo-app", UserID: "canonical-user"},
+		rec.updateUserKey,
+	)
+	require.Contains(
+		t,
+		err.Error(),
+		"remember indexed storage user for get session",
+	)
+	require.Contains(t, err.Error(), "index boom")
 }
