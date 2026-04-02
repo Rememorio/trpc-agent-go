@@ -1584,9 +1584,15 @@ func TestGraphAgent_CreateInitialStateWithContextCompaction(t *testing.T) {
 	require.True(t, ok)
 	require.Len(t, messages, 5)
 	require.Equal(t, model.RoleAssistant, messages[0].Role)
+	require.Equal(t, model.RoleTool, messages[1].Role)
 	require.Equal(t, "Historical tool result omitted to save context.", messages[1].Content)
+	require.Equal(t, "tool-call-old", messages[1].ToolID)
+	require.Equal(t, "worker", messages[1].ToolName)
 	require.Equal(t, model.RoleAssistant, messages[2].Role)
 	require.Contains(t, messages[3].Content, "recent-result")
+	require.Equal(t, model.RoleTool, messages[3].Role)
+	require.Equal(t, "tool-call-recent", messages[3].ToolID)
+	require.Equal(t, "worker", messages[3].ToolName)
 	require.Equal(t, "hello", messages[4].Content)
 }
 

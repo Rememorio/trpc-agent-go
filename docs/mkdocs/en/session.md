@@ -1781,7 +1781,7 @@ The framework provides two distinct modes for managing conversation context sent
 
 **Mode 1: With Summary (`WithAddSessionSummary(true)`)**
 
-- The session summary is inserted as a separate system message after the first existing system message (or prepended if no system message exists).
+- The session summary is merged into the existing system message when one is already present, or prepended as a new system message when none exists.
 - **All incremental events** after the summary timestamp are included (no truncation).
 - This ensures complete context: condensed history (summary) + all new conversations since summarization.
 - `WithMaxHistoryRuns` is **ignored** in this mode.
@@ -1822,9 +1822,8 @@ llmAgent := llmagent.New(
 ```
 When AddSessionSummary = true:
 ┌─────────────────────────────────────┐
-│ Existing System Message (optional)  │ ← If present
-├─────────────────────────────────────┤
-│ Session Summary (system message)    │ ← Inserted after first system message
+│ System Prompt                       │ ← Existing system prompt, if present,
+│ (merged with Session Summary)       │    now merged with summary content
 ├─────────────────────────────────────┤
 │ Event 1 (after summary timestamp)   │ ┐
 │ Event 2                             │ │ All incremental

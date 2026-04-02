@@ -961,6 +961,9 @@ func contextCompactionThreshold(inv *agent.Invocation, ratio float64) int {
 	if threshold < contextCompactionMinTokens {
 		threshold = contextCompactionMinTokens
 	}
+	if threshold > contextWindow {
+		threshold = contextWindow
+	}
 	return threshold
 }
 

@@ -58,22 +58,21 @@ func compactIncrementEvents(
 	ctx context.Context,
 	events []event.Event,
 	currentRequestID string,
+	currentInvocationID string,
 	cfg ContextCompactionConfig,
 ) ([]event.Event, ContextCompactionStats) {
 	cfg = normalizeContextCompactionConfig(cfg)
+	currentKey := compactionUnitKey(currentRequestID, currentInvocationID)
 	if !cfg.Enabled || cfg.ToolResultMaxTokens <= 0 ||
-		len(events) == 0 || currentRequestID == "" {
+		len(events) == 0 || currentKey == "" {
 		return events, ContextCompactionStats{}
 	}
 
 	protectedRequestIDs := collectProtectedRequestIDs(
 		events,
-		currentRequestID,
+		currentKey,
 		cfg.KeepRecentRequests,
 	)
-	if len(protectedRequestIDs) == 0 {
-		return events, ContextCompactionStats{}
-	}
 
 	compacted := make([]event.Event, len(events))
 	copy(compacted, events)
@@ -81,10 +80,11 @@ func compactIncrementEvents(
 	var stats ContextCompactionStats
 	for i := range compacted {
 		evt := compacted[i]
-		if evt.RequestID == "" {
+		unitKey := compactionUnitKey(evt.RequestID, evt.InvocationID)
+		if unitKey == "" {
 			continue
 		}
-		if _, keep := protectedRequestIDs[evt.RequestID]; keep {
+		if _, keep := protectedRequestIDs[unitKey]; keep {
 			continue
 		}
 		if evt.Response == nil || len(evt.Response.Choices) == 0 {
@@ -122,29 +122,56 @@ func compactIncrementEvents(
 
 func collectProtectedRequestIDs(
 	events []event.Event,
-	currentRequestID string,
+	currentKey string,
 	keepRecentRequests int,
 ) map[string]struct{} {
-	protected := map[string]struct{}{}
-	if currentRequestID != "" {
-		protected[currentRequestID] = struct{}{}
-	}
+	protected := map[string]struct{}{currentKey: {}}
 	if keepRecentRequests <= 0 {
 		return protected
 	}
 
+	completed := collectCompletedCompactionUnitKeys(events)
 	for i := len(events) - 1; i >= 0 && keepRecentRequests > 0; i-- {
-		requestID := events[i].RequestID
-		if requestID == "" || requestID == currentRequestID {
+		unitKey := compactionUnitKey(events[i].RequestID, events[i].InvocationID)
+		if unitKey == "" || unitKey == currentKey {
 			continue
 		}
-		if _, exists := protected[requestID]; exists {
+		if !completed[unitKey] {
 			continue
 		}
-		protected[requestID] = struct{}{}
+		if _, exists := protected[unitKey]; exists {
+			continue
+		}
+		protected[unitKey] = struct{}{}
 		keepRecentRequests--
 	}
 	return protected
+}
+
+func collectCompletedCompactionUnitKeys(events []event.Event) map[string]bool {
+	completed := make(map[string]bool)
+	for _, evt := range events {
+		if evt.Response == nil || !evt.Response.Done {
+			continue
+		}
+		unitKey := compactionUnitKey(evt.RequestID, evt.InvocationID)
+		if unitKey == "" {
+			continue
+		}
+		completed[unitKey] = true
+	}
+	return completed
+}
+
+func compactionUnitKey(requestID, invocationID string) string {
+	switch {
+	case requestID != "":
+		return "req:" + requestID
+	case invocationID != "":
+		return "inv:" + invocationID
+	default:
+		return ""
+	}
 }
 
 func compactHistoricalToolResultMessage(
@@ -160,6 +187,9 @@ func compactHistoricalToolResultMessage(
 		return msg, false, 0
 	}
 
+	// SimpleTokenCounter is intentionally heuristic-based; Phase 1 only needs a
+	// cheap approximation to decide whether a historical tool result is worth
+	// replacing with a placeholder.
 	counter := model.NewSimpleTokenCounter()
 	originalTokens, err := counter.CountTokens(ctx, msg)
 	if err != nil || originalTokens <= maxTokens {
@@ -174,7 +204,7 @@ func compactHistoricalToolResultMessage(
 	}
 	compactedTokens, err := counter.CountTokens(ctx, compacted)
 	if err != nil || compactedTokens >= originalTokens {
-		compactedTokens = 0
+		return msg, false, 0
 	}
 
 	return compacted, true, originalTokens - compactedTokens
