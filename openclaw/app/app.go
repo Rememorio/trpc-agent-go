@@ -50,6 +50,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/admin"
 	ocbrowser "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/browser"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationtool"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
@@ -61,7 +62,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	ocskills "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/skills"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/wecomscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/registry"
 )
 
@@ -690,7 +690,7 @@ func NewRuntime(
 	}
 	rt.toolSets = toolSets
 
-	bridgedSessionSvc := wecomscope.WrapSessionService(sessionSvc)
+	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
 		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
@@ -1116,7 +1116,7 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 
-	bridgedSessionSvc := wecomscope.WrapSessionService(sessionSvc)
+	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
 		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),

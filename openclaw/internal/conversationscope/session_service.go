@@ -7,7 +7,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package wecomscope
+package conversationscope
 
 import (
 	"context"
@@ -20,9 +20,8 @@ type sessionService struct {
 	next session.Service
 }
 
-// WrapSessionService rewrites WeCom session keys so runner-visible user scope
-// can stay per-user while persisted conversation data stays keyed by the WeCom
-// chat/thread scope encoded in session IDs.
+// WrapSessionService rewrites persisted session keys using any explicit
+// per-request storage user scope carried on the context.
 func WrapSessionService(next session.Service) session.Service {
 	if next == nil {
 		return nil
@@ -36,7 +35,7 @@ func (s *sessionService) CreateSession(
 	state session.StateMap,
 	options ...session.Option,
 ) (*session.Session, error) {
-	storageKey := rewriteKeyForStorage(key)
+	storageKey := rewriteKeyForStorage(ctx, key)
 	sess, err := s.next.CreateSession(ctx, storageKey, state, options...)
 	if err != nil || sess == nil {
 		return sess, err
@@ -49,7 +48,7 @@ func (s *sessionService) GetSession(
 	key session.Key,
 	options ...session.Option,
 ) (*session.Session, error) {
-	storageKey := rewriteKeyForStorage(key)
+	storageKey := rewriteKeyForStorage(ctx, key)
 	sess, err := s.next.GetSession(ctx, storageKey, options...)
 	if err != nil || sess == nil {
 		return sess, err
@@ -62,7 +61,9 @@ func (s *sessionService) ListSessions(
 	userKey session.UserKey,
 	options ...session.Option,
 ) ([]*session.Session, error) {
-	return s.next.ListSessions(ctx, userKey, options...)
+	storageUserKey := userKey
+	storageUserKey.UserID = StorageUserIDFromContext(ctx, userKey.UserID)
+	return s.next.ListSessions(ctx, storageUserKey, options...)
 }
 
 func (s *sessionService) DeleteSession(
@@ -70,7 +71,7 @@ func (s *sessionService) DeleteSession(
 	key session.Key,
 	options ...session.Option,
 ) error {
-	return s.next.DeleteSession(ctx, rewriteKeyForStorage(key), options...)
+	return s.next.DeleteSession(ctx, rewriteKeyForStorage(ctx, key), options...)
 }
 
 func (s *sessionService) UpdateAppState(
@@ -124,7 +125,7 @@ func (s *sessionService) UpdateSessionState(
 	key session.Key,
 	state session.StateMap,
 ) error {
-	return s.next.UpdateSessionState(ctx, rewriteKeyForStorage(key), state)
+	return s.next.UpdateSessionState(ctx, rewriteKeyForStorage(ctx, key), state)
 }
 
 func (s *sessionService) AppendEvent(
@@ -135,7 +136,7 @@ func (s *sessionService) AppendEvent(
 ) error {
 	return s.next.AppendEvent(
 		ctx,
-		rewriteSessionForStorage(sess),
+		rewriteSessionForStorage(ctx, sess),
 		evt,
 		options...,
 	)
@@ -149,7 +150,7 @@ func (s *sessionService) CreateSessionSummary(
 ) error {
 	return s.next.CreateSessionSummary(
 		ctx,
-		rewriteSessionForStorage(sess),
+		rewriteSessionForStorage(ctx, sess),
 		filterKey,
 		force,
 	)
@@ -163,7 +164,7 @@ func (s *sessionService) EnqueueSummaryJob(
 ) error {
 	return s.next.EnqueueSummaryJob(
 		ctx,
-		rewriteSessionForStorage(sess),
+		rewriteSessionForStorage(ctx, sess),
 		filterKey,
 		force,
 	)
@@ -176,7 +177,7 @@ func (s *sessionService) GetSessionSummaryText(
 ) (string, bool) {
 	return s.next.GetSessionSummaryText(
 		ctx,
-		rewriteSessionForStorage(sess),
+		rewriteSessionForStorage(ctx, sess),
 		opts...,
 	)
 }
@@ -185,16 +186,22 @@ func (s *sessionService) Close() error {
 	return s.next.Close()
 }
 
-func rewriteKeyForStorage(key session.Key) session.Key {
-	key.UserID = StorageUserID(key.UserID, key.SessionID)
+func rewriteKeyForStorage(
+	ctx context.Context,
+	key session.Key,
+) session.Key {
+	key.UserID = StorageUserIDFromContext(ctx, key.UserID)
 	return key
 }
 
-func rewriteSessionForStorage(sess *session.Session) *session.Session {
+func rewriteSessionForStorage(
+	ctx context.Context,
+	sess *session.Session,
+) *session.Session {
 	if sess == nil {
 		return nil
 	}
-	storageUserID := StorageUserID(sess.UserID, sess.ID)
+	storageUserID := StorageUserIDFromContext(ctx, sess.UserID)
 	if storageUserID == sess.UserID {
 		return sess
 	}

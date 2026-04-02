@@ -37,7 +37,7 @@ func (s *Server) injectedContextMessages(
 		out = append(out, *msg)
 	}
 	out = append(out, s.memoryFileContextMessages(ctx, userID)...)
-	out = append(out, s.uploadContextMessages(userID, sessionID)...)
+	out = append(out, s.uploadContextMessages(ctx, userID, sessionID)...)
 	return out
 }
 

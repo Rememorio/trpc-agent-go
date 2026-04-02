@@ -32,7 +32,9 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
@@ -452,7 +454,11 @@ func TestServerUploadContextMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	srv := &Server{uploads: store}
-	msgs := srv.uploadContextMessages("u1", "telegram:dm:u1:s1")
+	msgs := srv.uploadContextMessages(
+		context.Background(),
+		"u1",
+		"telegram:dm:u1:s1",
+	)
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].Content, recentUploadContextHeader)
 	require.Contains(t, msgs[0].Content, "clip.mp4 [video]")
@@ -480,33 +486,44 @@ func TestServerUploadContextMessages_UsesStoredMimeType(t *testing.T) {
 	require.NoError(t, err)
 
 	srv := &Server{uploads: store}
-	msgs := srv.uploadContextMessages("u1", "telegram:dm:u1:s1")
+	msgs := srv.uploadContextMessages(
+		context.Background(),
+		"u1",
+		"telegram:dm:u1:s1",
+	)
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].Content, "video-note [video]")
 }
 
-func TestUploadScopeFromRequest_UsesWeComConversationScope(t *testing.T) {
+func TestUploadScopeFromRequest_UsesStorageUserOverride(t *testing.T) {
 	t.Parallel()
 
+	extensions, err := conversation.MergeRequestExtension(
+		nil,
+		conversation.Annotation{StorageUserID: "chat-scope"},
+	)
+	require.NoError(t, err)
+
 	scope := uploadScopeFromRequest(gwproto.MessageRequest{
-		Channel: "wecom",
-		From:    "user1",
-		Thread:  "wecom:chat:chat1",
-		UserID:  "wecom:dm:user1",
-		Text:    "hello",
+		Channel:    "demo",
+		From:       "user1",
+		Thread:     "room-1",
+		UserID:     "canonical-user",
+		Text:       "hello",
+		Extensions: extensions,
 	})
 	require.Equal(
 		t,
 		uploads.Scope{
-			Channel:   "wecom",
-			UserID:    "wecom:chat:chat1",
-			SessionID: "wecom:thread:wecom:chat:chat1",
+			Channel:   "demo",
+			UserID:    "chat-scope",
+			SessionID: "demo:thread:room-1",
 		},
 		scope,
 	)
 }
 
-func TestServerUploadContextMessages_UsesWeComConversationScope(t *testing.T) {
+func TestServerUploadContextMessages_UsesStorageUserOverride(t *testing.T) {
 	t.Parallel()
 
 	stateDir := t.TempDir()
@@ -514,9 +531,9 @@ func TestServerUploadContextMessages_UsesWeComConversationScope(t *testing.T) {
 	require.NoError(t, err)
 
 	scope := uploads.Scope{
-		Channel:   "wecom",
-		UserID:    "wecom:chat:chat1",
-		SessionID: "wecom:thread:wecom:chat:chat1",
+		Channel:   "demo",
+		UserID:    "chat-scope",
+		SessionID: "demo:thread:room-1",
 	}
 	_, err = store.Save(
 		context.Background(),
@@ -527,9 +544,14 @@ func TestServerUploadContextMessages_UsesWeComConversationScope(t *testing.T) {
 	require.NoError(t, err)
 
 	srv := &Server{uploads: store}
+	ctx := conversationscope.WithStorageUserID(
+		context.Background(),
+		"chat-scope",
+	)
 	msgs := srv.uploadContextMessages(
-		"wecom:dm:user1",
-		"wecom:thread:wecom:chat:chat1",
+		ctx,
+		"canonical-user",
+		"demo:thread:room-1",
 	)
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].Content, "clip.mp4 [video]")
@@ -696,7 +718,7 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 	require.Contains(t, msgs[2].Content, recentUploadContextHeader)
 }
 
-func TestServerInjectedContextMessages_WeComUsesCanonicalMemoryAndChatUploads(
+func TestServerInjectedContextMessages_UsesCanonicalMemoryAndStorageScopedUploads(
 	t *testing.T,
 ) {
 	t.Parallel()
@@ -712,7 +734,7 @@ func TestServerInjectedContextMessages_WeComUsesCanonicalMemoryAndChatUploads(
 	memoryPath, err := memoryStore.EnsureMemory(
 		context.Background(),
 		"demo-app",
-		"wecom:dm:user1",
+		"canonical-user",
 	)
 	require.NoError(t, err)
 	require.NoError(
@@ -720,12 +742,23 @@ func TestServerInjectedContextMessages_WeComUsesCanonicalMemoryAndChatUploads(
 		os.WriteFile(memoryPath, []byte("## Preferences\n\n- Remember my name."), 0o600),
 	)
 
+	otherMemoryPath, err := memoryStore.EnsureMemory(
+		context.Background(),
+		"demo-app",
+		"chat-scope",
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		os.WriteFile(otherMemoryPath, []byte("## Preferences\n\n- Wrong scope."), 0o600),
+	)
+
 	_, err = uploadStore.Save(
 		context.Background(),
 		uploads.Scope{
-			Channel:   "wecom",
-			UserID:    "wecom:chat:chat1",
-			SessionID: "wecom:thread:wecom:chat:chat1",
+			Channel:   "demo",
+			UserID:    "chat-scope",
+			SessionID: "demo:thread:room-1",
 		},
 		"clip.mp4",
 		[]byte("video"),
@@ -737,14 +770,19 @@ func TestServerInjectedContextMessages_WeComUsesCanonicalMemoryAndChatUploads(
 		uploads:         uploadStore,
 		memoryFileStore: memoryStore,
 	}
-	msgs := srv.injectedContextMessages(
+	ctx := conversationscope.WithStorageUserID(
 		context.Background(),
-		"wecom:dm:user1",
-		"wecom:thread:wecom:chat:chat1",
+		"chat-scope",
+	)
+	msgs := srv.injectedContextMessages(
+		ctx,
+		"canonical-user",
+		"demo:thread:room-1",
 		"",
 	)
 	require.Len(t, msgs, 2)
 	require.Contains(t, msgs[0].Content, "Remember my name")
+	require.NotContains(t, msgs[0].Content, "Wrong scope")
 	require.Contains(t, msgs[1].Content, "clip.mp4 [video]")
 }
 

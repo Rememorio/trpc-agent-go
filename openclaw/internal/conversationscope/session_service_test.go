@@ -7,7 +7,7 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package wecomscope
+package conversationscope
 
 import (
 	"context"
@@ -17,45 +17,42 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 )
 
-func TestConversationScopeFromSessionID(t *testing.T) {
+func TestResolveStorageUserID(t *testing.T) {
 	t.Parallel()
 
-	scope, ok := ConversationScopeFromSessionID(
-		"wecom:thread:wecom:chat:chat1:1711975326",
+	extensions, err := conversation.MergeRequestExtension(
+		nil,
+		conversation.Annotation{
+			StorageUserID: "chat-scope",
+		},
 	)
-	require.True(t, ok)
-	require.Equal(t, "wecom:chat:chat1", scope)
+	require.NoError(t, err)
 
-	scope, ok = ConversationScopeFromSessionID(
-		"wecom:thread:wecom:chat:chat1:user:user1:1711975326",
-	)
-	require.True(t, ok)
-	require.Equal(t, "wecom:chat:chat1:user:user1", scope)
+	userID, err := ResolveStorageUserID(extensions, "canonical-user")
+	require.NoError(t, err)
+	require.Equal(t, "chat-scope", userID)
 
-	scope, ok = ConversationScopeFromSessionID(
-		"wecom:thread:wecom:dm:user1",
-	)
-	require.True(t, ok)
-	require.Equal(t, "wecom:dm:user1", scope)
-
-	_, ok = ConversationScopeFromSessionID("telegram:thread:group1")
-	require.False(t, ok)
+	userID, err = ResolveStorageUserID(nil, "canonical-user")
+	require.NoError(t, err)
+	require.Equal(t, "canonical-user", userID)
 }
 
-func TestWrapSessionService_UsesWeComConversationScopeForStorage(t *testing.T) {
+func TestWrapSessionService_UsesContextStorageScopeForStorage(t *testing.T) {
 	t.Parallel()
 
 	base := sessioninmemory.NewSessionService()
 	wrapped := WrapSessionService(base)
+	storageCtx := WithStorageUserID(context.Background(), "chat-scope")
 
 	storageKey := session.Key{
 		AppName:   "demo-app",
-		UserID:    "wecom:chat:chat1",
-		SessionID: "wecom:thread:wecom:chat:chat1",
+		UserID:    "chat-scope",
+		SessionID: "demo:thread:room-1",
 	}
 	stored, err := base.CreateSession(
 		context.Background(),
@@ -82,21 +79,20 @@ func TestWrapSessionService_UsesWeComConversationScopeForStorage(t *testing.T) {
 
 	requestKey := session.Key{
 		AppName:   "demo-app",
-		UserID:    "wecom:dm:user1",
+		UserID:    "canonical-user",
 		SessionID: storageKey.SessionID,
 	}
-	sess, err := wrapped.GetSession(context.Background(), requestKey)
+	sess, err := wrapped.GetSession(storageCtx, requestKey)
 	require.NoError(t, err)
 	require.NotNil(t, sess)
-	require.Equal(t, "wecom:dm:user1", sess.UserID)
+	require.Equal(t, "canonical-user", sess.UserID)
 	require.Equal(t, storageKey.SessionID, sess.ID)
 	require.Len(t, sess.Events, 1)
 
-	sess.SetState("ephemeral", []byte("visible"))
 	require.NoError(
 		t,
 		wrapped.UpdateSessionState(
-			context.Background(),
+			storageCtx,
 			requestKey,
 			session.StateMap{"migrated": []byte("yes")},
 		),
@@ -104,7 +100,7 @@ func TestWrapSessionService_UsesWeComConversationScopeForStorage(t *testing.T) {
 	require.NoError(
 		t,
 		wrapped.AppendEvent(
-			context.Background(),
+			storageCtx,
 			sess,
 			event.NewResponseEvent(
 				"inv-2",
@@ -121,9 +117,29 @@ func TestWrapSessionService_UsesWeComConversationScopeForStorage(t *testing.T) {
 	updated, err := base.GetSession(context.Background(), storageKey)
 	require.NoError(t, err)
 	require.NotNil(t, updated)
-	require.Equal(t, "wecom:chat:chat1", updated.UserID)
+	require.Equal(t, "chat-scope", updated.UserID)
 	require.Len(t, updated.Events, 2)
 	raw, ok := updated.GetState("migrated")
 	require.True(t, ok)
 	require.Equal(t, []byte("yes"), raw)
+}
+
+func TestWrapSessionService_WithoutStorageOverrideKeepsCanonicalUser(t *testing.T) {
+	t.Parallel()
+
+	base := sessioninmemory.NewSessionService()
+	wrapped := WrapSessionService(base)
+
+	key := session.Key{
+		AppName:   "demo-app",
+		UserID:    "canonical-user",
+		SessionID: "demo:thread:room-1",
+	}
+	_, err := wrapped.CreateSession(context.Background(), key, nil)
+	require.NoError(t, err)
+
+	sess, err := base.GetSession(context.Background(), key)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, "canonical-user", sess.UserID)
 }

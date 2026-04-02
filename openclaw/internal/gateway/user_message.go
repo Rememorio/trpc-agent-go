@@ -27,9 +27,9 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/wecomscope"
 )
 
 const (
@@ -933,7 +933,12 @@ func uploadScopeFromRequest(req gwproto.MessageRequest) uploads.Scope {
 			sessionID = resolved
 		}
 	}
-	userID = wecomscope.StorageUserID(userID, sessionID)
+	if resolvedUserID, err := conversationscope.ResolveStorageUserID(
+		req.Extensions,
+		userID,
+	); err == nil {
+		userID = resolvedUserID
+	}
 	return uploads.Scope{
 		Channel:   channel,
 		UserID:    userID,
