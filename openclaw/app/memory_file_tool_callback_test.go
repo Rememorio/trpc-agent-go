@@ -101,6 +101,21 @@ func TestMemoryFileToolCallback_ReadFilePrefersScopedMemory(t *testing.T) {
 	require.NotContains(t, rsp.Contents, "root memory")
 }
 
+func TestMemoryFileToolCallback_DoesNotInterceptGenericReadFile(t *testing.T) {
+	t.Parallel()
+
+	stateDir, store := newTestMemoryFileStore(t)
+	ctx := newTestMemoryToolContext()
+	callback := newMemoryFileToolCallback(store, stateDir)
+
+	result, err := callback(ctx, &tool.BeforeToolArgs{
+		ToolName:  "read_file",
+		Arguments: []byte(`{"file_name":"MEMORY.md"}`),
+	})
+	require.NoError(t, err)
+	require.Nil(t, result)
+}
+
 func TestMemoryFileToolCallback_ReplaceContentUsesScopedMemory(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +157,43 @@ func TestMemoryFileToolCallback_ReplaceContentUsesScopedMemory(t *testing.T) {
 	rootRaw, err := os.ReadFile(rootPath)
 	require.NoError(t, err)
 	require.Contains(t, string(rootRaw), "Hello Root")
+}
+
+func TestMemoryFileToolCallback_SaveFilePreservesOverwriteGuard(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	stateDir, store := newTestMemoryFileStore(t)
+	ctx := newTestMemoryToolContext()
+	callback := newMemoryFileToolCallback(store, stateDir)
+
+	path, err := store.EnsureMemory(
+		context.Background(),
+		testMemoryAppName,
+		testMemoryUserID,
+	)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("# Memory\n\n- Existing fact\n"), 0o600))
+
+	result, err := callback(ctx, &tool.BeforeToolArgs{
+		ToolName:  memoryToolSaveFileFS,
+		Arguments: []byte(`{"file_name":"MEMORY.md","contents":"replacement text","overwrite":false}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	rsp, ok := result.CustomResult.(memorySaveFileResponse)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		"Error: file exists and overwrite=false: MEMORY.md",
+		rsp.Message,
+	)
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "# Memory\n\n- Existing fact\n", string(raw))
 }
 
 func newTestMemoryFileStore(t *testing.T) (string, *memoryfile.Store) {

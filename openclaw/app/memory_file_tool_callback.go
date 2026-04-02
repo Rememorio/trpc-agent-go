@@ -12,6 +12,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,13 +27,13 @@ import (
 const (
 	memoryToolFileName = "MEMORY.md"
 
-	memoryToolReadFile       = "read_file"
-	memoryToolSaveFile       = "save_file"
-	memoryToolReplaceContent = "replace_content"
-
 	memoryToolReadFileFS       = "fs_read_file"
 	memoryToolSaveFileFS       = "fs_save_file"
 	memoryToolReplaceContentFS = "fs_replace_content"
+)
+
+var errMemorySaveFileExists = errors.New(
+	"memory file exists and overwrite=false",
 )
 
 type memoryToolTarget struct {
@@ -109,13 +110,13 @@ func newMemoryFileToolCallback(
 		}
 
 		switch normalizeMemoryToolName(args.ToolName) {
-		case memoryToolReadFile:
+		case memoryToolReadFileFS:
 			return handleMemoryReadFileTool(
 				target,
 				stateDir,
 				args.Arguments,
 			)
-		case memoryToolSaveFile:
+		case memoryToolSaveFileFS:
 			return handleMemorySaveFileTool(
 				ctx,
 				store,
@@ -123,7 +124,7 @@ func newMemoryFileToolCallback(
 				target,
 				args.Arguments,
 			)
-		case memoryToolReplaceContent:
+		case memoryToolReplaceContentFS:
 			return handleMemoryReplaceContentTool(
 				ctx,
 				store,
@@ -139,12 +140,12 @@ func newMemoryFileToolCallback(
 
 func normalizeMemoryToolName(name string) string {
 	switch strings.TrimSpace(name) {
-	case memoryToolReadFile, memoryToolReadFileFS:
-		return memoryToolReadFile
-	case memoryToolSaveFile, memoryToolSaveFileFS:
-		return memoryToolSaveFile
-	case memoryToolReplaceContent, memoryToolReplaceContentFS:
-		return memoryToolReplaceContent
+	case memoryToolReadFileFS:
+		return memoryToolReadFileFS
+	case memoryToolSaveFileFS:
+		return memoryToolSaveFileFS
+	case memoryToolReplaceContentFS:
+		return memoryToolReplaceContentFS
 	default:
 		return ""
 	}
@@ -248,13 +249,20 @@ func handleMemorySaveFileTool(
 		target.AppName,
 		target.UserID,
 		func(current string) (string, error) {
-			return mergeMemorySaveContents(
+			return nextMemorySaveContents(
 				current,
 				req.Contents,
 				req.Overwrite,
-			), nil
+			)
 		},
 	)
+	if errors.Is(err, errMemorySaveFileExists) {
+		rsp.Message = fmt.Sprintf(
+			"Error: file exists and overwrite=false: %s",
+			req.FileName,
+		)
+		return memoryToolResult(rsp), nil
+	}
 	if err != nil {
 		rsp.Message = fmt.Sprintf("Error: %v", err)
 		return memoryToolResult(rsp), nil
@@ -350,21 +358,29 @@ func isMemoryFileAlias(fileName string) bool {
 	return strings.EqualFold(normalized, memoryToolFileName)
 }
 
-func mergeMemorySaveContents(
+func nextMemorySaveContents(
 	existing string,
 	incoming string,
 	overwrite bool,
-) string {
-	if overwrite || looksLikeFullMemoryDocument(incoming) {
-		return incoming
+) (string, error) {
+	if overwrite {
+		return incoming, nil
 	}
+
 	incomingTrimmed := strings.TrimSpace(incoming)
 	if incomingTrimmed == "" {
-		return existing
+		return "", errMemorySaveFileExists
 	}
 	if strings.Contains(existing, incomingTrimmed) {
-		return existing
+		return existing, nil
 	}
+	if !looksLikeMemoryAppendSnippet(incomingTrimmed) {
+		return "", errMemorySaveFileExists
+	}
+	return appendMemorySnippet(existing, incomingTrimmed), nil
+}
+
+func appendMemorySnippet(existing string, incomingTrimmed string) string {
 	existingTrimmed := strings.TrimRight(existing, "\n")
 	if existingTrimmed == "" {
 		return incomingTrimmed + "\n"
@@ -372,12 +388,18 @@ func mergeMemorySaveContents(
 	return existingTrimmed + "\n\n" + incomingTrimmed + "\n"
 }
 
-func looksLikeFullMemoryDocument(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	return strings.HasPrefix(trimmed, "# Memory") ||
-		strings.Contains(trimmed, "## Long-term facts") ||
-		strings.Contains(trimmed, "## Preferences") ||
-		strings.Contains(trimmed, "## Repeated working style")
+func looksLikeMemoryAppendSnippet(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, "- ") &&
+			!strings.HasPrefix(trimmed, "* ") {
+			return false
+		}
+	}
+	return true
 }
 
 func sliceMemoryTextByLines(
