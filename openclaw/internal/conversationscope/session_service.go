@@ -40,6 +40,13 @@ func (s *sessionService) CreateSession(
 	if err != nil || sess == nil {
 		return sess, err
 	}
+	_ = RememberIndexedStorageUser(
+		ctx,
+		s.next,
+		key.AppName,
+		key.UserID,
+		storageKey.UserID,
+	)
 	return rewriteSessionForUser(sess, key.UserID), nil
 }
 
@@ -53,6 +60,13 @@ func (s *sessionService) GetSession(
 	if err != nil || sess == nil {
 		return sess, err
 	}
+	_ = RememberIndexedStorageUser(
+		ctx,
+		s.next,
+		key.AppName,
+		key.UserID,
+		storageKey.UserID,
+	)
 	return rewriteSessionForUser(sess, key.UserID), nil
 }
 

@@ -42,6 +42,7 @@ import (
 	occhannel "trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwclient"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
@@ -3193,6 +3194,90 @@ func TestInProcGatewayClient_ForgetUser_ClearsCronJobsOnlyOnce(
 			outbound.DeliveryTarget{Channel: "telegram"},
 		),
 	)
+}
+
+func TestInProcGatewayClient_ForgetUser_ClearsIndexedStorageScopes(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	sessSvc := sessioninmemory.NewSessionService()
+	uploadStore, err := uploads.NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	const (
+		channelName     = "demo"
+		canonicalUserID = "u1"
+		storageUserID   = "chat-scope"
+		sessionID       = "demo:thread:room-1"
+	)
+	require.NoError(
+		t,
+		conversationscope.RememberIndexedStorageUser(
+			ctx,
+			sessSvc,
+			appName,
+			canonicalUserID,
+			storageUserID,
+		),
+	)
+	_, err = sessSvc.CreateSession(
+		ctx,
+		session.Key{
+			AppName:   appName,
+			UserID:    storageUserID,
+			SessionID: sessionID,
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	saved, err := uploadStore.Save(
+		ctx,
+		uploads.Scope{
+			Channel:   channelName,
+			UserID:    storageUserID,
+			SessionID: sessionID,
+		},
+		"clip.mp4",
+		[]byte("video"),
+	)
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(
+		srv,
+		appName,
+		sessSvc,
+		nil,
+		"",
+		uploadStore,
+	)
+	require.NoError(t, c.ForgetUser(ctx, channelName, canonicalUserID))
+
+	sessions, err := sessSvc.ListSessions(
+		ctx,
+		session.UserKey{
+			AppName: appName,
+			UserID:  storageUserID,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, sessions)
+
+	indexedStorageUsers, err := conversationscope.ListIndexedStorageUsers(
+		ctx,
+		sessSvc,
+		appName,
+		canonicalUserID,
+	)
+	require.NoError(t, err)
+	require.Empty(t, indexedStorageUsers)
+
+	_, err = os.Stat(saved.Path)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestInProcGatewayClient_ForgetUser_ValidationErrors(t *testing.T) {

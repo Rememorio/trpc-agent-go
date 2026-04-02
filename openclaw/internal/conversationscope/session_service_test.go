@@ -143,3 +143,58 @@ func TestWrapSessionService_WithoutStorageOverrideKeepsCanonicalUser(t *testing.
 	require.NotNil(t, sess)
 	require.Equal(t, "canonical-user", sess.UserID)
 }
+
+func TestIndexedStorageUsersLifecycle(t *testing.T) {
+	t.Parallel()
+
+	svc := sessioninmemory.NewSessionService()
+
+	require.NoError(
+		t,
+		RememberIndexedStorageUser(
+			context.Background(),
+			svc,
+			"demo-app",
+			"canonical-user",
+			"chat-scope",
+		),
+	)
+	require.NoError(
+		t,
+		RememberIndexedStorageUser(
+			context.Background(),
+			svc,
+			"demo-app",
+			"canonical-user",
+			"chat-scope-2",
+		),
+	)
+
+	storageUsers, err := ListIndexedStorageUsers(
+		context.Background(),
+		svc,
+		"demo-app",
+		"canonical-user",
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"chat-scope", "chat-scope-2"}, storageUsers)
+
+	require.NoError(
+		t,
+		DeleteIndexedStorageUser(
+			context.Background(),
+			svc,
+			"demo-app",
+			"canonical-user",
+			"chat-scope",
+		),
+	)
+	storageUsers, err = ListIndexedStorageUsers(
+		context.Background(),
+		svc,
+		"demo-app",
+		"canonical-user",
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"chat-scope-2"}, storageUsers)
+}
