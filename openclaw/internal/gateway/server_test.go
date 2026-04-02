@@ -485,6 +485,56 @@ func TestServerUploadContextMessages_UsesStoredMimeType(t *testing.T) {
 	require.Contains(t, msgs[0].Content, "video-note [video]")
 }
 
+func TestUploadScopeFromRequest_UsesWeComConversationScope(t *testing.T) {
+	t.Parallel()
+
+	scope := uploadScopeFromRequest(gwproto.MessageRequest{
+		Channel: "wecom",
+		From:    "user1",
+		Thread:  "wecom:chat:chat1",
+		UserID:  "wecom:dm:user1",
+		Text:    "hello",
+	})
+	require.Equal(
+		t,
+		uploads.Scope{
+			Channel:   "wecom",
+			UserID:    "wecom:chat:chat1",
+			SessionID: "wecom:thread:wecom:chat:chat1",
+		},
+		scope,
+	)
+}
+
+func TestServerUploadContextMessages_UsesWeComConversationScope(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	store, err := uploads.NewStore(stateDir)
+	require.NoError(t, err)
+
+	scope := uploads.Scope{
+		Channel:   "wecom",
+		UserID:    "wecom:chat:chat1",
+		SessionID: "wecom:thread:wecom:chat:chat1",
+	}
+	_, err = store.Save(
+		context.Background(),
+		scope,
+		"clip.mp4",
+		[]byte("video"),
+	)
+	require.NoError(t, err)
+
+	srv := &Server{uploads: store}
+	msgs := srv.uploadContextMessages(
+		"wecom:dm:user1",
+		"wecom:thread:wecom:chat:chat1",
+	)
+	require.Len(t, msgs, 1)
+	require.Contains(t, msgs[0].Content, "clip.mp4 [video]")
+}
+
 func TestServerInjectedContextMessages_IncludePersonaAndUploads(t *testing.T) {
 	t.Parallel()
 
@@ -644,6 +694,58 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 	require.Contains(t, msgs[1].Content, "Keep replies concise")
 	require.NotContains(t, msgs[1].Content, "Use another app memory")
 	require.Contains(t, msgs[2].Content, recentUploadContextHeader)
+}
+
+func TestServerInjectedContextMessages_WeComUsesCanonicalMemoryAndChatUploads(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	memoryStore, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+
+	uploadStore, err := uploads.NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	memoryPath, err := memoryStore.EnsureMemory(
+		context.Background(),
+		"demo-app",
+		"wecom:dm:user1",
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		os.WriteFile(memoryPath, []byte("## Preferences\n\n- Remember my name."), 0o600),
+	)
+
+	_, err = uploadStore.Save(
+		context.Background(),
+		uploads.Scope{
+			Channel:   "wecom",
+			UserID:    "wecom:chat:chat1",
+			SessionID: "wecom:thread:wecom:chat:chat1",
+		},
+		"clip.mp4",
+		[]byte("video"),
+	)
+	require.NoError(t, err)
+
+	srv := &Server{
+		appName:         "demo-app",
+		uploads:         uploadStore,
+		memoryFileStore: memoryStore,
+	}
+	msgs := srv.injectedContextMessages(
+		context.Background(),
+		"wecom:dm:user1",
+		"wecom:thread:wecom:chat:chat1",
+		"",
+	)
+	require.Len(t, msgs, 2)
+	require.Contains(t, msgs[0].Content, "Remember my name")
+	require.Contains(t, msgs[1].Content, "clip.mp4 [video]")
 }
 
 func TestServerInjectedContextMessages_CanceledContextSkipsMemoryFiles(t *testing.T) {

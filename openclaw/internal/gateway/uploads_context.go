@@ -15,6 +15,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/wecomscope"
 )
 
 const (
@@ -68,10 +69,11 @@ func (s *Server) uploadContextMessages(
 	}
 
 	channel := channelFromSessionID(sessionID)
+	storageUserID := wecomscope.StorageUserID(userID, sessionID)
 	files, err := s.uploads.ListScope(
 		uploads.Scope{
 			Channel:   channel,
-			UserID:    userID,
+			UserID:    storageUserID,
 			SessionID: sessionID,
 		},
 		recentUploadContextLimit,

@@ -98,7 +98,8 @@ func (s *Server) memoryFileContextMessages(
 	}
 
 	appName := strings.TrimSpace(s.appName)
-	if appName == "" {
+	userID = strings.TrimSpace(userID)
+	if appName == "" || userID == "" {
 		return nil
 	}
 	path, err := s.memoryFileStore.EnsureMemory(

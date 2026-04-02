@@ -61,6 +61,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	ocskills "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/skills"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/wecomscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/registry"
 )
 
@@ -689,8 +690,9 @@ func NewRuntime(
 	}
 	rt.toolSets = toolSets
 
+	bridgedSessionSvc := wecomscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
-		runner.WithSessionService(sessionSvc),
+		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
 	}
 	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
@@ -744,7 +746,7 @@ func NewRuntime(
 		gateway.WithRunOptionResolver(
 			buildConversationRunOptionResolver(
 				opts.AppName,
-				sessionSvc,
+				bridgedSessionSvc,
 				conversation.HistoryOptions{
 					AddSessionSummary: opts.AddSessionSummary,
 					MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -1114,8 +1116,9 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 
+	bridgedSessionSvc := wecomscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
-		runner.WithSessionService(sessionSvc),
+		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
 	}
 	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
@@ -1167,7 +1170,7 @@ func run(ctx context.Context, args []string) error {
 		gateway.WithRunOptionResolver(
 			buildConversationRunOptionResolver(
 				opts.AppName,
-				sessionSvc,
+				bridgedSessionSvc,
 				conversation.HistoryOptions{
 					AddSessionSummary: opts.AddSessionSummary,
 					MaxHistoryRuns:    opts.MaxHistoryRuns,
