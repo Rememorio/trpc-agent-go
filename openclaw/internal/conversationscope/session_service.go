@@ -77,7 +77,14 @@ func (s *sessionService) ListSessions(
 ) ([]*session.Session, error) {
 	storageUserKey := userKey
 	storageUserKey.UserID = StorageUserIDFromContext(ctx, userKey.UserID)
-	return s.next.ListSessions(ctx, storageUserKey, options...)
+	sessions, err := s.next.ListSessions(ctx, storageUserKey, options...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sessions {
+		sessions[i] = rewriteSessionForUser(sessions[i], userKey.UserID)
+	}
+	return sessions, nil
 }
 
 func (s *sessionService) DeleteSession(

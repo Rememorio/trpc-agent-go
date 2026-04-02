@@ -34,6 +34,8 @@ type recordingSessionService struct {
 	getErr              error
 	forceNilGet         bool
 	listSessionsKey     session.UserKey
+	listSessions        []*session.Session
+	listSessionsErr     error
 	deleteKey           session.Key
 	updateAppName       string
 	updateAppState      session.StateMap
@@ -107,6 +109,12 @@ func (r *recordingSessionService) ListSessions(
 	_ ...session.Option,
 ) ([]*session.Session, error) {
 	r.listSessionsKey = userKey
+	if r.listSessionsErr != nil {
+		return nil, r.listSessionsErr
+	}
+	if r.listSessions != nil {
+		return r.listSessions, nil
+	}
 	return []*session.Session{{ID: "sess-1", UserID: userKey.UserID}}, nil
 }
 
@@ -530,6 +538,10 @@ func TestWrapSessionService_DelegatesAdministrativeMethods(t *testing.T) {
 	rec := &recordingSessionService{
 		getSummaryText: "summary",
 		getSummaryOK:   true,
+		listSessions: []*session.Session{{
+			ID:     "sess-1",
+			UserID: "chat-scope",
+		}},
 	}
 	wrapped := WrapSessionService(rec)
 	ctx := WithStorageUserID(context.Background(), "chat-scope")
@@ -541,6 +553,7 @@ func TestWrapSessionService_DelegatesAdministrativeMethods(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, listed, 1)
 	require.Equal(t, "chat-scope", rec.listSessionsKey.UserID)
+	require.Equal(t, "canonical-user", listed[0].UserID)
 
 	require.NoError(
 		t,
@@ -722,4 +735,21 @@ func TestWrapSessionService_CreateAndGet_EarlyReturnPaths(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, sess)
 	require.Contains(t, err.Error(), "get boom")
+}
+
+func TestWrapSessionService_ListSessions_PropagatesErrors(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingSessionService{
+		listSessionsErr: errors.New("list sessions boom"),
+	}
+	wrapped := WrapSessionService(rec)
+
+	listed, err := wrapped.ListSessions(
+		WithStorageUserID(context.Background(), "chat-scope"),
+		session.UserKey{AppName: "demo-app", UserID: "canonical-user"},
+	)
+	require.Error(t, err)
+	require.Nil(t, listed)
+	require.Contains(t, err.Error(), "list sessions boom")
 }
