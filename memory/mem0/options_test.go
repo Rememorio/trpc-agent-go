@@ -24,6 +24,7 @@ import (
 
 func TestOptions_All(t *testing.T) {
 	opts := defaultOptions.clone()
+	assert.False(t, opts.ingestEnabled)
 
 	WithHost("")(&opts)
 	assert.NotEmpty(t, opts.host)
@@ -79,6 +80,7 @@ func TestOptions_All(t *testing.T) {
 
 	WithUseExtractorForAutoMemory(false)(&opts)
 	assert.False(t, opts.useExtractorForAutoMemory)
+	assert.True(t, opts.ingestEnabled)
 
 	WithAsyncMemoryNum(-1)(&opts)
 	assert.Equal(t, imemory.DefaultAsyncMemoryNum, opts.asyncMemoryNum)
@@ -87,6 +89,13 @@ func TestOptions_All(t *testing.T) {
 	WithMemoryJobTimeout(0)(&opts)
 	WithMemoryJobTimeout(time.Second)(&opts)
 	assert.Equal(t, time.Second, opts.memoryJobTimeout)
+}
+
+func TestOptions_WithUseExtractorForAutoMemory_RespectsExplicitIngest(t *testing.T) {
+	opts := defaultOptions.clone()
+	WithIngestEnabled(false)(&opts)
+	WithUseExtractorForAutoMemory(false)(&opts)
+	assert.False(t, opts.ingestEnabled)
 }
 
 func TestOptions_WithCustomTool_NilMaps(t *testing.T) {

@@ -367,6 +367,11 @@ func TestService_ClearAndDelete(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{}"))
 			return
+		case r.Method == httpMethodGet && r.URL.Path == expectedDeletePath:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"id with/space","memory":"x","metadata":{},"user_id":"` +
+				testUserID + `","app_id":"` + testAppID + `"}`))
+			return
 		case r.Method == httpMethodDelete && r.URL.Path == expectedDeletePath:
 			seen["delete"] = true
 			w.WriteHeader(http.StatusOK)

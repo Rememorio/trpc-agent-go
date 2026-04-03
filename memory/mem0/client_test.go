@@ -23,6 +23,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type testNetError struct {
+	timeout   bool
+	temporary bool
+}
+
+func (e testNetError) Error() string   { return "network error" }
+func (e testNetError) Timeout() bool   { return e.timeout }
+func (e testNetError) Temporary() bool { return e.temporary }
+
 func TestNewClient_RequiresAPIKey(t *testing.T) {
 	_, err := newClient(serviceOpts{})
 	require.Error(t, err)
@@ -47,6 +56,14 @@ func TestClient_ShouldRetry(t *testing.T) {
 
 	t.Run("non api error", func(t *testing.T) {
 		assert.False(t, shouldRetry(assert.AnError))
+	})
+
+	t.Run("timeout network error", func(t *testing.T) {
+		assert.True(t, shouldRetry(testNetError{timeout: true}))
+	})
+
+	t.Run("temporary network error", func(t *testing.T) {
+		assert.True(t, shouldRetry(testNetError{temporary: true}))
 	})
 }
 
@@ -146,7 +163,7 @@ func TestClient_RetrySleep_WithJitter(t *testing.T) {
 	assert.LessOrEqual(t, d, max)
 }
 
-func TestClient_DoJSON_NilCtx(t *testing.T) {
+func TestClient_DoJSON_Success(t *testing.T) {
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"k":"v"}`))
@@ -159,7 +176,7 @@ func TestClient_DoJSON_NilCtx(t *testing.T) {
 	require.NoError(t, err)
 
 	var out map[string]any
-	err = c.doJSON(nil, httpMethodGet, "/", nil, nil, &out)
+	err = c.doJSON(context.Background(), httpMethodGet, "/", nil, nil, &out)
 	require.NoError(t, err)
 	assert.Equal(t, "v", out["k"])
 }
@@ -187,7 +204,9 @@ func TestClient_DoJSON_RetryThenSuccess(t *testing.T) {
 	var out map[string]any
 	err = c.doJSON(context.Background(), httpMethodGet, "/test", nil, nil, &out)
 	require.NoError(t, err)
-	assert.True(t, out["ok"].(bool))
+	okValue, ok := out["ok"].(bool)
+	require.True(t, ok, "expected 'ok' key to be bool")
+	assert.True(t, okValue)
 	assert.GreaterOrEqual(t, int(calls.Load()), 3)
 }
 
@@ -223,6 +242,26 @@ func TestClient_DoJSON_MarshalError(t *testing.T) {
 	err = c.doJSON(context.Background(), httpMethodPost, "/", nil, make(chan int), nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "marshal")
+}
+
+func TestClient_DoJSONOnce_ResponseTooLarge(t *testing.T) {
+	tooLargeBody := strings.Repeat("a", maxResponseBodySize+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(tooLargeBody))
+	}))
+	t.Cleanup(srv.Close)
+
+	opts := defaultOptions.clone()
+	opts.apiKey = testAPIKey
+	opts.host = srv.URL
+	c, err := newClient(opts)
+	require.NoError(t, err)
+
+	var out map[string]any
+	err = c.doJSONOnce(context.Background(), httpMethodGet, srv.URL, nil, &out)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "response body too large")
 }
 
 func TestClient_DoJSONOnce_NilOutAndEmptyBody(t *testing.T) {

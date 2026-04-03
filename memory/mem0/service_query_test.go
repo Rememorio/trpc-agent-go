@@ -22,15 +22,26 @@ import (
 
 func TestService_ReadMemories_WithSmallLimit(t *testing.T) {
 	userKey := memory.UserKey{AppName: testAppID, UserID: testUserID}
+	var requestedPages []string
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		assert.Equal(t, "2", q.Get(queryKeyPageSize))
+		page := q.Get(queryKeyPage)
+		requestedPages = append(requestedPages, page)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[
-			{"id":"a","memory":"m1","metadata":{},"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:01Z"},
-			{"id":"b","memory":"m2","metadata":{},"created_at":"2025-01-01T00:00:02Z","updated_at":"2025-01-01T00:00:01Z"},
-			{"id":"c","memory":"m3","metadata":{},"created_at":"2025-01-01T00:00:03Z","updated_at":"2025-01-01T00:00:04Z"}
-		]`))
+		switch page {
+		case "1":
+			_, _ = w.Write([]byte(`[
+				{"id":"a","memory":"m1","metadata":{},"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:01Z"},
+				{"id":"b","memory":"m2","metadata":{},"created_at":"2025-01-01T00:00:02Z","updated_at":"2025-01-01T00:00:01Z"}
+			]`))
+		case "2":
+			_, _ = w.Write([]byte(`[
+				{"id":"c","memory":"m3","metadata":{},"created_at":"2025-01-01T00:00:03Z","updated_at":"2025-01-01T00:00:04Z"}
+			]`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
 	})
 	svc := newTestService(t, srv.URL)
 	entries, err := svc.ReadMemories(context.Background(), userKey, 2)
@@ -38,6 +49,7 @@ func TestService_ReadMemories_WithSmallLimit(t *testing.T) {
 	require.Len(t, entries, 2)
 	assert.Equal(t, "c", entries[0].ID)
 	assert.Equal(t, "b", entries[1].ID)
+	assert.Contains(t, requestedPages, "2")
 }
 
 func TestService_SearchMemories_WithUpdatedAt(t *testing.T) {

@@ -48,15 +48,13 @@ func TestIngestController_NoMessages(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestIngestController_NilCtx(t *testing.T) {
-	svc := &Service{ingestWorker: &ingestWorker{started: true}}
-	sess := session.NewSession("", "", "s")
-	err := svc.enqueueIngestJob(nil, sess)
-	assert.NoError(t, err)
-}
-
 func TestIngestController_AsyncEnqueue(t *testing.T) {
+	done := make(chan struct{}, 1)
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("[]"))
 	})
@@ -75,7 +73,11 @@ func TestIngestController_AsyncEnqueue(t *testing.T) {
 	err := svc.enqueueIngestJob(context.Background(), sess)
 	require.NoError(t, err)
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for async ingest request")
+	}
 }
 
 func TestIngestController_CtxCancelled(t *testing.T) {

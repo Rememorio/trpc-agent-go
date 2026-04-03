@@ -323,7 +323,7 @@ go run . --help
 
 Output:
 
-```
+```text
 Usage of ./auto:
   -debug
         Enable debug mode to print messages sent to model

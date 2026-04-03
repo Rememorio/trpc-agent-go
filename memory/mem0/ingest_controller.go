@@ -47,7 +47,8 @@ func (s *Service) enqueueIngestJob(ctx context.Context, sess *session.Session) e
 
 	// Advance watermark eagerly so that a second call for the same
 	// session does not re-scan the same delta and send duplicate
-	// ingest requests to mem0.
+	// ingest requests to mem0. This intentionally gives native
+	// ingest at-most-once semantics.
 	writeLastExtractAt(sess, latestTs)
 
 	job := &ingestJob{

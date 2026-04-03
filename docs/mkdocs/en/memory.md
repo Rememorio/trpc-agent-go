@@ -407,6 +407,7 @@ DSN:
 
 ```go
 import (
+    "log"
     "os"
 
     memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
@@ -1135,6 +1136,7 @@ defer pgvectorService.Close()
 
 ```go
 import (
+    "log"
     "os"
 
     memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
@@ -1150,7 +1152,7 @@ mem0Service, err := memorymem0.NewService(
     memorymem0.WithHost(host),
 )
 if err != nil {
-    panic(err)
+    log.Fatalf("failed to create mem0 service: %v", err)
 }
 
 defer mem0Service.Close()
@@ -1283,9 +1285,9 @@ memory.AddMemory(ctx, userKey, "User likes programming", []string{"hobby"})
 
 Search behavior depends on the backend:
 
-- For `inmemory` / `sqlite` / `redis` / `mysql` / `postgres`: `SearchMemories` uses **token matching** (not semantic search).
-- For `sqlitevec` / `pgvector`: `SearchMemories` uses **vector similarity search** and requires an embedder.
-- For `mem0`: `SearchMemories` uses the managed mem0 semantic retrieval API; when `HybridSearch` is enabled, the backend also merges local keyword results from `ReadMemories`.
+- Token matching applies to `inmemory` / `sqlite` / `redis` / `mysql` / `postgres`; `SearchMemories` is **not** semantic there.
+- Vector similarity search is used by `sqlitevec` / `pgvector` and requires an embedder.
+- The `mem0` backend uses the managed mem0 semantic retrieval API; when `HybridSearch` is enabled, it also merges local keyword results from `ReadMemories`.
 
 **Token matching details** (token-search backends):
 

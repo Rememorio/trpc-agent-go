@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -36,6 +37,8 @@ const (
 	httpMethodPost   = "POST"
 	httpMethodPut    = "PUT"
 	httpMethodDelete = "DELETE"
+
+	maxResponseBodySize = 10 << 20
 
 	maxRetries       = 3
 	retryBaseBackoff = 200 * time.Millisecond
@@ -177,9 +180,12 @@ func (c *client) doJSONOnce(
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize+1))
 	if err != nil {
 		return fmt.Errorf("mem0: read response failed: %w", err)
+	}
+	if len(respBody) > maxResponseBodySize {
+		return errors.New("mem0: response body too large")
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -207,6 +213,10 @@ func shouldRetry(err error) bool {
 			return true
 		}
 		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
 	}
 	return false
 }

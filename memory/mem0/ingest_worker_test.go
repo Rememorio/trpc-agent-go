@@ -51,7 +51,7 @@ func TestIngestWorker_ProcessNilJob(t *testing.T) {
 	w.process(nil)
 }
 
-func TestIngestWorker_ProcessNilCtx(t *testing.T) {
+func TestIngestWorker_ProcessBackgroundCtx(t *testing.T) {
 	var called bool
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -70,7 +70,7 @@ func TestIngestWorker_ProcessNilCtx(t *testing.T) {
 	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	w.process(&ingestJob{
-		Ctx:      nil,
+		Ctx:      context.Background(),
 		UserKey:  memory.UserKey{AppName: testAppID, UserID: testUserID},
 		Session:  sess,
 		LatestTs: ts,

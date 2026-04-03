@@ -221,6 +221,9 @@ func (s *Service) UpdateMemory(
 	if err != nil {
 		return err
 	}
+	if !recordOwnedBy(current, memoryKey.AppName, memoryKey.UserID) {
+		return newMemoryNotFoundError(memoryKey.MemoryID)
+	}
 
 	updated := &memory.Memory{Memory: memoryText, Topics: topics}
 	if currentEntry := toEntry(memoryKey.AppName, memoryKey.UserID, current); currentEntry != nil &&
@@ -267,6 +270,13 @@ func (s *Service) UpdateMemory(
 func (s *Service) DeleteMemory(ctx context.Context, memoryKey memory.Key) error {
 	if err := memoryKey.CheckMemoryKey(); err != nil {
 		return err
+	}
+	current, err := s.getMemory(ctx, memoryKey.MemoryID)
+	if err != nil {
+		return err
+	}
+	if !recordOwnedBy(current, memoryKey.AppName, memoryKey.UserID) {
+		return newMemoryNotFoundError(memoryKey.MemoryID)
 	}
 	path := buildMemoryPath(memoryKey.MemoryID)
 	var out any
@@ -329,9 +339,6 @@ func (s *Service) ReadMemories(
 			if entry := toEntry(userKey.AppName, userKey.UserID, &batch.Results[i]); entry != nil {
 				entries = append(entries, entry)
 			}
-		}
-		if limit > 0 && len(entries) >= limit {
-			break
 		}
 		page++
 	}
@@ -624,7 +631,10 @@ func (s *Service) updateMemoryWithMergedMetadata(
 	path := buildMemoryPath(memoryKey.MemoryID)
 
 	current, err := s.getMemory(ctx, memoryKey.MemoryID)
-	if err == nil && current != nil {
+	if err != nil {
+		return err
+	}
+	if current != nil {
 		metadata = mergeMetadata(current.Metadata, metadata)
 	}
 
@@ -670,6 +680,14 @@ func (s *Service) getMemory(ctx context.Context, memoryID string) (*memoryRecord
 		return nil, wrapMemoryNotFoundError(memoryID, err)
 	}
 	return &out, nil
+}
+
+func recordOwnedBy(rec *memoryRecord, appName, userID string) bool {
+	if rec == nil {
+		return false
+	}
+	return strings.TrimSpace(rec.AppID) == appName &&
+		strings.TrimSpace(rec.UserID) == userID
 }
 
 func mergeMetadata(dst map[string]any, src map[string]any) map[string]any {
@@ -766,4 +784,8 @@ func wrapMemoryNotFoundError(memoryID string, err error) error {
 		return fmt.Errorf("memory with id %s not found", memoryID)
 	}
 	return err
+}
+
+func newMemoryNotFoundError(memoryID string) error {
+	return fmt.Errorf("memory with id %s not found", memoryID)
 }

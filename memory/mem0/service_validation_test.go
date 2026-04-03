@@ -49,6 +49,36 @@ func TestService_AddMemory_FindError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestService_UpdateMemoryWithMergedMetadata_GetError(t *testing.T) {
+	const existingID = "m1"
+	seenPut := false
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("err"))
+			return
+		case r.Method == httpMethodPut && r.URL.Path == buildMemoryPath(existingID):
+			seenPut = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	svc := newTestService(t, srv.URL)
+	err := svc.updateMemoryWithMergedMetadata(
+		context.Background(),
+		memory.Key{AppName: testAppID, UserID: testUserID, MemoryID: existingID},
+		"mem",
+		map[string]any{"new": "1"},
+	)
+	require.Error(t, err)
+	assert.False(t, seenPut)
+}
+
 func TestService_UpdateMemory_ValidationErrors(t *testing.T) {
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -76,7 +106,8 @@ func TestService_UpdateMemory_AndGetMemoryError(t *testing.T) {
 			return
 		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("{\"id\":\"m\",\"memory\":\"x\",\"metadata\":{\"old\":\"1\"}}"))
+			_, _ = w.Write([]byte("{\"id\":\"m\",\"memory\":\"x\",\"metadata\":{\"old\":\"1\"},\"user_id\":\"" +
+				testUserID + "\",\"app_id\":\"" + testAppID + "\"}"))
 			return
 		case r.Method == httpMethodPut && r.URL.Path == buildMemoryPath(existingID):
 			w.WriteHeader(http.StatusOK)
@@ -117,7 +148,7 @@ func TestService_UpdateMemory_RefreshesTRPCIDMetadata(t *testing.T) {
 		switch {
 		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"id":"remote-1","memory":"old memory","metadata":{"trpc_memory_id":"old-id"},"created_at":"2025-01-02T03:04:05Z","updated_at":"2025-01-02T03:04:06Z"}`))
+			_, _ = w.Write([]byte(`{"id":"remote-1","memory":"old memory","metadata":{"trpc_memory_id":"old-id"},"created_at":"2025-01-02T03:04:05Z","updated_at":"2025-01-02T03:04:06Z","user_id":"` + testUserID + `","app_id":"` + testAppID + `"}`))
 			return
 		case r.Method == httpMethodGet && r.URL.Path == pathV1Memories:
 			w.WriteHeader(http.StatusOK)
@@ -177,10 +208,70 @@ func TestService_UpdateMemory_NotFoundWrapped(t *testing.T) {
 	assert.Contains(t, err.Error(), "memory with id missing not found")
 }
 
+func TestService_UpdateMemory_ForeignMemoryRejected(t *testing.T) {
+	const existingID = "foreign"
+	seenPut := false
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"foreign","memory":"old","metadata":{},"user_id":"other-user","app_id":"other-app"}`))
+			return
+		case r.Method == httpMethodPut && r.URL.Path == buildMemoryPath(existingID):
+			seenPut = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	svc := newTestService(t, srv.URL)
+	err := svc.UpdateMemory(context.Background(), memory.Key{
+		AppName:  testAppID,
+		UserID:   testUserID,
+		MemoryID: existingID,
+	}, "new", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "memory with id foreign not found")
+	assert.False(t, seenPut)
+}
+
 func TestService_DeleteMemory_ValidationError(t *testing.T) {
 	svc := &Service{c: &client{hc: &http.Client{}, apiKey: testAPIKey, host: "http://x"}}
 	err := svc.DeleteMemory(context.Background(), memory.Key{})
 	require.Error(t, err)
+}
+
+func TestService_DeleteMemory_ForeignMemoryRejected(t *testing.T) {
+	const existingID = "foreign"
+	seenDelete := false
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath(existingID):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"foreign","memory":"old","metadata":{},"user_id":"other-user","app_id":"other-app"}`))
+			return
+		case r.Method == httpMethodDelete && r.URL.Path == buildMemoryPath(existingID):
+			seenDelete = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+
+	svc := newTestService(t, srv.URL)
+	err := svc.DeleteMemory(context.Background(), memory.Key{
+		AppName:  testAppID,
+		UserID:   testUserID,
+		MemoryID: existingID,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "memory with id foreign not found")
+	assert.False(t, seenDelete)
 }
 
 func TestService_ClearMemories_ValidationError(t *testing.T) {

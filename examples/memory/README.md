@@ -24,7 +24,7 @@ A simple example that demonstrates manual memory tool integration where LLM agen
   delete, clear)
 - Custom tool implementations
 - Streaming and non-streaming response modes
-- Multiple storage backends (in-memory, SQLite, Redis, MySQL, PostgreSQL, pgvector, mem0)
+- Multiple storage backends (in-memory, SQLite, SQLiteVec, Redis, MySQL, PostgreSQL, pgvector, mem0)
 
 **Use Cases:**
 

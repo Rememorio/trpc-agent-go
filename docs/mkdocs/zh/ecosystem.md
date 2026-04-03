@@ -773,6 +773,7 @@ func (p *PostgreSQLMemoryService) unmarshalTopics(data []byte) []string {
 
 ```go
 import (
+    "log"
     "os"
     "time"
 
@@ -802,7 +803,7 @@ memoryService, err := memorymem0.NewService(
     memorymem0.WithToolEnabled(memory.LoadToolName, true),
 )
 if err != nil {
-    panic(err)
+    log.Fatalf("failed to create mem0 service: %v", err)
 }
 ```
 
