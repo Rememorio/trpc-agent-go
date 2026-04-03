@@ -224,7 +224,7 @@ summary.WithChecksAny(
 | --- | --- |
 | `WithMaxSummaryWords(maxWords int)` | 限制摘要的最大字数，包含在提示词中指导模型生成 |
 | `WithPrompt(prompt string)` | 自定义摘要提示词，必须包含 `{conversation_text}` 占位符 |
-| `WithSystemPrompt(prompt string)` | 为摘要额外添加独立的 system message 指令；不应包含 `{conversation_text}` |
+| `WithSystemPrompt(prompt string)` | 为摘要额外添加独立的 system message 指令；不能包含 `{conversation_text}` |
 | `WithSkipRecent(skipFunc SkipRecentFunc)` | 自定义函数跳过最近事件 |
 
 ### Hook 选项
@@ -355,7 +355,7 @@ summarizer := summary.NewSummarizer(
 **必需占位符**：
 
 - `{conversation_text}`：必须包含，会被对话内容替换
-- `{max_summary_words}`：当 `maxSummaryWords > 0` 时必须包含
+- `{max_summary_words}`：当 `maxSummaryWords > 0` 时，必须包含在 `WithPrompt(...)` 或 `WithSystemPrompt(...)` 其中之一
 
 如果希望把摘要指令放到独立的 system message，可以组合使用
 `WithSystemPrompt` 和一个更轻量的 user prompt：
@@ -384,7 +384,7 @@ summarizer := summary.NewSummarizer(
 
 - `WithPrompt` 仍然渲染到 **user message**
 - `WithSystemPrompt` 会渲染到独立的 **system message**
-- 建议把 `{conversation_text}` 保留在 user prompt 中，让 system message 只承担指令角色
+- `WithSystemPrompt` 不能包含 `{conversation_text}`；对话内容必须保留在 user prompt 中
 
 ## Token 计数器配置
 

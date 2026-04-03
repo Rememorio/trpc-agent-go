@@ -170,7 +170,7 @@ You can customize the summary prompt to control how conversations are summarized
 ### Available Placeholders
 
 - **`{conversation_text}`**: The conversation content to be summarized
-- **`{max_summary_words}`**: The maximum word count for the summary (only included when `WithMaxSummaryWords` is set). In the default prompt, this placeholder is replaced with a natural instruction like "Please keep the summary within 100 words." In custom prompts, it's replaced with just the number, allowing you to control the wording in your preferred language.
+- **`{max_summary_words}`**: The maximum word count for the summary (only included when `WithMaxSummaryWords` is set). In the default prompt, this placeholder is replaced with a natural instruction like "Please keep the summary within 100 words." In custom prompts, it's replaced with just the number, allowing you to control the wording in your preferred language. When `WithMaxSummaryWords(...)` is set, include this placeholder in either `WithPrompt(...)` or `WithSystemPrompt(...)`.
 
 ### Example Usage
 
@@ -208,7 +208,7 @@ The `SessionSummarizer` supports various configuration options to customize summ
 
 - **`WithPrompt(prompt string)`**: Customizes the prompt template used for summary generation. The prompt must include the `{conversation_text}` placeholder. See the [Prompt Customization](#prompt-customization) section for details and examples.
 
-- **`WithSystemPrompt(prompt string)`**: Adds a dedicated system message for summarization instructions. Keep `{conversation_text}` in the user prompt so the system message remains instruction-only.
+- **`WithSystemPrompt(prompt string)`**: Adds a dedicated system message for summarization instructions. It must not include `{conversation_text}`; keep the conversation content in the user prompt so the system message remains instruction-only.
 
 - **`WithSkipRecent(skipFunc SkipRecentFunc)`**: Sets a custom function that returns how many recent events to skip during summarization. Return 0 to skip none. Useful for avoiding summarizing very recent/incomplete turns, or applying time/content-based skipping strategies.
 

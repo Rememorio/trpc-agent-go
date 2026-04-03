@@ -34,7 +34,9 @@ type SkipRecentFunc func(events []event.Event) int
 
 // WithPrompt sets the custom prompt for summarization.
 // The prompt must include the placeholder {conversation_text}, which will be
-// replaced with the extracted conversation when generating the summary.
+// replaced with the extracted conversation when generating the summary. When
+// WithMaxSummaryWords is configured, {max_summary_words} must be included in
+// either this prompt or WithSystemPrompt.
 func WithPrompt(prompt string) Option {
 	return func(s *sessionSummarizer) {
 		if prompt != "" {
@@ -45,8 +47,9 @@ func WithPrompt(prompt string) Option {
 
 // WithSystemPrompt sets an additional system prompt for summarization.
 // The prompt is rendered into a dedicated system message before the user prompt.
-// It should not include the {conversation_text} placeholder; keep conversation
-// content in the user prompt instead.
+// It must not include the {conversation_text} placeholder; keep conversation
+// content in the user prompt instead. When WithMaxSummaryWords is configured,
+// {max_summary_words} may be included here instead of the user prompt.
 func WithSystemPrompt(prompt string) Option {
 	return func(s *sessionSummarizer) {
 		if prompt != "" {

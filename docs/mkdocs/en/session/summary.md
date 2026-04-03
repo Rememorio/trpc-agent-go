@@ -221,7 +221,7 @@ summary.WithChecksAny(
 | --- | --- |
 | `WithMaxSummaryWords(maxWords int)` | Limit summary word count; included in prompt to guide model |
 | `WithPrompt(prompt string)` | Custom summary prompt; must contain `{conversation_text}` placeholder |
-| `WithSystemPrompt(prompt string)` | Add a separate system message for summarization instructions; should not contain `{conversation_text}` |
+| `WithSystemPrompt(prompt string)` | Add a separate system message for summarization instructions; must not contain `{conversation_text}` |
 | `WithSkipRecent(skipFunc SkipRecentFunc)` | Custom function to skip recent events |
 
 ### Hook Options
@@ -352,7 +352,7 @@ summarizer := summary.NewSummarizer(
 **Required placeholders**:
 
 - `{conversation_text}`: Must be included; replaced with conversation content
-- `{max_summary_words}`: Must be included when `maxSummaryWords > 0`
+- `{max_summary_words}`: Must be included in either `WithPrompt(...)` or `WithSystemPrompt(...)` when `maxSummaryWords > 0`
 
 If you want to keep summarization instructions in a dedicated system message,
 combine `WithSystemPrompt` with a lighter user prompt that only carries the
@@ -382,7 +382,7 @@ Notes:
 
 - `WithPrompt` still renders into the **user message**
 - `WithSystemPrompt` renders into a dedicated **system message**
-- Keep `{conversation_text}` in the user prompt so the system message remains instruction-only
+- `WithSystemPrompt` must not include `{conversation_text}`; keep conversation content in the user prompt
 
 ## Token Counter Configuration
 

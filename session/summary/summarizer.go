@@ -119,22 +119,14 @@ func defaultToolResultFormatter(msg model.Message) string {
 	return fmt.Sprintf("[%s returned: %s]", toolName, content)
 }
 
-// validatePrompt validates that the prompt contains required placeholders.
-// conversationTextPlaceholder is always required.
-// maxSummaryWordsPlaceholder is required when maxSummaryWords > 0.
-func validatePrompt(template string, maxSummaryWords int) error {
+// validatePrompt validates that the user prompt contains the conversation
+// placeholder required to inject the extracted conversation text.
+func validatePrompt(template string) error {
 	textPrompt := prompt.Text{Template: template}
 	if err := textPrompt.ValidateRequired(
 		conversationTextVar,
 	); err != nil {
 		return fmt.Errorf("prompt must include %s placeholder", conversationTextPlaceholder)
-	}
-	if maxSummaryWords > 0 {
-		if err := textPrompt.ValidateRequired(
-			maxSummaryWordsVar,
-		); err != nil {
-			return fmt.Errorf("prompt must include %s placeholder when maxSummaryWords > 0", maxSummaryWordsPlaceholder)
-		}
 	}
 	return nil
 }
@@ -151,6 +143,29 @@ func validateSystemPrompt(template string) error {
 		)
 	}
 	return nil
+}
+
+// promptContainsVar reports whether a prompt template contains the named
+// placeholder.
+func promptContainsVar(template string, varName string) bool {
+	return prompt.Text{Template: template}.ValidateRequired(varName) == nil
+}
+
+// validateMaxSummaryWordsPrompt validates that the max summary words
+// placeholder is present in either the user prompt or the system prompt when a
+// max summary word limit is configured.
+func validateMaxSummaryWordsPrompt(userPrompt string, systemPrompt string, maxSummaryWords int) error {
+	if maxSummaryWords <= 0 {
+		return nil
+	}
+	if promptContainsVar(userPrompt, maxSummaryWordsVar) ||
+		promptContainsVar(systemPrompt, maxSummaryWordsVar) {
+		return nil
+	}
+	return fmt.Errorf(
+		"either prompt or system prompt must include %s placeholder when maxSummaryWords > 0",
+		maxSummaryWordsPlaceholder,
+	)
 }
 
 // getDefaultSummarizerPrompt returns the default prompt for summarization.
@@ -212,13 +227,17 @@ func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 	// Set default prompt if none was provided
 	if s.prompt == "" {
 		s.prompt = getDefaultSummarizerPrompt(s.maxSummaryWords)
-	} else if err := validatePrompt(s.prompt, s.maxSummaryWords); err != nil {
+	}
+	if err := validatePrompt(s.prompt); err != nil {
 		log.Warnf("invalid prompt in NewSummarizer: %v", err)
 	}
 	if s.systemPrompt != "" {
 		if err := validateSystemPrompt(s.systemPrompt); err != nil {
 			log.Warnf("invalid system prompt in NewSummarizer: %v", err)
 		}
+	}
+	if err := validateMaxSummaryWordsPrompt(s.prompt, s.systemPrompt, s.maxSummaryWords); err != nil {
+		log.Warnf("invalid prompt in NewSummarizer: %v", err)
 	}
 
 	return s
@@ -461,14 +480,18 @@ func (s *sessionSummarizer) hasPrependedSummaryContext(events []event.Event) boo
 // SetPrompt updates the summarizer's prompt dynamically.
 // The prompt must include the placeholder {conversation_text}, which will be
 // replaced with the extracted conversation when generating the summary.
-// If maxSummaryWords > 0, the prompt must also include {max_summary_words}.
-// If an empty prompt is provided, it will be ignored and the current prompt
-// will remain unchanged.
+// If maxSummaryWords > 0, either the user prompt or the configured system
+// prompt must include {max_summary_words}. If an empty prompt is provided, it
+// will be ignored and the current prompt will remain unchanged.
 func (s *sessionSummarizer) SetPrompt(prompt string) {
 	if prompt == "" {
 		return
 	}
-	if err := validatePrompt(prompt, s.maxSummaryWords); err != nil {
+	if err := validatePrompt(prompt); err != nil {
+		log.Warnf("invalid prompt: %v", err)
+		return
+	}
+	if err := validateMaxSummaryWordsPrompt(prompt, s.systemPrompt, s.maxSummaryWords); err != nil {
 		log.Warnf("invalid prompt: %v", err)
 		return
 	}

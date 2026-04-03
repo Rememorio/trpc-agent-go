@@ -84,8 +84,10 @@ func (c *summaryChat) setup(_ context.Context) error {
 	// You can customize the summary prompt using WithPrompt().
 	// Available placeholders:
 	//   - {conversation_text}: The conversation content to be summarized
-	//   - {max_summary_words}: The maximum word count for the summary (only included when max-words > 0)
-	// You can also add a dedicated system message with WithSystemPrompt().
+	//   - {max_summary_words}: The maximum word count for the summary (only included when max-words > 0);
+	//     when max-words is enabled, include it in either WithPrompt() or WithSystemPrompt()
+	// You can also add a dedicated system message with WithSystemPrompt(), but it must not contain
+	// {conversation_text}.
 	sum := summary.NewSummarizer(llm, summary.WithMaxSummaryWords(*flagMaxWords),
 		summary.WithSkipRecent(func(_ []event.Event) int {
 			if *flagSkipRecent > 0 {

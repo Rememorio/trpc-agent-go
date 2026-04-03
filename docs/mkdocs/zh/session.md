@@ -2004,8 +2004,8 @@ llmagent.WithMaxHistoryRuns(10)  // 限制历史轮次
 **摘要生成：**
 
 - **`WithMaxSummaryWords(maxWords int)`**：限制摘要的最大字数。该限制会包含在提示词中以指导模型生成。示例：`WithMaxSummaryWords(150)` 请求在 150 字以内的摘要。
-- **`WithPrompt(prompt string)`**：提供自定义摘要提示词。提示词必须包含占位符 `{conversation_text}`，它会被对话内容替换。可选包含 `{max_summary_words}` 用于字数限制指令。
-- **`WithSystemPrompt(prompt string)`**：为摘要指令添加独立的 system message。建议把 `{conversation_text}` 留在 user prompt 中，让 system message 保持纯指令。
+- **`WithPrompt(prompt string)`**：提供自定义摘要提示词。提示词必须包含占位符 `{conversation_text}`，它会被对话内容替换。当设置 `WithMaxSummaryWords(...)` 时，`{max_summary_words}` 必须出现在 `WithPrompt(...)` 或 `WithSystemPrompt(...)` 其中之一。
+- **`WithSystemPrompt(prompt string)`**：为摘要指令添加独立的 system message。它不能包含 `{conversation_text}`；对话内容必须放在 `WithPrompt(...)` 中，让 system message 保持纯指令。
 - **`WithSkipRecent(skipFunc SkipRecentFunc)`**：通过自定义函数在摘要时跳过**最近**事件。函数接收所有事件并返回应跳过的尾部事件数量，返回 0 表示不跳过。适合避免总结最近、可能不完整的对话，或实现基于时间/内容的跳过策略。
 
 #### Token 计数器配置（Token Counter Configuration）

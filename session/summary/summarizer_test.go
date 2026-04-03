@@ -1679,6 +1679,18 @@ func TestSessionSummarizer_SetPrompt(t *testing.T) {
 		assert.Equal(t, originalPrompt, s.(*sessionSummarizer).prompt)
 	})
 
+	t.Run("SetPrompt accepts prompt without maxSummaryWordsPlaceholder when system prompt already has it", func(t *testing.T) {
+		s := NewSummarizer(
+			&fakeModel{},
+			WithMaxSummaryWords(50),
+			WithSystemPrompt("Keep it within {max_summary_words} words."),
+		)
+
+		validPrompt := "Prompt with {conversation_text} only"
+		s.(*sessionSummarizer).SetPrompt(validPrompt)
+		assert.Equal(t, validPrompt, s.(*sessionSummarizer).prompt)
+	})
+
 	t.Run("SetPrompt accepts valid prompt without maxSummaryWordsPlaceholder when maxSummaryWords = 0", func(t *testing.T) {
 		s := NewSummarizer(&fakeModel{})
 
@@ -1760,6 +1772,7 @@ func TestSessionSummarizer_WithSystemPrompt(t *testing.T) {
 		s := NewSummarizer(
 			m,
 			WithSystemPrompt("Focus on key decisions."),
+			WithPrompt("<conversation>\n{conversation_text}\n</conversation>\n\nSummary:"),
 		)
 
 		sess := &session.Session{
@@ -1782,9 +1795,11 @@ func TestSessionSummarizer_WithSystemPrompt(t *testing.T) {
 		assert.Equal(t, model.RoleSystem, m.lastRequest.Messages[0].Role)
 		assert.Equal(t, "Focus on key decisions.", m.lastRequest.Messages[0].Content)
 		assert.Equal(t, model.RoleUser, m.lastRequest.Messages[1].Role)
-		assert.Contains(t, m.lastRequest.Messages[1].Content, "<conversation>")
-		assert.Contains(t, m.lastRequest.Messages[1].Content, "Hello world")
-		assert.Contains(t, m.lastRequest.Messages[1].Content, "Summary:")
+		assert.Equal(
+			t,
+			"<conversation>\nuser: Hello world\n</conversation>\n\nSummary:",
+			m.lastRequest.Messages[1].Content,
+		)
 	})
 
 	t.Run("renders max summary words in system prompt", func(t *testing.T) {
