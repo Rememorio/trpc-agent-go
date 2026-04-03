@@ -26,11 +26,12 @@ const (
 	// placeholder.
 	DefaultContextCompactionToolResultMaxTokens = 1024
 
-	// DefaultOversizedToolResultMaxTokens is the token threshold above which
-	// ANY tool result (including current request) is truncated to head+tail.
-	// This is the safety net for tool results so large they alone could
-	// overflow the context window (e.g. web_fetch returning 800K+ chars).
-	DefaultOversizedToolResultMaxTokens = 8192
+	// DefaultContextCompactionOversizedToolResultMaxTokens is the token
+	// threshold above which ANY tool result (including current request) is
+	// truncated to head+tail. This is the safety net for tool results so
+	// large they alone could overflow the context window (e.g. web_fetch
+	// returning 800K+ chars).
+	DefaultContextCompactionOversizedToolResultMaxTokens = 8192
 
 	historicalToolResultPlaceholder = "Historical tool result omitted to save context."
 )
@@ -41,9 +42,10 @@ type ContextCompactionConfig struct {
 	Enabled             bool
 	KeepRecentRequests  int
 	ToolResultMaxTokens int
-	// OversizedToolResultMaxTokens is the token threshold above which any
-	// tool result (including current-request results) is truncated using
-	// head+tail preservation. 0 disables this safety net.
+	// OversizedToolResultMaxTokens is the token threshold above which any tool
+	// result (including current-request results) is truncated using head+tail
+	// preservation. This safety net fires regardless of the Enabled flag.
+	// 0 disables it.
 	OversizedToolResultMaxTokens int
 }
 
@@ -77,9 +79,13 @@ func compactIncrementEvents(
 	cfg ContextCompactionConfig,
 ) ([]event.Event, ContextCompactionStats) {
 	cfg = normalizeContextCompactionConfig(cfg)
-	if !cfg.Enabled || len(events) == 0 ||
-		(cfg.ToolResultMaxTokens <= 0 &&
-			cfg.OversizedToolResultMaxTokens <= 0) {
+	if len(events) == 0 {
+		return events, ContextCompactionStats{}
+	}
+
+	pass1Active := cfg.Enabled && cfg.ToolResultMaxTokens > 0
+	pass2Active := cfg.OversizedToolResultMaxTokens > 0
+	if !pass1Active && !pass2Active {
 		return events, ContextCompactionStats{}
 	}
 
@@ -89,7 +95,8 @@ func compactIncrementEvents(
 	var stats ContextCompactionStats
 
 	// Pass 1: historical tool results → full placeholder replacement.
-	if cfg.ToolResultMaxTokens > 0 {
+	// Gated on Enabled (requires context compaction to be on).
+	if pass1Active {
 		currentKey := compactionUnitKey(currentRequestID, currentInvocationID)
 		if currentKey != "" {
 			passEvents, passStats := applyHistoricalToolResultPass(
@@ -105,10 +112,8 @@ func compactIncrementEvents(
 	}
 
 	// Pass 2: oversized tool results (including current request) → head+tail
-	// truncation. A single web_fetch can return 800K+ chars; without this
-	// guard the next LLM call will exceed the context window even though the
-	// tool result belongs to the current (protected) request.
-	if cfg.OversizedToolResultMaxTokens > 0 {
+	// truncation. This safety net fires independently of EnableContextCompaction.
+	if pass2Active {
 		passEvents, passStats := applyOversizedToolResultPass(
 			ctx,
 			compacted,
@@ -305,6 +310,9 @@ func compactionUnitKey(requestID, invocationID string) string {
 // placeholder compaction, this preserves the beginning and end of the content
 // so the model can still see key information. Inspired by Codex's
 // truncate_middle_chars and Claude Code's per-tool maxResultSizeChars.
+//
+// TODO: text ContentParts are preserved as-is; truncating individual text parts
+// inside ContentParts is deferred until multimodal tool results are common.
 func truncateOversizedToolResultMessage(
 	ctx context.Context,
 	msg model.Message,

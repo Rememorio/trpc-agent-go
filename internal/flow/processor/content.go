@@ -320,11 +320,11 @@ func WithContextCompactionToolResultMaxTokens(tokens int) ContentOption {
 	}
 }
 
-// WithOversizedToolResultMaxTokens sets the token threshold above which any
-// tool result (including from the current request) is truncated using
-// head+tail preservation. This protects against single tool results that are
-// large enough to overflow the context window on their own.
-func WithOversizedToolResultMaxTokens(tokens int) ContentOption {
+// WithContextCompactionOversizedToolResultMaxTokens sets the token threshold
+// above which any tool result (including from the current request) is truncated
+// using head+tail preservation. This safety net fires regardless of whether
+// EnableContextCompaction is set.
+func WithContextCompactionOversizedToolResultMaxTokens(tokens int) ContentOption {
 	return func(p *ContentRequestProcessor) {
 		p.ContextCompactionConfig.OversizedToolResultMaxTokens = tokens
 	}
@@ -380,7 +380,7 @@ func NewContentRequestProcessor(opts ...ContentOption) *ContentRequestProcessor 
 		ContextCompactionConfig: ContextCompactionConfig{
 			KeepRecentRequests:           DefaultContextCompactionKeepRecentRequests,
 			ToolResultMaxTokens:          DefaultContextCompactionToolResultMaxTokens,
-			OversizedToolResultMaxTokens: DefaultOversizedToolResultMaxTokens,
+			OversizedToolResultMaxTokens: DefaultContextCompactionOversizedToolResultMaxTokens,
 		},
 	}
 
@@ -1235,8 +1235,7 @@ func (p *ContentRequestProcessor) projectMessagesForEvent(
 func (p *ContentRequestProcessor) truncateOversizedToolResultMessages(
 	messages []model.Message,
 ) []model.Message {
-	if !p.ContextCompactionConfig.Enabled ||
-		p.ContextCompactionConfig.OversizedToolResultMaxTokens <= 0 {
+	if p.ContextCompactionConfig.OversizedToolResultMaxTokens <= 0 {
 		return messages
 	}
 

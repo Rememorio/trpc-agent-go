@@ -1873,7 +1873,7 @@ llmagent.WithAddSessionSummary(true)
 当开启 `WithEnableContextCompaction(true)` 时，框架会在真正调用模型前执行两遍压缩：
 
 - **Pass 1** — 旧 request 中超过 `ContextCompactionToolResultMaxTokens`（默认 1024 tokens）的 tool result 整体替换为占位符，保留 `ToolID` 和 `ToolName`
-- **Pass 2** — 任意 request（包括当前 request）中超过 `OversizedToolResultMaxTokens`（默认 8192 tokens）的单个 tool result，使用首尾保留策略截断，中间插入 `[...N characters truncated...]` 标记
+- **Pass 2** — 任意 request（包括当前 request）中超过 `ContextCompactionOversizedToolResultMaxTokens`（默认 8192 tokens）的单个 tool result，使用首尾保留策略截断，中间插入 `[...N characters truncated...]` 标记。Pass 2 独立于 `EnableContextCompaction`，只要设置了值就会生效
 - 最近 `ContextCompactionKeepRecentRequests` 个已完成 request 不受 Pass 1 影响（但 Pass 2 仍会生效）
 - 如果同时开启了 `WithAddSessionSummary(true)`，并且压完后请求仍接近 context window，会在 LLM 调用前同步执行一次 `CreateSessionSummary(...)` 并重建 request
 - 模型层的 token tailoring 仍然作为最后兜底
@@ -1886,7 +1886,7 @@ agent := llmagent.New(
     llmagent.WithEnableContextCompaction(true),
     llmagent.WithContextCompactionThresholdRatio(0.7),
     llmagent.WithContextCompactionToolResultMaxTokens(1024),  // Pass 1: 旧 tool result → 占位符
-    llmagent.WithOversizedToolResultMaxTokens(8192),          // Pass 2: 任意超大 result → 首尾保留截断
+    llmagent.WithContextCompactionOversizedToolResultMaxTokens(8192),  // Pass 2: 任意超大 result → 首尾保留截断
     llmagent.WithContextCompactionKeepRecentRequests(1),
 )
 ```

@@ -1630,7 +1630,7 @@ func TestNewContentRequestProcessor(t *testing.T) {
 		ContextCompactionConfig: ContextCompactionConfig{
 			KeepRecentRequests:           DefaultContextCompactionKeepRecentRequests,
 			ToolResultMaxTokens:          DefaultContextCompactionToolResultMaxTokens,
-			OversizedToolResultMaxTokens: DefaultOversizedToolResultMaxTokens,
+			OversizedToolResultMaxTokens: DefaultContextCompactionOversizedToolResultMaxTokens,
 		},
 	}
 
@@ -1710,7 +1710,7 @@ func TestNewContentRequestProcessor(t *testing.T) {
 		{
 			name: "oversized tool result limit option",
 			args: []ContentOption{
-				WithOversizedToolResultMaxTokens(64),
+				WithContextCompactionOversizedToolResultMaxTokens(64),
 			},
 			want: func() *ContentRequestProcessor {
 				w := *defaultWant
@@ -2471,7 +2471,7 @@ func TestContentRequestProcessor_IncludeContentsNoneSkipsHistory(t *testing.T) {
 func TestContentRequestProcessor_IncludeContentsNoneTruncatesOversizedToolResults(t *testing.T) {
 	p := NewContentRequestProcessor(
 		WithEnableContextCompaction(true),
-		WithOversizedToolResultMaxTokens(32),
+		WithContextCompactionOversizedToolResultMaxTokens(32),
 	)
 
 	sess := &session.Session{

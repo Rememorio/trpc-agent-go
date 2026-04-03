@@ -82,7 +82,7 @@ func main() {
         // WithAddSessionSummary(true) additionally enables one sync summary retry when needed
         llmagent.WithEnableContextCompaction(true),
         llmagent.WithContextCompactionToolResultMaxTokens(1024),  // old tool results → placeholder
-        llmagent.WithOversizedToolResultMaxTokens(8192),          // any huge result → head+tail truncation
+        llmagent.WithContextCompactionOversizedToolResultMaxTokens(8192),  // any huge result → head+tail truncation
         llmagent.WithContextCompactionKeepRecentRequests(1),
         // Note: WithAddSessionSummary(true) ignores WithMaxHistoryRuns
         // Summary includes all history, incremental events are fully retained

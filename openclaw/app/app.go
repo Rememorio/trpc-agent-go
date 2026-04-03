@@ -647,15 +647,15 @@ func NewRuntime(
 			}
 		}
 		ag, skillsRepo, err = newAgent(mdl, agentConfig{
-			AppName:                      opts.AppName,
-			AddSessionSummary:            opts.AddSessionSummary,
-			EnableContextCompaction:      opts.EnableContextCompaction,
-			OversizedToolResultMaxTokens: opts.OversizedToolResultMaxTokens,
-			MaxHistoryRuns:               opts.MaxHistoryRuns,
-			PreloadMemory:                opts.PreloadMemory,
-			GenerationConfig:             opts.GenerationConfig,
-			Instruction:                  prompts.Instruction,
-			SystemPrompt:                 prompts.SystemPrompt,
+			AppName:                     opts.AppName,
+			AddSessionSummary:           opts.AddSessionSummary,
+			EnableContextCompaction:     opts.EnableContextCompaction,
+			ContextCompactionOversizedToolResultMaxTokens: opts.ContextCompactionOversizedToolResultMaxTokens,
+			MaxHistoryRuns:              opts.MaxHistoryRuns,
+			PreloadMemory:               opts.PreloadMemory,
+			GenerationConfig:            opts.GenerationConfig,
+			Instruction:                 prompts.Instruction,
+			SystemPrompt:                prompts.SystemPrompt,
 
 			SkillsRoot:      opts.SkillsRoot,
 			SkillsExtraDirs: splitCSV(opts.SkillsExtraDir),
@@ -1078,15 +1078,15 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		ag, skillsRepo, err = newAgent(mdl, agentConfig{
-			AppName:                      opts.AppName,
-			AddSessionSummary:            opts.AddSessionSummary,
-			EnableContextCompaction:      opts.EnableContextCompaction,
-			OversizedToolResultMaxTokens: opts.OversizedToolResultMaxTokens,
-			MaxHistoryRuns:               opts.MaxHistoryRuns,
-			PreloadMemory:                opts.PreloadMemory,
-			GenerationConfig:             opts.GenerationConfig,
-			Instruction:                  prompts.Instruction,
-			SystemPrompt:                 prompts.SystemPrompt,
+			AppName:                     opts.AppName,
+			AddSessionSummary:           opts.AddSessionSummary,
+			EnableContextCompaction:     opts.EnableContextCompaction,
+			ContextCompactionOversizedToolResultMaxTokens: opts.ContextCompactionOversizedToolResultMaxTokens,
+			MaxHistoryRuns:              opts.MaxHistoryRuns,
+			PreloadMemory:               opts.PreloadMemory,
+			GenerationConfig:            opts.GenerationConfig,
+			Instruction:                 prompts.Instruction,
+			SystemPrompt:                prompts.SystemPrompt,
 
 			SkillsRoot:      opts.SkillsRoot,
 			SkillsExtraDirs: splitCSV(opts.SkillsExtraDir),
@@ -1893,7 +1893,7 @@ func newAgent(
 		llmagent.WithGlobalInstruction(strings.TrimSpace(cfg.SystemPrompt)),
 		llmagent.WithAddSessionSummary(cfg.AddSessionSummary),
 		llmagent.WithEnableContextCompaction(cfg.EnableContextCompaction),
-		llmagent.WithOversizedToolResultMaxTokens(cfg.OversizedToolResultMaxTokens),
+		llmagent.WithContextCompactionOversizedToolResultMaxTokens(cfg.ContextCompactionOversizedToolResultMaxTokens),
 		llmagent.WithMaxHistoryRuns(cfg.MaxHistoryRuns),
 		llmagent.WithPreloadMemory(cfg.PreloadMemory),
 		llmagent.WithEventMessageProjector(
@@ -2128,7 +2128,7 @@ type agentConfig struct {
 
 	AddSessionSummary            bool
 	EnableContextCompaction      bool
-	OversizedToolResultMaxTokens int
+	ContextCompactionOversizedToolResultMaxTokens int
 	MaxHistoryRuns               int
 	PreloadMemory                int
 	GenerationConfig             *model.GenerationConfig

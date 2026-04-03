@@ -1788,7 +1788,7 @@ The framework provides two distinct modes for managing conversation context sent
 When `WithEnableContextCompaction(true)` is enabled, the framework adds a lightweight Phase 1 compaction pass before the LLM call:
 
 - **Pass 1** — Historical tool results from older requests that exceed `ContextCompactionToolResultMaxTokens` (default 1024 tokens) are replaced with a placeholder while keeping `ToolID` and `ToolName`.
-- **Pass 2** — Any single tool result (including the current request) exceeding `OversizedToolResultMaxTokens` (default 8192 tokens) is truncated using head+tail preservation with a `[...N characters truncated...]` marker.
+- **Pass 2** — Any single tool result (including the current request) exceeding `ContextCompactionOversizedToolResultMaxTokens` (default 8192 tokens) is truncated using head+tail preservation with a `[...N characters truncated...]` marker. Pass 2 fires independently of `EnableContextCompaction`.
 - The latest `ContextCompactionKeepRecentRequests` completed requests are exempt from Pass 1 (but not Pass 2).
 - If `WithAddSessionSummary(true)` is also enabled and the rebuilt request still approaches the model context window, the framework performs one synchronous `CreateSessionSummary(...)` retry before calling the model.
 - Model-layer token tailoring remains the final fallback.
@@ -1801,7 +1801,7 @@ llmAgent := llmagent.New(
     llmagent.WithEnableContextCompaction(true),
     llmagent.WithContextCompactionThresholdRatio(0.7),
     llmagent.WithContextCompactionToolResultMaxTokens(1024),  // Pass 1: old tool results → placeholder
-    llmagent.WithOversizedToolResultMaxTokens(8192),          // Pass 2: any huge result → head+tail
+    llmagent.WithContextCompactionOversizedToolResultMaxTokens(8192),  // Pass 2: any huge result → head+tail
     llmagent.WithContextCompactionKeepRecentRequests(1),
 )
 ```

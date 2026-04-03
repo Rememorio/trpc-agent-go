@@ -100,10 +100,10 @@ func TestWithContextCompactionOptions(t *testing.T) {
 	WithContextCompactionKeepRecentRequests(-1)(opts)
 	require.Equal(t, 3, opts.ContextCompactionKeepRecentRequests)
 
-	WithOversizedToolResultMaxTokens(4096)(opts)
-	require.Equal(t, 4096, opts.OversizedToolResultMaxTokens)
-	WithOversizedToolResultMaxTokens(-1)(opts)
-	require.Equal(t, 4096, opts.OversizedToolResultMaxTokens)
+	WithContextCompactionOversizedToolResultMaxTokens(4096)(opts)
+	require.Equal(t, 4096, opts.ContextCompactionOversizedToolResultMaxTokens)
+	WithContextCompactionOversizedToolResultMaxTokens(-1)(opts)
+	require.Equal(t, 4096, opts.ContextCompactionOversizedToolResultMaxTokens)
 }
 
 func TestWithMessageFilterMode(t *testing.T) {
