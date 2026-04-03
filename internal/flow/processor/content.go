@@ -320,6 +320,16 @@ func WithContextCompactionToolResultMaxTokens(tokens int) ContentOption {
 	}
 }
 
+// WithOversizedToolResultMaxTokens sets the token threshold above which any
+// tool result (including from the current request) is truncated using
+// head+tail preservation. This protects against single tool results that are
+// large enough to overflow the context window on their own.
+func WithOversizedToolResultMaxTokens(tokens int) ContentOption {
+	return func(p *ContentRequestProcessor) {
+		p.ContextCompactionConfig.OversizedToolResultMaxTokens = tokens
+	}
+}
+
 // WithFewShotResolver sets an invocation-aware few-shot resolver.
 func WithFewShotResolver(
 	resolver func(*agent.Invocation) [][]model.Message,
@@ -368,8 +378,9 @@ func NewContentRequestProcessor(opts ...ContentOption) *ContentRequestProcessor 
 		PreloadSessionRecall:           0,
 		PreloadSessionRecallSearchMode: session.SearchModeHybrid,
 		ContextCompactionConfig: ContextCompactionConfig{
-			KeepRecentRequests:  DefaultContextCompactionKeepRecentRequests,
-			ToolResultMaxTokens: DefaultContextCompactionToolResultMaxTokens,
+			KeepRecentRequests:           DefaultContextCompactionKeepRecentRequests,
+			ToolResultMaxTokens:          DefaultContextCompactionToolResultMaxTokens,
+			OversizedToolResultMaxTokens: DefaultOversizedToolResultMaxTokens,
 		},
 	}
 

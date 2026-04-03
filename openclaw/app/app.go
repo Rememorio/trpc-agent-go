@@ -647,13 +647,14 @@ func NewRuntime(
 			}
 		}
 		ag, skillsRepo, err = newAgent(mdl, agentConfig{
-			AppName:           opts.AppName,
-			AddSessionSummary: opts.AddSessionSummary,
-			MaxHistoryRuns:    opts.MaxHistoryRuns,
-			PreloadMemory:     opts.PreloadMemory,
-			GenerationConfig:  opts.GenerationConfig,
-			Instruction:       prompts.Instruction,
-			SystemPrompt:      prompts.SystemPrompt,
+			AppName:                 opts.AppName,
+			AddSessionSummary:       opts.AddSessionSummary,
+			EnableContextCompaction: opts.EnableContextCompaction,
+			MaxHistoryRuns:          opts.MaxHistoryRuns,
+			PreloadMemory:           opts.PreloadMemory,
+			GenerationConfig:        opts.GenerationConfig,
+			Instruction:             prompts.Instruction,
+			SystemPrompt:            prompts.SystemPrompt,
 
 			SkillsRoot:      opts.SkillsRoot,
 			SkillsExtraDirs: splitCSV(opts.SkillsExtraDir),
@@ -1076,13 +1077,14 @@ func run(ctx context.Context, args []string) error {
 			}
 		}
 		ag, skillsRepo, err = newAgent(mdl, agentConfig{
-			AppName:           opts.AppName,
-			AddSessionSummary: opts.AddSessionSummary,
-			MaxHistoryRuns:    opts.MaxHistoryRuns,
-			PreloadMemory:     opts.PreloadMemory,
-			GenerationConfig:  opts.GenerationConfig,
-			Instruction:       prompts.Instruction,
-			SystemPrompt:      prompts.SystemPrompt,
+			AppName:                 opts.AppName,
+			AddSessionSummary:       opts.AddSessionSummary,
+			EnableContextCompaction: opts.EnableContextCompaction,
+			MaxHistoryRuns:          opts.MaxHistoryRuns,
+			PreloadMemory:           opts.PreloadMemory,
+			GenerationConfig:        opts.GenerationConfig,
+			Instruction:             prompts.Instruction,
+			SystemPrompt:            prompts.SystemPrompt,
 
 			SkillsRoot:      opts.SkillsRoot,
 			SkillsExtraDirs: splitCSV(opts.SkillsExtraDir),
@@ -1888,6 +1890,7 @@ func newAgent(
 		llmagent.WithInstruction(instruction),
 		llmagent.WithGlobalInstruction(strings.TrimSpace(cfg.SystemPrompt)),
 		llmagent.WithAddSessionSummary(cfg.AddSessionSummary),
+		llmagent.WithEnableContextCompaction(cfg.EnableContextCompaction),
 		llmagent.WithMaxHistoryRuns(cfg.MaxHistoryRuns),
 		llmagent.WithPreloadMemory(cfg.PreloadMemory),
 		llmagent.WithEventMessageProjector(
@@ -2120,12 +2123,13 @@ func channelsFromRegistry(
 type agentConfig struct {
 	AppName string
 
-	AddSessionSummary bool
-	MaxHistoryRuns    int
-	PreloadMemory     int
-	GenerationConfig  *model.GenerationConfig
-	Instruction       string
-	SystemPrompt      string
+	AddSessionSummary       bool
+	EnableContextCompaction bool
+	MaxHistoryRuns          int
+	PreloadMemory           int
+	GenerationConfig        *model.GenerationConfig
+	Instruction             string
+	SystemPrompt            string
 
 	SkillsRoot         string
 	SkillsExtraDirs    []string

@@ -140,6 +140,7 @@ var (
 		ContextCompactionThresholdRatio:      0.7,
 		ContextCompactionToolResultMaxTokens: processor.DefaultContextCompactionToolResultMaxTokens,
 		ContextCompactionKeepRecentRequests:  processor.DefaultContextCompactionKeepRecentRequests,
+		OversizedToolResultMaxTokens:         processor.DefaultOversizedToolResultMaxTokens,
 
 		skillRunRequireSkillLoaded: true,
 	}
@@ -274,6 +275,11 @@ type Options struct {
 	// ContextCompactionKeepRecentRequests preserves the latest N completed
 	// requests in full when request-side context compaction is enabled.
 	ContextCompactionKeepRecentRequests int
+	// OversizedToolResultMaxTokens sets the token threshold above which any
+	// tool result (including from the current request) is truncated using
+	// head+tail preservation. Protects against single tool results large
+	// enough to overflow the context window on their own.
+	OversizedToolResultMaxTokens int
 	// summaryFormatter allows custom formatting of session summary content.
 	// When nil (default), uses the default formatSummaryContent function.
 	summaryFormatter func(summary string) string
@@ -1039,6 +1045,18 @@ func WithContextCompactionKeepRecentRequests(n int) Option {
 	return func(opts *Options) {
 		if n >= 0 {
 			opts.ContextCompactionKeepRecentRequests = n
+		}
+	}
+}
+
+// WithOversizedToolResultMaxTokens sets the token threshold above which any
+// tool result (including from the current request) is truncated using
+// head+tail preservation. Protects against single tool results large
+// enough to overflow the context window on their own.
+func WithOversizedToolResultMaxTokens(tokens int) Option {
+	return func(opts *Options) {
+		if tokens >= 0 {
+			opts.OversizedToolResultMaxTokens = tokens
 		}
 	}
 }

@@ -132,9 +132,10 @@ type runOptions struct {
 	A2AName           string
 	A2ADescription    string
 
-	AddSessionSummary bool
-	MaxHistoryRuns    int
-	PreloadMemory     int
+	AddSessionSummary       bool
+	EnableContextCompaction bool
+	MaxHistoryRuns          int
+	PreloadMemory           int
 
 	AgentInstruction       string
 	AgentInstructionFiles  string
@@ -348,6 +349,12 @@ func parseRunOptions(args []string) (runOptions, error) {
 		flagAddSessionSummary,
 		false,
 		"Prepend session summary to the model context (optional)",
+	)
+	fs.BoolVar(
+		&opts.EnableContextCompaction,
+		"enable-context-compaction",
+		false,
+		"Enable prompt-side context compaction to control context window growth",
 	)
 	fs.IntVar(
 		&opts.MaxHistoryRuns,
@@ -922,9 +929,10 @@ type debugRecorderConfig struct {
 type agentRunConfig struct {
 	Type *string `yaml:"type,omitempty"`
 
-	AddSessionSummary *bool `yaml:"add_session_summary,omitempty"`
-	MaxHistoryRuns    *int  `yaml:"max_history_runs,omitempty"`
-	PreloadMemory     *int  `yaml:"preload_memory,omitempty"`
+	AddSessionSummary       *bool `yaml:"add_session_summary,omitempty"`
+	EnableContextCompaction *bool `yaml:"enable_context_compaction,omitempty"`
+	MaxHistoryRuns          *int  `yaml:"max_history_runs,omitempty"`
+	PreloadMemory           *int  `yaml:"preload_memory,omitempty"`
 
 	Instruction      *string  `yaml:"instruction,omitempty"`
 	InstructionFiles []string `yaml:"instruction_files,omitempty"`
@@ -1281,6 +1289,10 @@ func (cfg *fileConfig) apply(
 		if cfg.Agent.AddSessionSummary != nil &&
 			!flagWasSet(set, flagAddSessionSummary) {
 			opts.AddSessionSummary = *cfg.Agent.AddSessionSummary
+		}
+		if cfg.Agent.EnableContextCompaction != nil &&
+			!flagWasSet(set, "enable-context-compaction") {
+			opts.EnableContextCompaction = *cfg.Agent.EnableContextCompaction
 		}
 		if cfg.Agent.MaxHistoryRuns != nil &&
 			!flagWasSet(set, flagMaxHistoryRuns) {
