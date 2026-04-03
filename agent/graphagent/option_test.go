@@ -160,6 +160,11 @@ func TestWithContextCompactionOptions(t *testing.T) {
 	require.Equal(t, 2, opts.ContextCompactionKeepRecentRequests)
 	WithContextCompactionKeepRecentRequests(-1)(opts)
 	require.Equal(t, 2, opts.ContextCompactionKeepRecentRequests)
+
+	WithOversizedToolResultMaxTokens(4096)(opts)
+	require.Equal(t, 4096, opts.OversizedToolResultMaxTokens)
+	WithOversizedToolResultMaxTokens(-1)(opts)
+	require.Equal(t, 4096, opts.OversizedToolResultMaxTokens)
 }
 
 func TestWithReasoningContentMode(t *testing.T) {

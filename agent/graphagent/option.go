@@ -263,6 +263,17 @@ func WithContextCompactionKeepRecentRequests(n int) Option {
 	}
 }
 
+// WithOversizedToolResultMaxTokens sets the token threshold above which any
+// tool result (including from the current request) is truncated using
+// head+tail preservation.
+func WithOversizedToolResultMaxTokens(tokens int) Option {
+	return func(opts *Options) {
+		if tokens >= 0 {
+			opts.OversizedToolResultMaxTokens = tokens
+		}
+	}
+}
+
 // WithMessageTimelineFilterMode sets the message timeline filter mode.
 func WithMessageTimelineFilterMode(mode string) Option {
 	return func(opts *Options) {

@@ -249,6 +249,56 @@ func TestCompactIncrementEvents_TruncatesOversizedCurrentToolResult(t *testing.T
 	require.Greater(t, stats.EstimatedTokensSaved, 0)
 }
 
+func TestCompactIncrementEvents_TruncatesOversizedHistoricalToolResult(t *testing.T) {
+	content := "HEAD-" + strings.Repeat("middle-", 400) + "-TAIL"
+	events := []event.Event{
+		{
+			RequestID:    "req-current",
+			InvocationID: "inv-current",
+			FilterKey:    "test-agent",
+			Response: &model.Response{
+				Done: true,
+				Choices: []model.Choice{{
+					Message: model.NewToolMessage("tool-call-current", "worker", "ok"),
+				}},
+			},
+		},
+		{
+			RequestID:    "req-history",
+			InvocationID: "inv-history",
+			FilterKey:    "test-agent",
+			Response: &model.Response{
+				Done: true,
+				Choices: []model.Choice{{
+					Message: model.NewToolMessage("tool-call-history", "worker", content),
+				}},
+			},
+		},
+	}
+
+	compacted, stats := compactIncrementEvents(
+		context.Background(),
+		events,
+		"req-current",
+		"inv-current",
+		ContextCompactionConfig{
+			Enabled:                      true,
+			KeepRecentRequests:           1,
+			ToolResultMaxTokens:          10,
+			OversizedToolResultMaxTokens: 32,
+		},
+	)
+
+	require.Len(t, compacted, 2)
+	got := compacted[1].Response.Choices[0].Message.Content
+	require.NotEqual(t, content, got)
+	require.Contains(t, got, "[... ")
+	require.True(t, strings.HasPrefix(got, "HEAD-"))
+	require.True(t, strings.HasSuffix(got, "-TAIL"))
+	require.Equal(t, 1, stats.ToolResultsCompacted)
+	require.Greater(t, stats.EstimatedTokensSaved, 0)
+}
+
 func TestCompactIncrementEvents_Pass2WorksWithoutPass1Context(t *testing.T) {
 	content := "HEAD-" + strings.Repeat("middle-", 400) + "-TAIL"
 	evt := event.Event{

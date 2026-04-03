@@ -92,49 +92,15 @@ func compactIncrementEvents(
 	if cfg.ToolResultMaxTokens > 0 {
 		currentKey := compactionUnitKey(currentRequestID, currentInvocationID)
 		if currentKey != "" {
-			protectedRequestIDs := collectProtectedRequestIDs(
-				events,
+			passEvents, passStats := applyHistoricalToolResultPass(
+				ctx,
+				compacted,
 				currentKey,
 				cfg.KeepRecentRequests,
+				cfg.ToolResultMaxTokens,
 			)
-			for i := range compacted {
-				evt := compacted[i]
-				unitKey := compactionUnitKey(evt.RequestID, evt.InvocationID)
-				if unitKey == "" {
-					continue
-				}
-				if _, keep := protectedRequestIDs[unitKey]; keep {
-					continue
-				}
-				if evt.Response == nil || len(evt.Response.Choices) == 0 {
-					continue
-				}
-
-				var choiceChanged bool
-				clonedResponse := evt.Response
-				for j := range evt.Response.Choices {
-					msg, compactedMsg, savedTokens := compactHistoricalToolResultMessage(
-						ctx,
-						evt.Response.Choices[j].Message,
-						cfg.ToolResultMaxTokens,
-					)
-					if !compactedMsg {
-						continue
-					}
-					if !choiceChanged {
-						clonedResponse = evt.Response.Clone()
-						choiceChanged = true
-					}
-					clonedResponse.Choices[j].Message = msg
-					stats.ToolResultsCompacted++
-					stats.EstimatedTokensSaved += savedTokens
-				}
-
-				if choiceChanged {
-					evt.Response = clonedResponse
-					compacted[i] = evt
-				}
-			}
+			compacted = passEvents
+			stats = mergeContextCompactionStats(stats, passStats)
 		}
 	}
 
@@ -143,40 +109,141 @@ func compactIncrementEvents(
 	// guard the next LLM call will exceed the context window even though the
 	// tool result belongs to the current (protected) request.
 	if cfg.OversizedToolResultMaxTokens > 0 {
-		for i := range compacted {
-			evt := compacted[i]
-			if evt.Response == nil || len(evt.Response.Choices) == 0 {
-				continue
-			}
-
-			var choiceChanged bool
-			clonedResponse := evt.Response
-			for j := range evt.Response.Choices {
-				msg, truncated, savedTokens := truncateOversizedToolResultMessage(
-					ctx,
-					evt.Response.Choices[j].Message,
-					cfg.OversizedToolResultMaxTokens,
-				)
-				if !truncated {
-					continue
-				}
-				if !choiceChanged {
-					clonedResponse = evt.Response.Clone()
-					choiceChanged = true
-				}
-				clonedResponse.Choices[j].Message = msg
-				stats.ToolResultsCompacted++
-				stats.EstimatedTokensSaved += savedTokens
-			}
-
-			if choiceChanged {
-				evt.Response = clonedResponse
-				compacted[i] = evt
-			}
-		}
+		passEvents, passStats := applyOversizedToolResultPass(
+			ctx,
+			compacted,
+			cfg.OversizedToolResultMaxTokens,
+		)
+		compacted = passEvents
+		stats = mergeContextCompactionStats(stats, passStats)
 	}
 
 	return compacted, stats
+}
+
+func applyHistoricalToolResultPass(
+	ctx context.Context,
+	events []event.Event,
+	currentKey string,
+	keepRecentRequests int,
+	maxTokens int,
+) ([]event.Event, ContextCompactionStats) {
+	protectedRequestIDs := collectProtectedRequestIDs(
+		events,
+		currentKey,
+		keepRecentRequests,
+	)
+
+	var stats ContextCompactionStats
+	for i := range events {
+		evt, changed, compactedCount, savedTokens := compactHistoricalToolResultEvent(
+			ctx,
+			events[i],
+			protectedRequestIDs,
+			maxTokens,
+		)
+		if !changed {
+			continue
+		}
+		events[i] = evt
+		stats.ToolResultsCompacted += compactedCount
+		stats.EstimatedTokensSaved += savedTokens
+	}
+	return events, stats
+}
+
+func compactHistoricalToolResultEvent(
+	ctx context.Context,
+	evt event.Event,
+	protectedRequestIDs map[string]struct{},
+	maxTokens int,
+) (event.Event, bool, int, int) {
+	unitKey := compactionUnitKey(evt.RequestID, evt.InvocationID)
+	if unitKey == "" {
+		return evt, false, 0, 0
+	}
+	if _, keep := protectedRequestIDs[unitKey]; keep {
+		return evt, false, 0, 0
+	}
+	return rewriteToolResultEventMessages(
+		ctx,
+		evt,
+		maxTokens,
+		compactHistoricalToolResultMessage,
+	)
+}
+
+func applyOversizedToolResultPass(
+	ctx context.Context,
+	events []event.Event,
+	maxTokens int,
+) ([]event.Event, ContextCompactionStats) {
+	var stats ContextCompactionStats
+	for i := range events {
+		evt, changed, compactedCount, savedTokens := rewriteToolResultEventMessages(
+			ctx,
+			events[i],
+			maxTokens,
+			truncateOversizedToolResultMessage,
+		)
+		if !changed {
+			continue
+		}
+		events[i] = evt
+		stats.ToolResultsCompacted += compactedCount
+		stats.EstimatedTokensSaved += savedTokens
+	}
+	return events, stats
+}
+
+func rewriteToolResultEventMessages(
+	ctx context.Context,
+	evt event.Event,
+	maxTokens int,
+	rewrite func(context.Context, model.Message, int) (model.Message, bool, int),
+) (event.Event, bool, int, int) {
+	if evt.Response == nil || len(evt.Response.Choices) == 0 {
+		return evt, false, 0, 0
+	}
+
+	var (
+		choiceChanged   bool
+		compactedCount  int
+		totalSavedToken int
+	)
+	clonedResponse := evt.Response
+	for j := range evt.Response.Choices {
+		msg, changed, savedTokens := rewrite(
+			ctx,
+			evt.Response.Choices[j].Message,
+			maxTokens,
+		)
+		if !changed {
+			continue
+		}
+		if !choiceChanged {
+			clonedResponse = evt.Response.Clone()
+			choiceChanged = true
+		}
+		clonedResponse.Choices[j].Message = msg
+		compactedCount++
+		totalSavedToken += savedTokens
+	}
+	if !choiceChanged {
+		return evt, false, 0, 0
+	}
+
+	evt.Response = clonedResponse
+	return evt, true, compactedCount, totalSavedToken
+}
+
+func mergeContextCompactionStats(
+	base ContextCompactionStats,
+	delta ContextCompactionStats,
+) ContextCompactionStats {
+	base.ToolResultsCompacted += delta.ToolResultsCompacted
+	base.EstimatedTokensSaved += delta.EstimatedTokensSaved
+	return base
 }
 
 func collectProtectedRequestIDs(
