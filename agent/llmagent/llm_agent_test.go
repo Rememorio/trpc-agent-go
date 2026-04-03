@@ -296,6 +296,25 @@ func TestBuildRequestProcessors_MaxHistoryRunsWiring(t *testing.T) {
 	require.Equal(t, 0, crp.MaxHistoryRuns)
 }
 
+func TestBuildRequestProcessors_ContextCompactionWiring(t *testing.T) {
+	opts := &Options{}
+	WithEnableContextCompaction(true)(opts)
+	WithContextCompactionKeepRecentRequests(2)(opts)
+	WithContextCompactionToolResultMaxTokens(2048)(opts)
+
+	procs := buildRequestProcessors("test-agent", opts)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.True(t, crp.ContextCompactionConfig.Enabled)
+	require.Equal(t, 2, crp.ContextCompactionConfig.KeepRecentRequests)
+	require.Equal(t, 2048, crp.ContextCompactionConfig.ToolResultMaxTokens)
+}
+
 // Test that buildRequestProcessors wires PreserveSameBranch into
 // ContentRequestProcessor correctly.
 func TestBuildRequestProcessors_PreserveSameBranchWiring(t *testing.T) {
@@ -324,6 +343,62 @@ func TestBuildRequestProcessors_PreserveSameBranchWiring(t *testing.T) {
 	}
 	require.NotNil(t, crp)
 	require.False(t, crp.PreserveSameBranch)
+}
+
+func TestBuildRequestProcessors_PreloadSessionRecallWiring(t *testing.T) {
+	opts := &Options{}
+	WithPreloadSessionRecall(4)(opts)
+	WithPreloadSessionRecallMinScore(0.6)(opts)
+	WithPreloadSessionRecallSearchMode(session.SearchModeDense)(opts)
+
+	procs := buildRequestProcessors("tester", opts)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.Equal(t, 4, crp.PreloadSessionRecall)
+	require.Equal(t, 0.6, crp.PreloadSessionRecallMinScore)
+	require.Equal(
+		t,
+		session.SearchModeDense,
+		crp.PreloadSessionRecallSearchMode,
+	)
+}
+
+func TestBuildRequestProcessors_EventMessageProjectorWiring(
+	t *testing.T,
+) {
+	projector := func(
+		_ *agent.Invocation,
+		_ event.Event,
+		msg model.Message,
+	) model.Message {
+		msg.Content = "projected"
+		return msg
+	}
+
+	opts := &Options{}
+	WithEventMessageProjector(projector)(opts)
+	procs := buildRequestProcessors("tester", opts)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+
+	require.NotNil(t, crp)
+	require.NotNil(t, crp.EventMessageProjector)
+
+	got := crp.EventMessageProjector(
+		nil,
+		event.Event{},
+		model.NewUserMessage("hello"),
+	)
+	require.Equal(t, "projected", got.Content)
 }
 
 func TestBuildRequestProcessors_PostToolPromptInjection(t *testing.T) {
@@ -1189,6 +1264,33 @@ func TestLLMAgent_OptionsWithStructuredOutputJSON(t *testing.T) {
 	require.Equal(t, "MyStruct", opts.StructuredOutput.JSONSchema.Name)
 	require.True(t, opts.StructuredOutput.JSONSchema.Strict)
 	require.Equal(t, "test description", opts.StructuredOutput.JSONSchema.Description)
+}
+
+func TestLLMAgent_OptionsWithStructuredOutputJSON_StrictFlagControlsGeneratedSchema(t *testing.T) {
+	type MyStruct struct {
+		Field    string   `json:"field"`
+		Optional []string `json:"optional"`
+	}
+
+	strictOpts := &Options{}
+	WithStructuredOutputJSON(new(MyStruct), true, "strict")(strictOpts)
+	require.NotNil(t, strictOpts.StructuredOutput)
+	strictSchema := strictOpts.StructuredOutput.JSONSchema.Schema
+	strictRequired := strictSchema["required"].([]string)
+	require.Len(t, strictRequired, 2)
+	strictProps := strictSchema["properties"].(map[string]any)
+	_, hasAnyOf := strictProps["optional"].(map[string]any)["anyOf"]
+	require.True(t, hasAnyOf)
+
+	nonStrictOpts := &Options{}
+	WithStructuredOutputJSON(new(MyStruct), false, "non-strict")(nonStrictOpts)
+	require.NotNil(t, nonStrictOpts.StructuredOutput)
+	nonStrictSchema := nonStrictOpts.StructuredOutput.JSONSchema.Schema
+	nonStrictRequired := nonStrictSchema["required"].([]string)
+	require.Equal(t, []string{"field"}, nonStrictRequired)
+	nonStrictProps := nonStrictSchema["properties"].(map[string]any)
+	_, hasAnyOf = nonStrictProps["optional"].(map[string]any)["anyOf"]
+	require.False(t, hasAnyOf)
 }
 
 func TestLLMAgent_OptionsWithStructuredOutputJSONSchema(t *testing.T) {

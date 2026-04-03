@@ -136,11 +136,51 @@ func (p *SkillsToolResultRequestProcessor) ProcessRequest(
 	}
 
 	maybeMigrateLegacySkillState(ctx, inv, ch)
+	loaded := p.applyLoadedSkillContext(ctx, inv, req, repo)
+	p.maybeOffloadLoadedSkills(ctx, inv, loaded, ch)
+}
 
+// SupportsContextCompactionRebuild reports whether loaded skill materialization
+// can be safely replayed during the sync-summary rebuild path.
+func (p *SkillsToolResultRequestProcessor) SupportsContextCompactionRebuild(
+	inv *agent.Invocation,
+) bool {
+	if p.loadMode != SkillLoadModeOnce {
+		return true
+	}
+	if inv == nil || inv.Session == nil {
+		return true
+	}
+	return len(p.getLoadedSkills(inv)) == 0
+}
+
+// RebuildRequestForContextCompaction reapplies loaded skill materialization
+// without mutating session state during the sync-summary rebuild path.
+func (p *SkillsToolResultRequestProcessor) RebuildRequestForContextCompaction(
+	ctx context.Context,
+	inv *agent.Invocation,
+	req *model.Request,
+) {
+	if req == nil || inv == nil || inv.Session == nil {
+		return
+	}
+	repo := p.repositoryForInvocation(inv)
+	if repo == nil {
+		return
+	}
+	p.applyLoadedSkillContext(ctx, inv, req, repo)
+}
+
+func (p *SkillsToolResultRequestProcessor) applyLoadedSkillContext(
+	ctx context.Context,
+	inv *agent.Invocation,
+	req *model.Request,
+	repo skill.Repository,
+) []string {
 	loaded := p.getLoadedSkills(inv)
 	if len(loaded) == 0 {
 		p.removeLoadedContextMessage(req)
-		return
+		return nil
 	}
 	sort.Strings(loaded) // stable prompt order
 
@@ -186,8 +226,7 @@ func (p *SkillsToolResultRequestProcessor) ProcessRequest(
 	} else {
 		p.upsertLoadedContextMessage(req, fallbackContent)
 	}
-
-	p.maybeOffloadLoadedSkills(ctx, inv, loaded, ch)
+	return loaded
 }
 
 func (p *SkillsToolResultRequestProcessor) repositoryForInvocation(
@@ -330,7 +369,7 @@ func (p *SkillsToolResultRequestProcessor) buildToolResultContent(
 	skillName string,
 	toolOutput string,
 ) (string, bool) {
-	sk, err := repo.Get(skillName)
+	sk, err := skill.GetForContext(ctx, repo, skillName)
 	if err != nil || sk == nil {
 		log.WarnfContext(
 			ctx,
@@ -359,7 +398,7 @@ func (p *SkillsToolResultRequestProcessor) buildToolResultContent(
 		b.WriteString("\n")
 	}
 
-	sel := p.getDocsSelection(inv, repo, skillName)
+	sel := p.getDocsSelection(ctx, inv, repo, skillName)
 	b.WriteString("Docs loaded: ")
 	if len(sel) == 0 {
 		b.WriteString("none\n")
@@ -377,6 +416,7 @@ func (p *SkillsToolResultRequestProcessor) buildToolResultContent(
 }
 
 func (p *SkillsToolResultRequestProcessor) getDocsSelection(
+	ctx context.Context,
 	inv *agent.Invocation,
 	repo skill.Repository,
 	name string,
@@ -390,7 +430,7 @@ func (p *SkillsToolResultRequestProcessor) getDocsSelection(
 		return nil
 	}
 	if string(v) == "*" {
-		sk, err := repo.Get(name)
+		sk, err := skill.GetForContext(ctx, repo, name)
 		if err != nil || sk == nil {
 			return nil
 		}
@@ -453,8 +493,9 @@ func (p *SkillsToolResultRequestProcessor) buildFallbackSystemContent(
 	var b strings.Builder
 	b.WriteString(skillsLoadedContextHeader)
 	b.WriteString("\n")
+	var appended bool
 	for _, name := range missing {
-		sk, err := repo.Get(name)
+		sk, err := skill.GetForContext(ctx, repo, name)
 		if err != nil || sk == nil {
 			log.WarnfContext(
 				ctx,
@@ -464,14 +505,16 @@ func (p *SkillsToolResultRequestProcessor) buildFallbackSystemContent(
 			)
 			continue
 		}
+		appended = true
 		if strings.TrimSpace(sk.Body) != "" {
 			b.WriteString("\n[Loaded] ")
 			b.WriteString(name)
 			b.WriteString("\n\n")
 			b.WriteString(sk.Body)
 			b.WriteString("\n")
+			appended = true
 		}
-		sel := p.getDocsSelection(inv, repo, name)
+		sel := p.getDocsSelection(ctx, inv, repo, name)
 		b.WriteString("Docs loaded: ")
 		if len(sel) == 0 {
 			b.WriteString("none\n")
@@ -482,8 +525,12 @@ func (p *SkillsToolResultRequestProcessor) buildFallbackSystemContent(
 		if len(sel) > 0 {
 			if docText := buildDocsText(sk, sel); docText != "" {
 				b.WriteString(docText)
+				appended = true
 			}
 		}
+	}
+	if !appended {
+		return ""
 	}
 	return strings.TrimSpace(b.String())
 }

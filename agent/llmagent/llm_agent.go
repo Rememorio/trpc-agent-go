@@ -36,6 +36,7 @@ import (
 	knowledgetool "trpc.group/trpc-go/trpc-agent-go/knowledge/tool"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/planner"
+	"trpc.group/trpc-go/trpc-agent-go/prompt"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -57,10 +58,10 @@ type LLMAgent struct {
 	model                   model.Model
 	models                  map[string]model.Model // Registered models for switching
 	description             string
-	instruction             string
-	systemPrompt            string
-	modelInstructions       map[string]string
-	modelGlobalInstructions map[string]string
+	instruction             prompt.Text
+	systemPrompt            prompt.Text
+	modelInstructions       map[string]prompt.Text
+	modelGlobalInstructions map[string]prompt.Text
 	genConfig               model.GenerationConfig
 	flow                    flow.Flow
 	tools                   []tool.Tool     // All tools (user tools + framework tools)
@@ -86,6 +87,7 @@ func New(name string, opts ...Option) *LLMAgent {
 	for _, opt := range opts {
 		opt(&options)
 	}
+	prepareSkillsRepository(&options)
 
 	// Validate output_schema configuration before registering tools.
 	if options.OutputSchema != nil {
@@ -107,19 +109,21 @@ func New(name string, opts ...Option) *LLMAgent {
 	// Initialize models map and determine the initial model.
 	initialModel, models := initializeModels(&options)
 
+	resolvedGenCfg := resolveDefaultGenerationConfig(&options)
+
 	// Construct the agent first so request processors can access dynamic getters.
 	a := &LLMAgent{
 		name:              name,
 		model:             initialModel,
 		models:            models,
 		description:       options.Description,
-		instruction:       options.Instruction,
-		systemPrompt:      options.GlobalInstruction,
-		modelInstructions: cloneStringMap(options.ModelInstructions),
-		modelGlobalInstructions: cloneStringMap(
+		instruction:       newTextPrompt(options.Instruction),
+		systemPrompt:      newTextPrompt(options.GlobalInstruction),
+		modelInstructions: cloneTextPromptMap(options.ModelInstructions),
+		modelGlobalInstructions: cloneTextPromptMap(
 			options.ModelGlobalInstructions,
 		),
-		genConfig:            options.GenerationConfig,
+		genConfig:            resolvedGenCfg,
 		codeExecutor:         options.codeExecutor,
 		tools:                tools,
 		userToolNames:        userToolNames,
@@ -185,9 +189,11 @@ func New(name string, opts ...Option) *LLMAgent {
 
 	// Create flow with the provided processors and options.
 	flowOpts := llmflow.Options{
-		ChannelBufferSize:   options.ChannelBufferSize,
-		ModelCallbacks:      options.ModelCallbacks,
-		SyncSummaryIntraRun: options.SyncSummaryIntraRun,
+		ChannelBufferSize:               options.ChannelBufferSize,
+		ModelCallbacks:                  options.ModelCallbacks,
+		SyncSummaryIntraRun:             options.SyncSummaryIntraRun,
+		EnableContextCompaction:         options.EnableContextCompaction,
+		ContextCompactionThresholdRatio: options.ContextCompactionThresholdRatio,
 	}
 
 	a.flow = llmflow.New(
@@ -204,7 +210,9 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 
 	// 1. Basic processor - handles generation config.
 	basicOptions := []processor.BasicOption{
-		processor.WithGenerationConfig(options.GenerationConfig),
+		processor.WithGenerationConfig(
+			resolveDefaultGenerationConfig(options),
+		),
 	}
 	basicProcessor := processor.NewBasicRequestProcessor(basicOptions...)
 	requestProcessors = append(requestProcessors, basicProcessor)
@@ -226,12 +234,8 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		)
 	}
 	instructionOpts = append(instructionOpts,
-		processor.WithInstructionResolver(
-			a.instructionForInvocation,
-		),
-		processor.WithSystemPromptResolver(
-			a.systemPromptForInvocation,
-		),
+		processor.WithInstructionResolver(a.instructionForInvocation),
+		processor.WithSystemPromptResolver(a.systemPromptForInvocation),
 	)
 	instructionProcessor := processor.NewInstructionRequestProcessor(
 		"", // static value unused when resolver is present
@@ -251,9 +255,11 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 	}
 
 	// 5. Skills processor - injects skill overview and loaded contents
-	// when a skills repository is configured. This ensures the model
-	// sees available skills (names/descriptions) and any loaded
-	// SKILL.md/doc texts before deciding on tool calls.
+	// when a skills repository is configured statically or resolved at
+	// invocation time. This ensures the model sees available skills
+	// (names/descriptions) and any loaded SKILL.md/doc texts before
+	// deciding on tool calls.
+	skillFlags := mustResolveSkillToolFlags(options)
 	var skillsOpts []processor.SkillsRequestProcessorOption
 	if options.skillsToolingGuidance != nil {
 		skillsOpts = append(
@@ -269,9 +275,7 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 			a.skillRepositoryForInvocation,
 		),
 		processor.WithSkillLoadMode(options.SkillLoadMode),
-		processor.WithSkillToolProfile(
-			skillprofile.Normalize(options.skillToolProfile),
-		),
+		processor.WithSkillToolFlags(skillFlags),
 	)
 	if options.MaxLoadedSkills > 0 {
 		skillsOpts = append(
@@ -285,12 +289,6 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		skillsOpts = append(
 			skillsOpts,
 			processor.WithSkillsLoadedContentInToolResults(true),
-		)
-	}
-	if !executorSupportsInteractive(options) {
-		skillsOpts = append(
-			skillsOpts,
-			processor.WithSkillExecToolsDisabled(),
 		)
 	}
 	skillsProcessor := processor.NewSkillsRequestProcessor(
@@ -326,10 +324,29 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		processor.WithAddContextPrefix(options.AddContextPrefix),
 		processor.WithAddSessionSummary(options.AddSessionSummary),
 		processor.WithMaxHistoryRuns(options.MaxHistoryRuns),
+		processor.WithEnableContextCompaction(options.EnableContextCompaction),
+		processor.WithContextCompactionKeepRecentRequests(
+			options.ContextCompactionKeepRecentRequests,
+		),
+		processor.WithContextCompactionToolResultMaxTokens(
+			options.ContextCompactionToolResultMaxTokens,
+		),
 		processor.WithPreserveSameBranch(options.PreserveSameBranch),
 		processor.WithTimelineFilterMode(options.messageTimelineFilterMode),
 		processor.WithBranchFilterMode(options.messageBranchFilterMode),
 		processor.WithPreloadMemory(options.PreloadMemory),
+		processor.WithPreloadSessionRecall(options.PreloadSessionRecall),
+		processor.WithPreloadSessionRecallMinScore(
+			options.PreloadSessionRecallMinScore,
+		),
+		processor.WithPreloadSessionRecallSearchMode(
+			options.PreloadSessionRecallSearchMode,
+		),
+		processor.WithEventMessageProjector(
+			processor.EventMessageProjector(
+				options.EventMessageProjector,
+			),
+		),
 		processor.WithFewShotResolver(a.fewShotForInvocation),
 	}
 	if options.ReasoningContentMode != "" {
@@ -357,6 +374,15 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 	requestProcessors = appendTimeProcessor(options, requestProcessors)
 
 	return requestProcessors
+}
+
+func resolveDefaultGenerationConfig(
+	options *Options,
+) model.GenerationConfig {
+	if options != nil && options.generationConfigConfigured {
+		return options.GenerationConfig
+	}
+	return model.GenerationConfig{Stream: true}
 }
 
 func hasStaticOutputResponseProcessor(options *Options) bool {
@@ -424,15 +450,43 @@ func appendTimeProcessor(options *Options, requestProcessors []flow.RequestProce
 // buildRequestProcessorsWithAgent. Dynamic updates are not supported when using
 // this legacy function; use New() which wires the real agent for runtime getters.
 func buildRequestProcessors(name string, options *Options) []flow.RequestProcessor { // nolint:deadcode
+	prepareSkillsRepository(options)
 	dummy := &LLMAgent{
 		name:                    name,
-		instruction:             options.Instruction,
-		systemPrompt:            options.GlobalInstruction,
-		modelInstructions:       cloneStringMap(options.ModelInstructions),
-		modelGlobalInstructions: cloneStringMap(options.ModelGlobalInstructions),
+		instruction:             newTextPrompt(options.Instruction),
+		systemPrompt:            newTextPrompt(options.GlobalInstruction),
+		modelInstructions:       cloneTextPromptMap(options.ModelInstructions),
+		modelGlobalInstructions: cloneTextPromptMap(options.ModelGlobalInstructions),
 		option:                  *options,
 	}
 	return buildRequestProcessorsWithAgent(dummy, options)
+}
+
+func newTextPrompt(template string) prompt.Text {
+	return prompt.Text{Template: template}
+}
+
+func cloneTextPromptMap(src map[string]string) map[string]prompt.Text {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]prompt.Text, len(src))
+	for key, value := range src {
+		dst[key] = newTextPrompt(value)
+	}
+	return dst
+}
+
+func prepareSkillsRepository(options *Options) {
+	if options == nil ||
+		options.skillsRepository == nil ||
+		options.skillFilter == nil {
+		return
+	}
+	options.skillsRepository = skill.NewFilteredRepository(
+		options.skillsRepository,
+		options.skillFilter,
+	)
 }
 
 // initializeModels initializes the models map and determines the initial
@@ -502,6 +556,7 @@ func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
 		allTools,
 		options,
 		workspaceRegistry,
+		nil,
 	)
 	allTools = appendSkillTools(allTools, options, runTool)
 	return allTools, userToolNames
@@ -590,7 +645,7 @@ func appendSkillToolsWithRepo(
 		return allTools
 	}
 
-	skillFlags := skillprofile.ResolveFlags(options.skillToolProfile)
+	skillFlags := mustResolveSkillToolFlags(options)
 	if skillFlags.Load {
 		allTools = append(
 			allTools,
@@ -651,10 +706,37 @@ func appendSkillToolsWithRepo(
 	return allTools
 }
 
+func mustResolveSkillToolFlags(options *Options) skillprofile.Flags {
+	flags, err := skillprofile.ResolveFlags(
+		options.skillToolProfile,
+		options.allowedSkillTools,
+	)
+	if err != nil {
+		panic(fmt.Sprintf(
+			"Invalid LLMAgent configuration: %v",
+			err,
+		))
+	}
+
+	if options.skillRunRequireSkillLoaded &&
+		(flags.Run || flags.Exec) &&
+		!flags.Load {
+		panic("Invalid LLMAgent configuration: " +
+			"skill_run and skill_exec require skill_load when " +
+			"WithSkillRunRequireSkillLoaded is enabled")
+	}
+
+	if !executorSupportsInteractive(options) {
+		flags = flags.WithoutInteractiveExecution()
+	}
+	return flags
+}
+
 func appendWorkspaceExecTool(
 	allTools []tool.Tool,
 	options *Options,
 	reg *codeexecutor.WorkspaceRegistry,
+	inv *agent.Invocation,
 ) []tool.Tool {
 	if !executorSupportsWorkspaceExec(options) {
 		return allTools
@@ -666,8 +748,13 @@ func appendWorkspaceExecTool(
 	allTools = append(
 		allTools,
 		execTool,
-		toolworkspaceexec.NewPublishArtifactTool(execTool),
 	)
+	if toolworkspaceexec.SupportsArtifactSave(inv) {
+		allTools = append(
+			allTools,
+			toolworkspaceexec.NewSaveArtifactTool(execTool),
+		)
+	}
 	if executorSupportsWorkspaceExecSessions(options) {
 		allTools = append(
 			allTools,
@@ -703,7 +790,7 @@ func buildSkillRunToolWithRepo(
 		exec = defaultCodeExecutor()
 	}
 
-	runOpts := make([]func(*toolskill.RunTool), 0, 5)
+	runOpts := make([]func(*toolskill.RunTool), 0, 6)
 	if len(options.skillRunAllowedCommands) > 0 {
 		runOpts = append(
 			runOpts,
@@ -720,6 +807,12 @@ func buildSkillRunToolWithRepo(
 			),
 		)
 	}
+	runOpts = append(
+		runOpts,
+		toolskill.WithRunOutputLimits(
+			options.skillRunOutputLimits,
+		),
+	)
 	if options.skillRunForceSaveArtifacts {
 		runOpts = append(runOpts, toolskill.WithForceSaveArtifacts(true))
 	}
@@ -1369,7 +1462,7 @@ func (a *LLMAgent) SetModelByName(modelName string) error {
 // Subsequent requests will use the new instruction without recreating the agent.
 func (a *LLMAgent) SetInstruction(instruction string) {
 	a.mu.Lock()
-	a.instruction = instruction
+	a.instruction = newTextPrompt(instruction)
 	a.mu.Unlock()
 }
 
@@ -1377,14 +1470,14 @@ func (a *LLMAgent) SetInstruction(instruction string) {
 // This affects the system-level prompt prepended to requests.
 func (a *LLMAgent) SetGlobalInstruction(systemPrompt string) {
 	a.mu.Lock()
-	a.systemPrompt = systemPrompt
+	a.systemPrompt = newTextPrompt(systemPrompt)
 	a.mu.Unlock()
 }
 
 // SetModelInstructions updates the model-specific instruction overrides.
 // Key: model.Info().Name, Value: instruction text.
 func (a *LLMAgent) SetModelInstructions(instructions map[string]string) {
-	copied := cloneStringMap(instructions)
+	copied := cloneTextPromptMap(instructions)
 	a.mu.Lock()
 	a.modelInstructions = copied
 	a.mu.Unlock()
@@ -1394,7 +1487,7 @@ func (a *LLMAgent) SetModelInstructions(instructions map[string]string) {
 // overrides.
 // Key: model.Info().Name, Value: system prompt text.
 func (a *LLMAgent) SetModelGlobalInstructions(prompts map[string]string) {
-	copied := cloneStringMap(prompts)
+	copied := cloneTextPromptMap(prompts)
 	a.mu.Lock()
 	a.modelGlobalInstructions = copied
 	a.mu.Unlock()
@@ -1404,24 +1497,28 @@ func (a *LLMAgent) SetModelGlobalInstructions(prompts map[string]string) {
 func (a *LLMAgent) getInstruction() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.instruction
+	return a.instruction.Template
 }
 
 // getSystemPrompt returns the current system prompt with read lock.
 func (a *LLMAgent) getSystemPrompt() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	return a.systemPrompt
+	return a.systemPrompt.Template
 }
 
 func (a *LLMAgent) instructionForInvocation(inv *agent.Invocation) string {
+	return a.instructionPromptForInvocation(inv).Template
+}
+
+func (a *LLMAgent) instructionPromptForInvocation(inv *agent.Invocation) prompt.Text {
 	if patch, ok := a.rootSurfacePatch(inv); ok {
 		if instruction, ok := patch.Instruction(); ok {
-			return instruction
+			return newTextPrompt(instruction)
 		}
 	}
 	if inv != nil && inv.RunOptions.Instruction != "" {
-		return inv.RunOptions.Instruction
+		return newTextPrompt(inv.RunOptions.Instruction)
 	}
 	modelName := ""
 	if inv != nil && inv.Model != nil {
@@ -1440,13 +1537,17 @@ func (a *LLMAgent) instructionForInvocation(inv *agent.Invocation) string {
 }
 
 func (a *LLMAgent) systemPromptForInvocation(inv *agent.Invocation) string {
+	return a.systemPromptTextForInvocation(inv).Template
+}
+
+func (a *LLMAgent) systemPromptTextForInvocation(inv *agent.Invocation) prompt.Text {
 	if patch, ok := a.rootSurfacePatch(inv); ok {
 		if prompt, ok := patch.GlobalInstruction(); ok {
-			return prompt
+			return newTextPrompt(prompt)
 		}
 	}
 	if inv != nil && inv.RunOptions.GlobalInstruction != "" {
-		return inv.RunOptions.GlobalInstruction
+		return newTextPrompt(inv.RunOptions.GlobalInstruction)
 	}
 	modelName := ""
 	if inv != nil && inv.Model != nil {

@@ -45,11 +45,26 @@ type APIError struct {
 	Message string `json:"message"`
 }
 
+// Usage is a transport-safe subset of model token usage.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+
+	// LastPromptTokens is the prompt_tokens from the most recent LLM call
+	// within the request. Unlike PromptTokens which aggregates across all
+	// LLM calls in a request (tool-call loops), this field reflects the
+	// actual context window occupancy of the final call and is used for
+	// accurate context usage display.
+	LastPromptTokens int `json:"last_prompt_tokens,omitempty"`
+}
+
 // MessageResponse matches the gateway /messages response JSON.
 type MessageResponse struct {
 	SessionID string    `json:"session_id,omitempty"`
 	RequestID string    `json:"request_id,omitempty"`
 	Reply     string    `json:"reply,omitempty"`
+	Usage     *Usage    `json:"usage,omitempty"`
 	Ignored   bool      `json:"ignored,omitempty"`
 	Error     *APIError `json:"error,omitempty"`
 }
@@ -125,6 +140,7 @@ type StreamEvent struct {
 	Stage     StreamProgressStage `json:"stage,omitempty"`
 	Summary   string              `json:"summary,omitempty"`
 	ElapsedMS int64               `json:"elapsed_ms,omitempty"`
+	Usage     *Usage              `json:"usage,omitempty"`
 	Ignored   bool                `json:"ignored,omitempty"`
 	Error     *APIError           `json:"error,omitempty"`
 }

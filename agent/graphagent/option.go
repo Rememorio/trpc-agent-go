@@ -12,8 +12,10 @@ package graphagent
 
 import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
+	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 const (
@@ -65,6 +67,14 @@ const (
 	IsolatedInvocation
 )
 
+// EventMessageProjector projects one event-derived message into the
+// model-facing request view.
+type EventMessageProjector func(
+	inv *agent.Invocation,
+	evt event.Event,
+	msg model.Message,
+) model.Message
+
 // Option is a function that configures a GraphAgent.
 type Option func(*Options)
 
@@ -95,6 +105,17 @@ type Options struct {
 	// MaxHistoryRuns sets the maximum number of history messages when AddSessionSummary is false.
 	// When 0 (default), no limit is applied.
 	MaxHistoryRuns int
+	// EnableContextCompaction enables prompt-side context compaction.
+	// Historical oversized tool results can be compacted during request
+	// projection even when AddSessionSummary is false.
+	EnableContextCompaction bool
+	// ContextCompactionToolResultMaxTokens sets the token threshold above
+	// which
+	// historical tool results are replaced with a placeholder.
+	ContextCompactionToolResultMaxTokens int
+	// ContextCompactionKeepRecentRequests preserves the latest N completed
+	// requests in full when request-side context compaction is enabled.
+	ContextCompactionKeepRecentRequests int
 	// summaryFormatter allows custom formatting of session summary content.
 	// When nil (default), uses default formatSummaryContent function.
 	summaryFormatter func(summary string) string
@@ -107,6 +128,9 @@ type Options struct {
 	// conversations. This is useful for models like DeepSeek that output reasoning_content
 	// in thinking mode.
 	ReasoningContentMode string
+	// EventMessageProjector rewrites one event-derived message before it
+	// is appended to the model request.
+	EventMessageProjector EventMessageProjector
 
 	// ExecutorOptions allows passing additional executor options directly.
 	// These options are applied after the mapped options (ChannelBufferSize,
@@ -117,7 +141,11 @@ type Options struct {
 }
 
 var (
-	defaultOptions = Options{ChannelBufferSize: defaultChannelBufferSize}
+	defaultOptions = Options{
+		ChannelBufferSize:                    defaultChannelBufferSize,
+		ContextCompactionToolResultMaxTokens: processor.DefaultContextCompactionToolResultMaxTokens,
+		ContextCompactionKeepRecentRequests:  processor.DefaultContextCompactionKeepRecentRequests,
+	}
 )
 
 // WithDescription sets the description of the agent.
@@ -200,6 +228,36 @@ func WithMaxHistoryRuns(maxRuns int) Option {
 	}
 }
 
+// WithEnableContextCompaction enables prompt-side context compaction.
+// Historical oversized tool results can be compacted during request
+// projection even when AddSessionSummary is false.
+func WithEnableContextCompaction(enable bool) Option {
+	return func(opts *Options) {
+		opts.EnableContextCompaction = enable
+	}
+}
+
+// WithContextCompactionToolResultMaxTokens sets the token threshold above
+// which
+// historical tool results are replaced with a placeholder.
+func WithContextCompactionToolResultMaxTokens(tokens int) Option {
+	return func(opts *Options) {
+		if tokens >= 0 {
+			opts.ContextCompactionToolResultMaxTokens = tokens
+		}
+	}
+}
+
+// WithContextCompactionKeepRecentRequests preserves the latest N completed
+// requests in full when request-side context compaction is enabled.
+func WithContextCompactionKeepRecentRequests(n int) Option {
+	return func(opts *Options) {
+		if n >= 0 {
+			opts.ContextCompactionKeepRecentRequests = n
+		}
+	}
+}
+
 // WithMessageTimelineFilterMode sets the message timeline filter mode.
 func WithMessageTimelineFilterMode(mode string) Option {
 	return func(opts *Options) {
@@ -255,6 +313,16 @@ func WithReasoningContentMode(mode string) Option {
 func WithSummaryFormatter(formatter func(summary string) string) Option {
 	return func(opts *Options) {
 		opts.summaryFormatter = formatter
+	}
+}
+
+// WithEventMessageProjector rewrites one event-derived message before
+// it is appended to the model request.
+func WithEventMessageProjector(
+	projector EventMessageProjector,
+) Option {
+	return func(opts *Options) {
+		opts.EventMessageProjector = projector
 	}
 }
 

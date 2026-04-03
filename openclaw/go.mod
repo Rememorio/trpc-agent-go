@@ -28,6 +28,10 @@ replace (
 	trpc.group/trpc-go/trpc-agent-go/tool/wikipedia => ../tool/wikipedia
 )
 
+replace trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/elasticsearch => ../knowledge/vectorstore/elasticsearch
+
+replace trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/pgvector => ../knowledge/vectorstore/pgvector
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.26.0
 	github.com/alicebob/miniredis/v2 v2.35.0
@@ -42,9 +46,12 @@ require (
 	github.com/yuin/goldmark v1.7.13
 	go.opentelemetry.io/otel v1.37.0
 	go.opentelemetry.io/otel/trace v1.37.0
+	golang.org/x/net v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5
 	trpc.group/trpc-go/trpc-agent-go v1.6.1-0.20260311094958-7b74ee59e339
+	trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/elasticsearch v1.6.1-0.20260311094958-7b74ee59e339
+	trpc.group/trpc-go/trpc-agent-go/knowledge/vectorstore/pgvector v1.6.1-0.20260311094958-7b74ee59e339
 	trpc.group/trpc-go/trpc-agent-go/memory/mysql v1.5.0
 	trpc.group/trpc-go/trpc-agent-go/memory/pgvector v0.0.0-20260226120000-4e084c8c87d8
 	trpc.group/trpc-go/trpc-agent-go/memory/postgres v1.5.0
@@ -86,6 +93,10 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/elastic/elastic-transport-go/v8 v8.7.0 // indirect
+	github.com/elastic/go-elasticsearch/v7 v7.17.10 // indirect
+	github.com/elastic/go-elasticsearch/v8 v8.19.0 // indirect
+	github.com/elastic/go-elasticsearch/v9 v9.1.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/getkin/kin-openapi v0.133.0 // indirect
 	github.com/go-ego/gse v1.0.0 // indirect
@@ -171,7 +182,6 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/image v0.32.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/oauth2 v0.33.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
@@ -183,4 +193,5 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	trpc.group/trpc-go/trpc-agent-go/knowledge/document/reader/pdf v1.5.0 // indirect
+	trpc.group/trpc-go/trpc-agent-go/storage/elasticsearch v0.2.0 // indirect
 )

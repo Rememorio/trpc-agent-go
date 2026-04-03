@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -144,6 +145,23 @@ func TestWithMaxHistoryRuns(t *testing.T) {
 	require.Equal(t, 0, opts.MaxHistoryRuns)
 }
 
+func TestWithContextCompactionOptions(t *testing.T) {
+	opts := &Options{}
+
+	WithEnableContextCompaction(true)(opts)
+	require.True(t, opts.EnableContextCompaction)
+
+	WithContextCompactionToolResultMaxTokens(2048)(opts)
+	require.Equal(t, 2048, opts.ContextCompactionToolResultMaxTokens)
+	WithContextCompactionToolResultMaxTokens(-1)(opts)
+	require.Equal(t, 2048, opts.ContextCompactionToolResultMaxTokens)
+
+	WithContextCompactionKeepRecentRequests(2)(opts)
+	require.Equal(t, 2, opts.ContextCompactionKeepRecentRequests)
+	WithContextCompactionKeepRecentRequests(-1)(opts)
+	require.Equal(t, 2, opts.ContextCompactionKeepRecentRequests)
+}
+
 func TestWithReasoningContentMode(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -224,6 +242,28 @@ func TestWithSummaryFormatter(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWithEventMessageProjector(t *testing.T) {
+	projector := func(
+		_ *agent.Invocation,
+		_ event.Event,
+		msg model.Message,
+	) model.Message {
+		msg.Content = "projected"
+		return msg
+	}
+
+	opts := &Options{}
+	WithEventMessageProjector(projector)(opts)
+
+	require.NotNil(t, opts.EventMessageProjector)
+	got := opts.EventMessageProjector(
+		nil,
+		event.Event{},
+		model.NewUserMessage("hello"),
+	)
+	require.Equal(t, "projected", got.Content)
 }
 
 // TestGraphAgent_ReasoningContentMode verifies that

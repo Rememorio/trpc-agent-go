@@ -27,11 +27,13 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
+	"trpc.group/trpc-go/trpc-agent-go/internal/state/steer"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
 	itrace "trpc.group/trpc-go/trpc-agent-go/internal/trace"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
 )
@@ -40,6 +42,7 @@ const (
 	// Timeout for event completion signaling.
 	eventCompletionTimeout    = 5 * time.Second
 	generatedResponseIDPrefix = "llmflow-response-"
+	queuedUserAuthor          = "user"
 
 	errMsgNoModelResponse = "no response received from model"
 
@@ -54,22 +57,53 @@ const (
 	// entire lifetime of an Invocation, even when underlying ToolSets are
 	// dynamic.
 	stateKeyToolsSnapshot = "llmflow:tools_snapshot"
+
+	defaultContextCompactionThresholdRatio = 0.7
+	contextCompactionFallbackWindow        = 8192
+	contextCompactionMinTokens             = 2000
 )
 
 // Options contains configuration options for creating a Flow.
 type Options struct {
-	ChannelBufferSize   int // Buffer size for event channels (default: 256).
-	ModelCallbacks      *model.Callbacks
-	SyncSummaryIntraRun bool
+	ChannelBufferSize               int // Buffer size for event channels (default: 256).
+	ModelCallbacks                  *model.Callbacks
+	SyncSummaryIntraRun             bool
+	EnableContextCompaction         bool
+	ContextCompactionThresholdRatio float64
 }
 
 // Flow provides the basic flow implementation.
 type Flow struct {
-	requestProcessors   []flow.RequestProcessor
-	responseProcessors  []flow.ResponseProcessor
-	channelBufferSize   int
-	modelCallbacks      *model.Callbacks
-	syncSummaryIntraRun bool
+	requestProcessors               []flow.RequestProcessor
+	responseProcessors              []flow.ResponseProcessor
+	channelBufferSize               int
+	modelCallbacks                  *model.Callbacks
+	syncSummaryIntraRun             bool
+	enableContextCompaction         bool
+	contextCompactionThresholdRatio float64
+}
+
+type contextCompactionTailProcessor interface {
+	SupportsContextCompactionRebuild(
+		invocation *agent.Invocation,
+	) bool
+	RebuildRequestForContextCompaction(
+		ctx context.Context,
+		invocation *agent.Invocation,
+		req *model.Request,
+	)
+}
+
+type contextCompactionRebuildPlan struct {
+	beforeContent    *model.Request
+	contentProcessor *processor.ContentRequestProcessor
+	tailProcessors   []contextCompactionTailProcessor
+}
+
+type summarySnapshot struct {
+	exists    bool
+	summary   string
+	updatedAt time.Time
 }
 
 // New creates a new basic flow instance with the provided processors.
@@ -80,11 +114,15 @@ func New(
 	opts Options,
 ) *Flow {
 	return &Flow{
-		requestProcessors:   requestProcessors,
-		responseProcessors:  responseProcessors,
-		channelBufferSize:   opts.ChannelBufferSize,
-		modelCallbacks:      opts.ModelCallbacks,
-		syncSummaryIntraRun: opts.SyncSummaryIntraRun,
+		requestProcessors:       requestProcessors,
+		responseProcessors:      responseProcessors,
+		channelBufferSize:       opts.ChannelBufferSize,
+		modelCallbacks:          opts.ModelCallbacks,
+		syncSummaryIntraRun:     opts.SyncSummaryIntraRun,
+		enableContextCompaction: opts.EnableContextCompaction,
+		contextCompactionThresholdRatio: normalizeContextCompactionThresholdRatio(
+			opts.ContextCompactionThresholdRatio,
+		),
 	}
 }
 
@@ -95,6 +133,7 @@ func (f *Flow) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *e
 	runCtx := agent.CloneContext(ctx)
 	go func(ctx context.Context) {
 		defer close(eventChan)
+		defer steer.Close(invocation)
 		defer recoverFlowRunPanic(ctx, invocation, eventChan)
 
 		// Mark the invocation so the runner skips redundant async
@@ -123,9 +162,18 @@ func (f *Flow) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *e
 			}
 			firstIteration = false
 
+			if err := f.maybeConsumeQueuedUserMessages(
+				ctx,
+				invocation,
+				eventChan,
+			); err != nil {
+				return
+			}
+
 			// Run one step (one LLM call cycle).
 			lastEvent, err := f.runOneStep(ctx, invocation, eventChan)
 			if err != nil {
+				steer.Close(invocation)
 				// Treat context cancellation as graceful termination (common in streaming
 				// pipelines where the client closes the stream after final event).
 				if errors.Is(err, context.Canceled) {
@@ -175,6 +223,7 @@ func (f *Flow) Run(ctx context.Context, invocation *agent.Invocation) (<-chan *e
 			// If no events were produced in this step, treat as terminal to avoid busy loop.
 			// Also break when EndInvocation is set or a final response is observed.
 			if lastEvent == nil || invocation.EndInvocation || lastEvent.IsFinalResponse() {
+				steer.Close(invocation)
 				break
 			}
 		}
@@ -246,6 +295,74 @@ func traceSnapshotFromEvent(evt *event.Event) *atrace.Snapshot {
 		return nil
 	}
 	return &atrace.Snapshot{Text: string(bytes)}
+}
+
+func (f *Flow) maybeConsumeQueuedUserMessages(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	eventChan chan<- *event.Event,
+) error {
+	if !steer.IsAttached(invocation) {
+		return nil
+	}
+
+	messages := steer.Drain(invocation)
+	if len(messages) == 0 {
+		return nil
+	}
+
+	for _, message := range messages {
+		invocation.Message = message
+
+		evt := event.NewResponseEvent(
+			invocation.InvocationID,
+			queuedUserAuthor,
+			&model.Response{
+				Done: false,
+				Choices: []model.Choice{{
+					Index:   0,
+					Message: message,
+				}},
+			},
+		)
+		evt.RequiresCompletion = true
+
+		if err := agent.EmitEvent(
+			ctx,
+			invocation,
+			eventChan,
+			evt,
+		); err != nil {
+			return err
+		}
+
+		completionID := agent.GetAppendEventNoticeKey(evt.ID)
+		err := invocation.AddNoticeChannelAndWait(
+			ctx,
+			completionID,
+			flowEventWaitTimeout(ctx),
+		)
+		if errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if err != nil {
+			log.WarnfContext(
+				ctx,
+				"Wait for queued user message persistence failed: %v",
+				err,
+			)
+		}
+	}
+
+	return nil
+}
+
+func flowEventWaitTimeout(ctx context.Context) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return time.Until(deadline)
+	}
+	return eventCompletionTimeout
 }
 
 // maybeResumePendingToolCalls inspects the latest session events and, when
@@ -354,7 +471,16 @@ func (f *Flow) runOneStep(
 		Tools: make(map[string]tool.Tool), // Initialize tools map
 	}
 	// 1. Preprocess (prepare request).
-	f.preprocess(ctx, invocation, llmRequest, eventChan)
+	rebuildPlan := f.preprocess(ctx, invocation, llmRequest, eventChan)
+	if invocation.EndInvocation {
+		return lastEvent, nil
+	}
+	llmRequest = f.maybeCompactContextBeforeLLM(
+		ctx,
+		invocation,
+		llmRequest,
+		rebuildPlan,
+	)
 	if invocation.EndInvocation {
 		return lastEvent, nil
 	}
@@ -748,10 +874,31 @@ func (f *Flow) preprocess(
 	invocation *agent.Invocation,
 	llmRequest *model.Request,
 	eventChan chan<- *event.Event,
-) {
+) *contextCompactionRebuildPlan {
+	var rebuildPlan *contextCompactionRebuildPlan
+
 	// Run request processors - they send events directly to the channel.
-	for _, processor := range f.requestProcessors {
-		processor.ProcessRequest(ctx, invocation, llmRequest, eventChan)
+	for _, requestProcessor := range f.requestProcessors {
+		if rebuildPlan == nil {
+			contentProcessor, ok := requestProcessor.(*processor.ContentRequestProcessor)
+			if ok &&
+				contentProcessor.AddSessionSummary &&
+				contentProcessor.TimelineFilterMode == processor.TimelineFilterAll {
+				rebuildPlan = &contextCompactionRebuildPlan{
+					beforeContent:    cloneRequestForContextCompaction(llmRequest),
+					contentProcessor: contentProcessor,
+				}
+			}
+		} else {
+			tailProcessor, ok := requestProcessor.(contextCompactionTailProcessor)
+			if !ok ||
+				!tailProcessor.SupportsContextCompactionRebuild(invocation) {
+				rebuildPlan = nil
+			} else {
+				rebuildPlan.tailProcessors = append(rebuildPlan.tailProcessors, tailProcessor)
+			}
+		}
+		requestProcessor.ProcessRequest(ctx, invocation, llmRequest, eventChan)
 	}
 	// Add tools to the request with optional filtering.
 	if invocation.Agent != nil {
@@ -762,6 +909,373 @@ func (f *Flow) preprocess(
 	}
 	// Sanitize invalid tool calls in history to avoid poisoning future requests.
 	llmRequest.Messages = toolcall.SanitizeMessagesWithTools(llmRequest.Messages, llmRequest.Tools)
+	return rebuildPlan
+}
+
+func normalizeContextCompactionThresholdRatio(ratio float64) float64 {
+	if ratio > 0 && ratio <= 1 {
+		return ratio
+	}
+	return defaultContextCompactionThresholdRatio
+}
+
+func (f *Flow) maybeCompactContextBeforeLLM(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	req *model.Request,
+	rebuildPlan *contextCompactionRebuildPlan,
+) *model.Request {
+	if req == nil || !f.enableContextCompaction || invocation == nil ||
+		invocation.Session == nil || invocation.SessionService == nil ||
+		!f.supportsSyncSummaryRetry() || rebuildPlan == nil ||
+		rebuildPlan.beforeContent == nil || rebuildPlan.contentProcessor == nil {
+		return req
+	}
+	if !shouldSyncCompactContext(
+		ctx,
+		invocation,
+		req,
+		f.contextCompactionThresholdRatio,
+	) {
+		return req
+	}
+
+	filterKey := invocation.GetEventFilterKey()
+	before := snapshotSummary(invocation.Session, filterKey)
+	err := invocation.SessionService.CreateSessionSummary(
+		ctx,
+		invocation.Session,
+		filterKey,
+		false,
+	)
+	after := snapshotSummary(invocation.Session, filterKey)
+	if !before.advanced(after) {
+		if err != nil {
+			log.DebugfContext(
+				ctx,
+				"Pre-LLM context compaction skipped for agent %s: %v",
+				invocation.AgentName,
+				err,
+			)
+		}
+		return req
+	}
+
+	rebuilt := f.rebuildRequestForContextCompaction(
+		ctx,
+		invocation,
+		rebuildPlan,
+	)
+	if rebuilt == nil {
+		log.DebugfContext(
+			ctx,
+			"Pre-LLM context compaction skipped for agent %s: safe rebuild unavailable",
+			invocation.AgentName,
+		)
+		return req
+	}
+
+	if err != nil {
+		log.WarnfContext(
+			ctx,
+			"Pre-LLM context compaction rebuilt request for agent %s after in-memory summary update; persistence failed: %v",
+			invocation.AgentName,
+			err,
+		)
+		return rebuilt
+	}
+
+	log.DebugfContext(
+		ctx,
+		"Pre-LLM context compaction rebuilt request for agent %s",
+		invocation.AgentName,
+	)
+	return rebuilt
+}
+
+func (f *Flow) rebuildRequestForContextCompaction(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	rebuildPlan *contextCompactionRebuildPlan,
+) *model.Request {
+	if rebuildPlan == nil || rebuildPlan.beforeContent == nil ||
+		rebuildPlan.contentProcessor == nil {
+		return nil
+	}
+
+	rebuilt := cloneRequestForContextCompaction(rebuildPlan.beforeContent)
+	if rebuilt == nil {
+		return nil
+	}
+	if rebuilt.Tools == nil {
+		rebuilt.Tools = make(map[string]tool.Tool)
+	}
+	rebuildPlan.contentProcessor.ProcessRequest(ctx, invocation, rebuilt, nil)
+	for _, tailProcessor := range rebuildPlan.tailProcessors {
+		tailProcessor.RebuildRequestForContextCompaction(
+			ctx,
+			invocation,
+			rebuilt,
+		)
+	}
+	if invocation.Agent != nil {
+		for _, t := range f.getFilteredTools(ctx, invocation) {
+			rebuilt.Tools[t.Declaration().Name] = t
+		}
+	}
+	rebuilt.Messages = toolcall.SanitizeMessagesWithTools(
+		rebuilt.Messages,
+		rebuilt.Tools,
+	)
+	return rebuilt
+}
+
+func (f *Flow) supportsSyncSummaryRetry() bool {
+	for _, requestProcessor := range f.requestProcessors {
+		contentProcessor, ok := requestProcessor.(*processor.ContentRequestProcessor)
+		if !ok {
+			continue
+		}
+		if contentProcessor.AddSessionSummary &&
+			contentProcessor.TimelineFilterMode == processor.TimelineFilterAll {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneRequestForContextCompaction(req *model.Request) *model.Request {
+	if req == nil {
+		return nil
+	}
+
+	cloned := *req
+	cloned.Messages = cloneMessagesForContextCompaction(req.Messages)
+	cloned.GenerationConfig = cloneGenerationConfigForContextCompaction(
+		req.GenerationConfig,
+	)
+	cloned.StructuredOutput = cloneStructuredOutputForContextCompaction(
+		req.StructuredOutput,
+	)
+	if req.Tools != nil {
+		cloned.Tools = make(map[string]tool.Tool, len(req.Tools))
+		for name, t := range req.Tools {
+			cloned.Tools[name] = t
+		}
+	}
+	return &cloned
+}
+
+func cloneMessagesForContextCompaction(msgs []model.Message) []model.Message {
+	if msgs == nil {
+		return nil
+	}
+
+	cloned := make([]model.Message, len(msgs))
+	for i := range msgs {
+		cloned[i] = cloneMessageForContextCompaction(msgs[i])
+	}
+	return cloned
+}
+
+func cloneMessageForContextCompaction(msg model.Message) model.Message {
+	cloned := msg
+	cloned.ContentParts = cloneContentPartsForContextCompaction(
+		msg.ContentParts,
+	)
+	cloned.ToolCalls = cloneToolCallsForContextCompaction(msg.ToolCalls)
+	return cloned
+}
+
+func cloneContentPartsForContextCompaction(
+	parts []model.ContentPart,
+) []model.ContentPart {
+	if parts == nil {
+		return nil
+	}
+
+	cloned := make([]model.ContentPart, len(parts))
+	for i := range parts {
+		cloned[i] = cloneContentPartForContextCompaction(parts[i])
+	}
+	return cloned
+}
+
+func cloneContentPartForContextCompaction(
+	part model.ContentPart,
+) model.ContentPart {
+	cloned := part
+	if part.Text != nil {
+		text := *part.Text
+		cloned.Text = &text
+	}
+	if part.Image != nil {
+		image := *part.Image
+		if part.Image.Data != nil {
+			image.Data = append([]byte(nil), part.Image.Data...)
+		}
+		cloned.Image = &image
+	}
+	if part.Audio != nil {
+		audio := *part.Audio
+		if part.Audio.Data != nil {
+			audio.Data = append([]byte(nil), part.Audio.Data...)
+		}
+		cloned.Audio = &audio
+	}
+	if part.File != nil {
+		file := *part.File
+		if part.File.Data != nil {
+			file.Data = append([]byte(nil), part.File.Data...)
+		}
+		cloned.File = &file
+	}
+	return cloned
+}
+
+func cloneToolCallsForContextCompaction(
+	toolCalls []model.ToolCall,
+) []model.ToolCall {
+	if toolCalls == nil {
+		return nil
+	}
+
+	cloned := make([]model.ToolCall, len(toolCalls))
+	for i := range toolCalls {
+		cloned[i] = toolCalls[i]
+		if toolCalls[i].Function.Arguments != nil {
+			cloned[i].Function.Arguments = append(
+				[]byte(nil),
+				toolCalls[i].Function.Arguments...,
+			)
+		}
+		if toolCalls[i].Index != nil {
+			index := *toolCalls[i].Index
+			cloned[i].Index = &index
+		}
+		cloned[i].ExtraFields = cloneJSONMapForContextCompaction(
+			toolCalls[i].ExtraFields,
+		)
+	}
+	return cloned
+}
+
+func cloneGenerationConfigForContextCompaction(
+	cfg model.GenerationConfig,
+) model.GenerationConfig {
+	cloned := cfg
+	if cfg.Stop != nil {
+		cloned.Stop = append([]string(nil), cfg.Stop...)
+	}
+	return cloned
+}
+
+func cloneStructuredOutputForContextCompaction(
+	out *model.StructuredOutput,
+) *model.StructuredOutput {
+	if out == nil {
+		return nil
+	}
+
+	cloned := *out
+	if out.JSONSchema != nil {
+		schema := *out.JSONSchema
+		schema.Schema = cloneJSONMapForContextCompaction(out.JSONSchema.Schema)
+		cloned.JSONSchema = &schema
+	}
+	return &cloned
+}
+
+func cloneJSONMapForContextCompaction(
+	src map[string]any,
+) map[string]any {
+	if src == nil {
+		return nil
+	}
+
+	raw, err := json.Marshal(src)
+	if err == nil {
+		var cloned map[string]any
+		if err = json.Unmarshal(raw, &cloned); err == nil {
+			return cloned
+		}
+	}
+
+	cloned := make(map[string]any, len(src))
+	for k, v := range src {
+		cloned[k] = v
+	}
+	return cloned
+}
+
+func snapshotSummary(sess *session.Session, filterKey string) summarySnapshot {
+	if sess == nil {
+		return summarySnapshot{}
+	}
+
+	sess.SummariesMu.RLock()
+	defer sess.SummariesMu.RUnlock()
+
+	summary := sess.Summaries[filterKey]
+	if summary == nil {
+		return summarySnapshot{}
+	}
+	return summarySnapshot{
+		exists:    true,
+		summary:   summary.Summary,
+		updatedAt: summary.UpdatedAt,
+	}
+}
+
+func (s summarySnapshot) advanced(next summarySnapshot) bool {
+	if !next.exists {
+		return false
+	}
+	if !s.exists {
+		return true
+	}
+	if next.updatedAt.After(s.updatedAt) {
+		return true
+	}
+	return next.summary != s.summary
+}
+
+func shouldSyncCompactContext(
+	ctx context.Context,
+	inv *agent.Invocation,
+	req *model.Request,
+	ratio float64,
+) bool {
+	if inv == nil || inv.Model == nil || req == nil || len(req.Messages) == 0 {
+		return false
+	}
+
+	counter := model.NewSimpleTokenCounter()
+	tokens, err := counter.CountTokensRange(ctx, req.Messages, 0, len(req.Messages))
+	if err != nil {
+		return false
+	}
+
+	threshold := contextCompactionThreshold(inv, ratio)
+	return tokens >= threshold
+}
+
+func contextCompactionThreshold(inv *agent.Invocation, ratio float64) int {
+	contextWindow := contextCompactionFallbackWindow
+	if inv != nil && inv.Model != nil {
+		if window, ok := model.LookupModelContextWindow(inv.Model.Info().Name); ok {
+			contextWindow = window
+		}
+	}
+
+	threshold := int(float64(contextWindow) * normalizeContextCompactionThresholdRatio(ratio))
+	if threshold < contextCompactionMinTokens {
+		threshold = contextCompactionMinTokens
+	}
+	if threshold > contextWindow {
+		threshold = contextWindow
+	}
+	return threshold
 }
 
 // UserToolsProvider is an optional interface that agents can implement to expose

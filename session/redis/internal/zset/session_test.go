@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -273,18 +274,86 @@ func TestAppendEvent(t *testing.T) {
 		assert.Equal(t, []byte("1"), sess.State["counter"])
 	})
 
-	t.Run("multiple events ordered by timestamp", func(t *testing.T) {
-		key4 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_multi"}
+	t.Run("initializes nil stored state before applying delta", func(t *testing.T) {
+		key4 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_nil_state"}
 		_, err := c.CreateSession(ctx, key4, nil)
+		require.NoError(t, err)
+
+		stateBytes, err := json.Marshal(&SessionState{
+			ID:        key4.SessionID,
+			State:     nil,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		})
+		require.NoError(t, err)
+		require.NoError(t, rdb.(*redis.Client).HSet(ctx, c.sessionStateKey(key4), key4.SessionID, string(stateBytes)).Err())
+
+		evt := makeTestEvent("ed-nil", time.Now(), "hello")
+		evt.StateDelta = session.StateMap{"counter": []byte("2")}
+		require.NoError(t, c.AppendEvent(ctx, key4, evt))
+
+		sess, err := c.GetSession(ctx, key4, 0, time.Time{})
+		require.NoError(t, err)
+		assert.Equal(t, []byte("2"), sess.State["counter"])
+	})
+
+	t.Run("returns marshal error for invalid event payload", func(t *testing.T) {
+		evt := &event.Event{
+			ID:        "bad-event",
+			Timestamp: time.Now(),
+			Response: &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{ToolCalls: []model.ToolCall{{
+						Type: "function",
+						Function: model.FunctionDefinitionParam{
+							Name:      "demo",
+							Arguments: []byte("{}"),
+						},
+						ExtraFields: map[string]any{"unsupported": math.Inf(1)},
+					}}},
+				}},
+			},
+		}
+
+		err := c.AppendEvent(ctx, key, evt)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "marshal event failed")
+	})
+
+	t.Run("returns context error when canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := c.AppendEvent(ctx, key, makeTestEvent("e-canceled", time.Now(), "hello"))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("returns redis error when session state cannot be read", func(t *testing.T) {
+		mr, failingClient := setupMiniredis(t)
+		localClient := NewClient(failingClient, defaultConfig())
+		localKey := session.Key{AppName: "app", UserID: "u1", SessionID: "s_read_err"}
+
+		_, err := localClient.CreateSession(context.Background(), localKey, nil)
+		require.NoError(t, err)
+		mr.Close()
+
+		err = localClient.AppendEvent(context.Background(), localKey, makeTestEvent("e-read-err", time.Now(), "hello"))
+		require.Error(t, err)
+	})
+
+	t.Run("multiple events ordered by timestamp", func(t *testing.T) {
+		key5 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_multi"}
+		_, err := c.CreateSession(ctx, key5, nil)
 		require.NoError(t, err)
 
 		now := time.Now()
 		for i := 0; i < 3; i++ {
 			evt := makeTestEvent(fmt.Sprintf("e%d", i), now.Add(time.Duration(i)*time.Second), fmt.Sprintf("msg%d", i))
-			require.NoError(t, c.AppendEvent(ctx, key4, evt))
+			require.NoError(t, c.AppendEvent(ctx, key5, evt))
 		}
 
-		sess, err := c.GetSession(ctx, key4, 0, time.Time{})
+		sess, err := c.GetSession(ctx, key5, 0, time.Time{})
 		require.NoError(t, err)
 		require.Len(t, sess.Events, 3)
 		assert.Equal(t, "e0", sess.Events[0].ID)
@@ -385,6 +454,72 @@ func TestUpdateSessionState(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, sess.State["nilkey"])
 	})
+
+	t.Run("preserves tracks after append", func(t *testing.T) {
+		key2 := session.Key{AppName: "app", UserID: "u1", SessionID: "s-tracks"}
+		_, err := c.CreateSession(ctx, key2, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, c.AppendTrackEvent(ctx, key2, &session.TrackEvent{
+			Track:     "alpha",
+			Payload:   json.RawMessage(`"payload"`),
+			Timestamp: time.Now(),
+		}))
+		require.NoError(t, c.UpdateSessionState(ctx, key2, session.StateMap{
+			"marker": []byte("1"),
+		}))
+
+		sess, err := c.GetSession(ctx, key2, 0, time.Time{})
+		require.NoError(t, err)
+		require.NotNil(t, sess)
+		assert.Equal(t, []byte("1"), sess.State["marker"])
+
+		tracks, err := session.TracksFromState(sess.State)
+		require.NoError(t, err)
+		assert.Contains(t, tracks, session.Track("alpha"))
+	})
+
+	t.Run("initializes nil stored state", func(t *testing.T) {
+		key3 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_nil_update"}
+		_, err := c.CreateSession(ctx, key3, nil)
+		require.NoError(t, err)
+
+		stateBytes, err := json.Marshal(&SessionState{
+			ID:        key3.SessionID,
+			State:     nil,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		})
+		require.NoError(t, err)
+		require.NoError(t, rdb.(*redis.Client).HSet(ctx, c.sessionStateKey(key3), key3.SessionID, string(stateBytes)).Err())
+
+		err = c.UpdateSessionState(ctx, key3, session.StateMap{"new": []byte("val")})
+		require.NoError(t, err)
+
+		sess, err := c.GetSession(ctx, key3, 0, time.Time{})
+		require.NoError(t, err)
+		assert.Equal(t, []byte("val"), sess.State["new"])
+	})
+
+	t.Run("returns context error when canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := c.UpdateSessionState(ctx, key, session.StateMap{"new": []byte("val")})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("returns unmarshal error for invalid stored session state", func(t *testing.T) {
+		key4 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_bad_state"}
+		_, err := c.CreateSession(ctx, key4, nil)
+		require.NoError(t, err)
+		require.NoError(t, rdb.(*redis.Client).HSet(ctx, c.sessionStateKey(key4), key4.SessionID, "not valid json").Err())
+
+		err = c.UpdateSessionState(ctx, key4, session.StateMap{"new": []byte("val")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unmarshal session state failed")
+	})
 }
 
 // =============================================================================
@@ -398,7 +533,7 @@ func TestListSessions(t *testing.T) {
 	userKey := session.UserKey{AppName: "app", UserID: "u1"}
 
 	t.Run("empty", func(t *testing.T) {
-		sessions, err := c.ListSessions(ctx, userKey, 0, time.Time{})
+		sessions, err := c.ListSessions(ctx, userKey, 0, time.Time{}, false)
 		require.NoError(t, err)
 		assert.Empty(t, sessions)
 	})
@@ -420,7 +555,7 @@ func TestListSessions(t *testing.T) {
 			rdb.(*redis.Client).HSet(ctx, c.sessionStateKey(key), key.SessionID, string(b))
 		}
 
-		sessions, err := c.ListSessions(ctx, userKey, 0, time.Time{})
+		sessions, err := c.ListSessions(ctx, userKey, 0, time.Time{}, false)
 		require.NoError(t, err)
 		require.Len(t, sessions, 3)
 		// Sorting is done at the service layer, not internally.
@@ -432,6 +567,48 @@ func TestListSessions(t *testing.T) {
 		assert.True(t, ids["s0"])
 		assert.True(t, ids["s1"])
 		assert.True(t, ids["s2"])
+	})
+
+	t.Run("list only meta", func(t *testing.T) {
+		key := session.Key{AppName: "app", UserID: "u1", SessionID: "meta-only"}
+		_, err := c.CreateSession(ctx, key, session.StateMap{"session_key": []byte("session_value")})
+		require.NoError(t, err)
+		require.NoError(t, c.UpdateAppState(ctx, key.AppName, session.StateMap{"app_key": []byte("app_value")}, 0))
+		require.NoError(t, c.UpdateUserState(ctx, session.UserKey{AppName: key.AppName, UserID: key.UserID}, session.StateMap{"user_key": []byte("user_value")}, 0))
+
+		evt := event.New("test-invocation", "author")
+		evt.Response = &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role:    model.RoleUser,
+					Content: "hello",
+				},
+			}},
+		}
+		require.NoError(t, c.AppendEvent(ctx, key, evt))
+		require.NoError(t, c.AppendTrackEvent(ctx, key, &session.TrackEvent{
+			Track:     "alpha",
+			Payload:   json.RawMessage(`"track-payload"`),
+			Timestamp: time.Now(),
+		}))
+
+		sessions, err := c.ListSessions(ctx, session.UserKey{AppName: key.AppName, UserID: key.UserID}, 0, time.Time{}, true)
+		require.NoError(t, err)
+		require.NotEmpty(t, sessions)
+
+		var got *session.Session
+		for _, sess := range sessions {
+			if sess.ID == key.SessionID {
+				got = sess
+				break
+			}
+		}
+		require.NotNil(t, got)
+		assert.Empty(t, got.Events)
+		assert.Nil(t, got.Tracks)
+		assert.Equal(t, []byte("session_value"), got.State["session_key"])
+		assert.Equal(t, []byte("app_value"), got.State[session.StateAppPrefix+"app_key"])
+		assert.Equal(t, []byte("user_value"), got.State[session.StateUserPrefix+"user_key"])
 	})
 }
 
@@ -498,6 +675,124 @@ func TestAppendTrackEvent(t *testing.T) {
 		assert.Len(t, sess.Tracks["track_a"].Events, 2)
 		assert.Len(t, sess.Tracks["track_b"].Events, 1)
 	})
+
+	t.Run("initializes nil stored state", func(t *testing.T) {
+		key3 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_nil_track"}
+		_, err := c.CreateSession(ctx, key3, nil)
+		require.NoError(t, err)
+
+		stateBytes, err := json.Marshal(&SessionState{
+			ID:        key3.SessionID,
+			State:     nil,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		})
+		require.NoError(t, err)
+		require.NoError(t, rdb.(*redis.Client).HSet(ctx, c.sessionStateKey(key3), key3.SessionID, string(stateBytes)).Err())
+
+		trackEvt := &session.TrackEvent{
+			Track:     "timeline",
+			Payload:   json.RawMessage(`{"step":1}`),
+			Timestamp: time.Now(),
+		}
+		require.NoError(t, c.AppendTrackEvent(ctx, key3, trackEvt))
+
+		sess, err := c.GetSession(ctx, key3, 0, time.Time{})
+		require.NoError(t, err)
+		require.Contains(t, sess.Tracks, session.Track("timeline"))
+	})
+
+	t.Run("returns marshal error for invalid track payload", func(t *testing.T) {
+		trackEvt := &session.TrackEvent{
+			Track:     "tool_calls",
+			Payload:   json.RawMessage(`{"broken"`),
+			Timestamp: time.Now(),
+		}
+
+		err := c.AppendTrackEvent(ctx, key, trackEvt)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "marshal track event failed")
+	})
+
+	t.Run("returns append error for invalid stored tracks state", func(t *testing.T) {
+		key4 := session.Key{AppName: "app", UserID: "u1", SessionID: "s_bad_track_state"}
+		_, err := c.CreateSession(ctx, key4, session.StateMap{"tracks": []byte("not-json")})
+		require.NoError(t, err)
+
+		trackEvt := &session.TrackEvent{
+			Track:     "tool_calls",
+			Payload:   json.RawMessage(`{"fn":"add"}`),
+			Timestamp: time.Now(),
+		}
+
+		err = c.AppendTrackEvent(ctx, key4, trackEvt)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "ensure track indexed")
+	})
+}
+
+func TestUpdateSessionStateCAS_RetriesOnConflict(t *testing.T) {
+	_, rdb := setupMiniredis(t)
+	c := NewClient(rdb, defaultConfig())
+	ctx := context.Background()
+	key := session.Key{AppName: "app", UserID: "u1", SessionID: "s_cas_retry"}
+
+	_, err := c.CreateSession(ctx, key, session.StateMap{"existing": []byte("1")})
+	require.NoError(t, err)
+
+	attempts := 0
+	err = c.updateSessionStateCAS(ctx, key, func(sessState *SessionState) error {
+		attempts++
+		sessState.State["new"] = []byte("2")
+		if attempts == 1 {
+			conflictBytes, err := json.Marshal(&SessionState{
+				ID:        key.SessionID,
+				State:     session.StateMap{"conflict": []byte("1")},
+				CreatedAt: sessState.CreatedAt,
+				UpdatedAt: time.Now(),
+			})
+			require.NoError(t, err)
+			require.NoError(t, rdb.(*redis.Client).HSet(ctx, c.sessionStateKey(key), key.SessionID, string(conflictBytes)).Err())
+		}
+		return nil
+	}, nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, attempts, 2)
+
+	sess, err := c.GetSession(ctx, key, 0, time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("1"), sess.State["conflict"])
+	assert.Equal(t, []byte("2"), sess.State["new"])
+	assert.Nil(t, sess.State["existing"])
+}
+
+func TestUpdateSessionStateCAS_CanceledDuringRetry(t *testing.T) {
+	_, rdb := setupMiniredis(t)
+	c := NewClient(rdb, defaultConfig())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	key := session.Key{AppName: "app", UserID: "u1", SessionID: "s_cas_canceled"}
+
+	_, err := c.CreateSession(context.Background(), key, session.StateMap{"existing": []byte("1")})
+	require.NoError(t, err)
+
+	attempts := 0
+	err = c.updateSessionStateCAS(ctx, key, func(sessState *SessionState) error {
+		attempts++
+		conflictBytes, err := json.Marshal(&SessionState{
+			ID:        key.SessionID,
+			State:     session.StateMap{"conflict": []byte("1")},
+			CreatedAt: sessState.CreatedAt,
+			UpdatedAt: time.Now(),
+		})
+		require.NoError(t, err)
+		require.NoError(t, rdb.(*redis.Client).HSet(context.Background(), c.sessionStateKey(key), key.SessionID, string(conflictBytes)).Err())
+		cancel()
+		return nil
+	}, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, attempts)
 }
 
 // =============================================================================

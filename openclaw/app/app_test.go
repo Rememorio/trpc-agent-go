@@ -42,6 +42,7 @@ import (
 	occhannel "trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwclient"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
@@ -1035,7 +1036,7 @@ func TestRun_PromptDirWithoutMarkdownExitCode(t *testing.T) {
 func TestNewAgent_EmptyInstructionUsesDefault(t *testing.T) {
 	t.Parallel()
 
-	agt, err := newAgent(&echoModel{name: "mock"}, agentConfig{
+	agt, _, err := newAgent(&echoModel{name: "mock"}, agentConfig{
 		AppName:      "demo",
 		SkillsRoot:   t.TempDir(),
 		StateDir:     t.TempDir(),
@@ -1052,7 +1053,7 @@ func TestNewAgent_SkillsToolingGuidance_ConfigApplied(t *testing.T) {
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
 	guide := ""
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:            "demo",
 		SkillsRoot:         root,
 		StateDir:           t.TempDir(),
@@ -1080,7 +1081,7 @@ func TestNewAgent_BrowserToolingGuidance_Applied(t *testing.T) {
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:    "demo",
 		SkillsRoot: root,
 		StateDir:   t.TempDir(),
@@ -1128,7 +1129,7 @@ func TestNewAgent_BrowserToolingGuidance_FromToolProvider(
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:    "demo",
 		SkillsRoot: root,
 		StateDir:   t.TempDir(),
@@ -1153,6 +1154,51 @@ func TestNewAgent_BrowserToolingGuidance_FromToolProvider(
 	)
 }
 
+func TestNewAgent_DefaultGenerationConfigStreams(t *testing.T) {
+	t.Parallel()
+
+	root := createAppTestSkill(t)
+	mdl := &captureRequestModel{}
+	agt, _, err := newAgent(mdl, agentConfig{
+		AppName:    "demo",
+		SkillsRoot: root,
+		StateDir:   t.TempDir(),
+	}, nil, nil)
+	require.NoError(t, err)
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		&session.Session{},
+	)
+	require.True(t, req.GenerationConfig.Stream)
+}
+
+func TestNewAgent_GenerationConfigOverrideApplied(t *testing.T) {
+	t.Parallel()
+
+	root := createAppTestSkill(t)
+	mdl := &captureRequestModel{}
+	agt, _, err := newAgent(mdl, agentConfig{
+		AppName:    "demo",
+		SkillsRoot: root,
+		StateDir:   t.TempDir(),
+		GenerationConfig: &model.GenerationConfig{
+			Stream: false,
+		},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		&session.Session{},
+	)
+	require.False(t, req.GenerationConfig.Stream)
+}
+
 func TestNewAgent_ToolProviderErrorIsReturned(t *testing.T) {
 	t.Parallel()
 
@@ -1170,7 +1216,7 @@ func TestNewAgent_ToolProviderErrorIsReturned(t *testing.T) {
 	var node yaml.Node
 	require.NoError(t, yaml.Unmarshal([]byte("{}"), &node))
 
-	_, err := newAgent(&captureRequestModel{}, agentConfig{
+	_, _, err := newAgent(&captureRequestModel{}, agentConfig{
 		AppName:    "demo",
 		SkillsRoot: createAppTestSkill(t),
 		StateDir:   t.TempDir(),
@@ -1188,7 +1234,7 @@ func TestNewAgent_SkillsLoadModeTurnClearsLoadedState(t *testing.T) {
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:        "demo",
 		SkillsRoot:     root,
 		StateDir:       t.TempDir(),
@@ -1212,7 +1258,7 @@ func TestNewAgent_SkillsToolResults_ConfigApplied(t *testing.T) {
 
 	root := createAppTestSkill(t)
 	mdl := &captureRequestModel{}
-	agt, err := newAgent(mdl, agentConfig{
+	agt, _, err := newAgent(mdl, agentConfig{
 		AppName:           "demo",
 		SkillsRoot:        root,
 		StateDir:          t.TempDir(),
@@ -1349,6 +1395,13 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 	dir := t.TempDir()
 	token := "token"
 
+	// gotMe is signalled once the mock server receives the Telegram
+	// getMe request, which means initialisation reached the point where
+	// the base-URL override was applied. We use it to cancel the context
+	// only *after* the handshake succeeds so that the test is reliable on
+	// slow CI runners.
+	gotMe := make(chan struct{}, 1)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
 		r *http.Request,
@@ -1359,6 +1412,10 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 			_, _ = io.WriteString(w,
 				`{"ok":true,"result":{"id":1,"username":"bot"}}`,
 			)
+			select {
+			case gotMe <- struct{}{}:
+			default:
+			}
 		case "/bot" + token + "/getUpdates":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"ok":true,"result":[]}`)
@@ -1386,7 +1443,17 @@ func TestRun_WithTelegram_BaseURLOverride(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	time.AfterFunc(50*time.Millisecond, cancel)
+
+	// Cancel as soon as getMe succeeds, or bail after a generous timeout.
+	go func() {
+		select {
+		case <-gotMe:
+			// Give the server loop a moment to finish set-up.
+			time.Sleep(50 * time.Millisecond)
+		case <-time.After(5 * time.Second):
+		}
+		cancel()
+	}()
 
 	runErr := run(ctx, []string{
 		"-http-addr", "127.0.0.1:0",
@@ -1540,6 +1607,19 @@ func TestValidateAgentRunOptions(t *testing.T) {
 			agentType: agentTypeClaudeCode,
 			opts: runOptions{
 				ToolSets: []pluginSpec{{Type: "x"}},
+			},
+			wantErr: true,
+		},
+		{
+			name:      "knowledges",
+			agentType: agentTypeClaudeCode,
+			opts: runOptions{
+				KnowledgesConfig: map[string]*yaml.Node{
+					"docs": yamlNode(t, `
+vector_store:
+  type: inmemory
+`),
+				},
 			},
 			wantErr: true,
 		},
@@ -2724,6 +2804,11 @@ func TestInProcGatewayClient_SendMessage_OK(t *testing.T) {
 	srv, err := gateway.New(&inProcGWTestRunner{
 		reply:     testReply,
 		requestID: testRequestID,
+		usage: &model.Usage{
+			PromptTokens:     12000,
+			CompletionTokens: 345,
+			TotalTokens:      12345,
+		},
 	})
 	require.NoError(t, err)
 
@@ -2738,6 +2823,8 @@ func TestInProcGatewayClient_SendMessage_OK(t *testing.T) {
 	require.Equal(t, testReply, rsp.Reply)
 	require.Equal(t, testRequestID, rsp.RequestID)
 	require.NotEmpty(t, rsp.SessionID)
+	require.NotNil(t, rsp.Usage)
+	require.Equal(t, 12345, rsp.Usage.TotalTokens)
 }
 
 func TestInProcGatewayClient_SendMessage_StatusError(t *testing.T) {
@@ -3109,6 +3196,90 @@ func TestInProcGatewayClient_ForgetUser_ClearsCronJobsOnlyOnce(
 	)
 }
 
+func TestInProcGatewayClient_ForgetUser_ClearsIndexedStorageScopes(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	sessSvc := sessioninmemory.NewSessionService()
+	uploadStore, err := uploads.NewStore(t.TempDir())
+	require.NoError(t, err)
+
+	const (
+		channelName     = "demo"
+		canonicalUserID = "u1"
+		storageUserID   = "chat-scope"
+		sessionID       = "demo:thread:room-1"
+	)
+	require.NoError(
+		t,
+		conversationscope.RememberIndexedStorageUser(
+			ctx,
+			sessSvc,
+			appName,
+			canonicalUserID,
+			storageUserID,
+		),
+	)
+	_, err = sessSvc.CreateSession(
+		ctx,
+		session.Key{
+			AppName:   appName,
+			UserID:    storageUserID,
+			SessionID: sessionID,
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	saved, err := uploadStore.Save(
+		ctx,
+		uploads.Scope{
+			Channel:   channelName,
+			UserID:    storageUserID,
+			SessionID: sessionID,
+		},
+		"clip.mp4",
+		[]byte("video"),
+	)
+	require.NoError(t, err)
+
+	c := newInProcGatewayClient(
+		srv,
+		appName,
+		sessSvc,
+		nil,
+		"",
+		uploadStore,
+	)
+	require.NoError(t, c.ForgetUser(ctx, channelName, canonicalUserID))
+
+	sessions, err := sessSvc.ListSessions(
+		ctx,
+		session.UserKey{
+			AppName: appName,
+			UserID:  storageUserID,
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, sessions)
+
+	indexedStorageUsers, err := conversationscope.ListIndexedStorageUsers(
+		ctx,
+		sessSvc,
+		appName,
+		canonicalUserID,
+	)
+	require.NoError(t, err)
+	require.Empty(t, indexedStorageUsers)
+
+	_, err = os.Stat(saved.Path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestInProcGatewayClient_ForgetUser_ValidationErrors(t *testing.T) {
 	t.Parallel()
 
@@ -3449,8 +3620,10 @@ func TestInProcGatewayClient_PresetPersona(t *testing.T) {
 type errSessionService struct {
 	session.Service
 
-	listErr   error
-	deleteErr error
+	listErr            error
+	deleteErr          error
+	listUserStatesErr  error
+	deleteUserStateErr error
 }
 
 func (s errSessionService) ListSessions(
@@ -3473,6 +3646,27 @@ func (s errSessionService) DeleteSession(
 		return s.deleteErr
 	}
 	return s.Service.DeleteSession(ctx, key, options...)
+}
+
+func (s errSessionService) ListUserStates(
+	ctx context.Context,
+	userKey session.UserKey,
+) (session.StateMap, error) {
+	if s.listUserStatesErr != nil {
+		return nil, s.listUserStatesErr
+	}
+	return s.Service.ListUserStates(ctx, userKey)
+}
+
+func (s errSessionService) DeleteUserState(
+	ctx context.Context,
+	userKey session.UserKey,
+	key string,
+) error {
+	if s.deleteUserStateErr != nil {
+		return s.deleteUserStateErr
+	}
+	return s.Service.DeleteUserState(ctx, userKey, key)
 }
 
 type errMemoryService struct {
@@ -3535,6 +3729,83 @@ func TestInProcGatewayClient_ForgetUser_DeleteSessionError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "forget: delete session")
 	require.Contains(t, err.Error(), "delete boom")
+}
+
+func TestInProcGatewayClient_ForgetUser_ListStorageScopesError(t *testing.T) {
+	t.Parallel()
+
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	sessSvc := errSessionService{
+		Service:           sessioninmemory.NewSessionService(),
+		listUserStatesErr: errors.New("user state boom"),
+	}
+	c := newInProcGatewayClient(srv, appName, sessSvc, nil, "")
+
+	err = c.ForgetUser(context.Background(), "telegram", "u1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: list storage scopes")
+	require.Contains(t, err.Error(), "user state boom")
+}
+
+func TestInProcGatewayClient_ForgetUser_DeleteStorageScopeIndexError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	base := sessioninmemory.NewSessionService()
+	require.NoError(
+		t,
+		conversationscope.RememberIndexedStorageUser(
+			ctx,
+			base,
+			appName,
+			"u1",
+			"chat-scope",
+		),
+	)
+	_, err = base.CreateSession(
+		ctx,
+		session.Key{
+			AppName:   appName,
+			UserID:    "chat-scope",
+			SessionID: "demo:thread:room-1",
+		},
+		nil,
+	)
+	require.NoError(t, err)
+
+	sessSvc := errSessionService{
+		Service:            base,
+		deleteUserStateErr: errors.New("delete state boom"),
+	}
+	c := newInProcGatewayClient(srv, appName, sessSvc, nil, "")
+
+	err = c.ForgetUser(ctx, "telegram", "u1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: delete storage scope index")
+	require.Contains(t, err.Error(), "delete state boom")
+}
+
+func TestAppendUniqueUserIDs_SkipsBlanksAndDuplicates(t *testing.T) {
+	t.Parallel()
+
+	got := appendUniqueUserIDs(
+		[]string{"u1", " u1 ", " "},
+		"chat-scope",
+		"u1",
+		" chat-scope ",
+		"",
+		"chat-scope-2",
+	)
+	require.Equal(
+		t,
+		[]string{"u1", "chat-scope", "chat-scope-2"},
+		got,
+	)
 }
 
 func TestInProcGatewayClient_ForgetUser_ClearMemoriesError(t *testing.T) {
@@ -3731,6 +4002,7 @@ func (s *stubRunner) Close() error {
 type inProcGWTestRunner struct {
 	reply     string
 	requestID string
+	usage     *model.Usage
 }
 
 func (r *inProcGWTestRunner) Run(
@@ -3756,7 +4028,8 @@ func (r *inProcGWTestRunner) Run(
 			Choices: []model.Choice{
 				{Message: model.NewAssistantMessage(reply)},
 			},
-			Done: true,
+			Usage: r.usage,
+			Done:  true,
 		},
 		RequestID: requestID,
 	}

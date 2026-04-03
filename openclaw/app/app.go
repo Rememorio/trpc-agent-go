@@ -32,6 +32,8 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/claudecode"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -48,6 +50,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/admin"
 	ocbrowser "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/browser"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationtool"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
@@ -624,8 +627,9 @@ func NewRuntime(
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets []tool.ToolSet
-		ag       agent.Agent
+		toolSets   []tool.ToolSet
+		ag         agent.Agent
+		skillsRepo *ocskills.Repository
 	)
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -642,11 +646,12 @@ func NewRuntime(
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, err = newAgent(mdl, agentConfig{
+		ag, skillsRepo, err = newAgent(mdl, agentConfig{
 			AppName:           opts.AppName,
 			AddSessionSummary: opts.AddSessionSummary,
 			MaxHistoryRuns:    opts.MaxHistoryRuns,
 			PreloadMemory:     opts.PreloadMemory,
+			GenerationConfig:  opts.GenerationConfig,
 			Instruction:       prompts.Instruction,
 			SystemPrompt:      prompts.SystemPrompt,
 
@@ -663,7 +668,9 @@ func NewRuntime(
 			SkillsToolResults:  opts.SkillsToolResults,
 			SkillsSkipFallback: opts.SkillsSkipFallback,
 			SkillsToolingGuide: opts.SkillsToolingGuide,
+			KnowledgesConfig:   opts.KnowledgesConfig,
 			StateDir:           resolvedStateDir,
+			MemoryFileStore:    fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -684,8 +691,9 @@ func NewRuntime(
 	}
 	rt.toolSets = toolSets
 
+	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
-		runner.WithSessionService(sessionSvc),
+		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
 	}
 	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
@@ -739,7 +747,7 @@ func NewRuntime(
 		gateway.WithRunOptionResolver(
 			buildConversationRunOptionResolver(
 				opts.AppName,
-				sessionSvc,
+				bridgedSessionSvc,
 				conversation.HistoryOptions{
 					AddSessionSummary: opts.AddSessionSummary,
 					MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -859,6 +867,7 @@ func NewRuntime(
 			nil,
 			opts.AdminAddr,
 			adminURL,
+			skillsRepo,
 		))
 		rt.Admin = AdminSurface{
 			Handler: adminSvc.Handler(),
@@ -1044,8 +1053,9 @@ func run(ctx context.Context, args []string) error {
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets []tool.ToolSet
-		ag       agent.Agent
+		toolSets   []tool.ToolSet
+		ag         agent.Agent
+		skillsRepo *ocskills.Repository
 	)
 	defer func() {
 		closeToolSets(toolSets)
@@ -1065,11 +1075,12 @@ func run(ctx context.Context, args []string) error {
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, err = newAgent(mdl, agentConfig{
+		ag, skillsRepo, err = newAgent(mdl, agentConfig{
 			AppName:           opts.AppName,
 			AddSessionSummary: opts.AddSessionSummary,
 			MaxHistoryRuns:    opts.MaxHistoryRuns,
 			PreloadMemory:     opts.PreloadMemory,
+			GenerationConfig:  opts.GenerationConfig,
 			Instruction:       prompts.Instruction,
 			SystemPrompt:      prompts.SystemPrompt,
 
@@ -1086,7 +1097,9 @@ func run(ctx context.Context, args []string) error {
 			SkillsToolResults:  opts.SkillsToolResults,
 			SkillsSkipFallback: opts.SkillsSkipFallback,
 			SkillsToolingGuide: opts.SkillsToolingGuide,
+			KnowledgesConfig:   opts.KnowledgesConfig,
 			StateDir:           resolvedStateDir,
+			MemoryFileStore:    fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -1105,8 +1118,9 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 
+	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
-		runner.WithSessionService(sessionSvc),
+		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
 	}
 	runnerOpts = appendMemoryServiceRunnerOption(runnerOpts, memSvc)
@@ -1158,7 +1172,7 @@ func run(ctx context.Context, args []string) error {
 		gateway.WithRunOptionResolver(
 			buildConversationRunOptionResolver(
 				opts.AppName,
-				sessionSvc,
+				bridgedSessionSvc,
 				conversation.HistoryOptions{
 					AddSessionSummary: opts.AddSessionSummary,
 					MaxHistoryRuns:    opts.MaxHistoryRuns,
@@ -1300,6 +1314,7 @@ func run(ctx context.Context, args []string) error {
 			browserServerSup,
 			adminBinding.addr,
 			adminBinding.url,
+			skillsRepo,
 		))
 		adminSrv = &http.Server{
 			Handler:           adminSvc.Handler(),
@@ -1672,6 +1687,11 @@ func validateAgentRunOptions(agentType string, opts runOptions) error {
 			"claude-code agent does not support tools.toolsets",
 		)
 	}
+	if len(opts.KnowledgesConfig) > 0 {
+		return errors.New(
+			"claude-code agent does not support knowledges",
+		)
+	}
 	if opts.RefreshToolSetsOnRun {
 		return errors.New(
 			"claude-code agent does not support refresh-toolsets-on-run",
@@ -1811,7 +1831,7 @@ func newAgent(
 	cfg agentConfig,
 	extraTools []tool.Tool,
 	toolSets []tool.ToolSet,
-) (agent.Agent, error) {
+) (agent.Agent, *ocskills.Repository, error) {
 	instruction := strings.TrimSpace(cfg.Instruction)
 	if instruction == "" {
 		instruction = defaultAgentInstruction
@@ -1821,7 +1841,10 @@ func newAgent(
 			instruction + "\n\n" + openClawToolingGuidance,
 		)
 	}
-
+	knowledgeTools, err := buildKnowledgeTools(cfg.KnowledgesConfig)
+	if err != nil {
+		return nil, nil, err
+	}
 	cwd, _ := os.Getwd()
 	roots := resolveSkillRoots(cwd, cfg)
 	bundledRoot := resolveBundledSkillsRoot(cwd, cfg.StateDir)
@@ -1834,10 +1857,13 @@ func newAgent(
 		ocskills.WithSkillConfigs(cfg.SkillConfigs),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	tools := append([]tool.Tool(nil), extraTools...)
+	if knowledgeTools != nil && len(knowledgeTools.tools) > 0 {
+		tools = append(tools, knowledgeTools.tools...)
+	}
 	tools = append(tools, ocskills.NewListTool(repo))
 	if len(cfg.ToolProviders) > 0 {
 		extra, err := toolsFromProviders(
@@ -1847,7 +1873,7 @@ func newAgent(
 			cfg.ToolProviders,
 		)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		tools = append(tools, extra...)
 	}
@@ -1864,7 +1890,16 @@ func newAgent(
 		llmagent.WithAddSessionSummary(cfg.AddSessionSummary),
 		llmagent.WithMaxHistoryRuns(cfg.MaxHistoryRuns),
 		llmagent.WithPreloadMemory(cfg.PreloadMemory),
+		llmagent.WithEventMessageProjector(
+			conversation.ProjectEventMessage,
+		),
 		llmagent.WithEnableParallelTools(cfg.EnableParallelTools),
+	}
+	if cfg.GenerationConfig != nil {
+		opts = append(
+			opts,
+			llmagent.WithGenerationConfig(*cfg.GenerationConfig),
+		)
 	}
 	opts = append(opts, llmagent.WithSkills(repo))
 	opts = append(
@@ -1906,10 +1941,15 @@ func newAgent(
 	}
 
 	callbacks := tool.NewCallbacks()
+	registerMemoryFileToolCallback(
+		callbacks,
+		cfg.MemoryFileStore,
+		cfg.StateDir,
+	)
 	callbacks.RegisterToolResultMessages(openClawToolResultMessages)
 	opts = append(opts, llmagent.WithToolCallbacks(callbacks))
 
-	return llmagent.New(defaultAgentName, opts...), nil
+	return llmagent.New(defaultAgentName, opts...), repo, nil
 }
 
 func hasToolNamed(tools []tool.Tool, name string) bool {
@@ -2083,6 +2123,7 @@ type agentConfig struct {
 	AddSessionSummary bool
 	MaxHistoryRuns    int
 	PreloadMemory     int
+	GenerationConfig  *model.GenerationConfig
 	Instruction       string
 	SystemPrompt      string
 
@@ -2097,8 +2138,11 @@ type agentConfig struct {
 	SkillsToolResults  bool
 	SkillsSkipFallback bool
 	SkillsToolingGuide *string
+	KnowledgesConfig   map[string]*yaml.Node
 
 	StateDir string
+
+	MemoryFileStore *memoryfile.Store
 
 	EnableLocalExec bool
 
