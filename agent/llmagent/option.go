@@ -136,10 +136,10 @@ var (
 
 		SkipSkillsFallbackOnSessionSummary: true,
 
-		EnableContextCompaction:              false,
-		ContextCompactionThresholdRatio:      0.7,
-		ContextCompactionToolResultMaxTokens: processor.DefaultContextCompactionToolResultMaxTokens,
-		ContextCompactionKeepRecentRequests:  processor.DefaultContextCompactionKeepRecentRequests,
+		EnableContextCompaction:                       false,
+		ContextCompactionThresholdRatio:               0.7,
+		ContextCompactionToolResultMaxTokens:          processor.DefaultContextCompactionToolResultMaxTokens,
+		ContextCompactionKeepRecentRequests:           processor.DefaultContextCompactionKeepRecentRequests,
 		ContextCompactionOversizedToolResultMaxTokens: processor.DefaultContextCompactionOversizedToolResultMaxTokens,
 
 		skillRunRequireSkillLoaded: true,

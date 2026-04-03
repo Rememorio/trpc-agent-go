@@ -200,9 +200,9 @@ func TestCompactHistoricalToolResultMessage_SkipsWhenPlaceholderIsNotSmaller(t *
 
 func TestNormalizeContextCompactionConfig(t *testing.T) {
 	cfg := normalizeContextCompactionConfig(ContextCompactionConfig{
-		Enabled:                     true,
-		KeepRecentRequests:          -1,
-		ToolResultMaxTokens:         -5,
+		Enabled:                      true,
+		KeepRecentRequests:           -1,
+		ToolResultMaxTokens:          -5,
 		OversizedToolResultMaxTokens: -9,
 	})
 
@@ -232,9 +232,9 @@ func TestCompactIncrementEvents_TruncatesOversizedCurrentToolResult(t *testing.T
 		"req-current",
 		"inv-current",
 		ContextCompactionConfig{
-			Enabled:                     true,
-			KeepRecentRequests:          1,
-			ToolResultMaxTokens:         10,
+			Enabled:                      true,
+			KeepRecentRequests:           1,
+			ToolResultMaxTokens:          10,
 			OversizedToolResultMaxTokens: 32,
 		},
 	)

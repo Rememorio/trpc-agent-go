@@ -63,11 +63,11 @@ const (
 	defaultSessionSummaryEventThreshold = 20
 	defaultSkillsLoadMode               = "turn"
 
-	flagAddSessionSummary             = "add-session-summary"
-	flagEnableContextCompaction       = "enable-context-compaction"
+	flagAddSessionSummary                             = "add-session-summary"
+	flagEnableContextCompaction                       = "enable-context-compaction"
 	flagContextCompactionOversizedToolResultMaxTokens = "context-compaction-oversized-tool-result-max-tokens"
-	flagMaxHistoryRuns                = "max-history-runs"
-	flagPreloadMemory                 = "preload-memory"
+	flagMaxHistoryRuns                                = "max-history-runs"
+	flagPreloadMemory                                 = "preload-memory"
 
 	flagAgentInstruction       = "agent-instruction"
 	flagAgentInstructionFiles  = "agent-instruction-files"
@@ -135,11 +135,11 @@ type runOptions struct {
 	A2AName           string
 	A2ADescription    string
 
-	AddSessionSummary       bool
-	EnableContextCompaction bool
+	AddSessionSummary                             bool
+	EnableContextCompaction                       bool
 	ContextCompactionOversizedToolResultMaxTokens int
-	MaxHistoryRuns          int
-	PreloadMemory           int
+	MaxHistoryRuns                                int
+	PreloadMemory                                 int
 
 	AgentInstruction       string
 	AgentInstructionFiles  string
@@ -939,11 +939,11 @@ type debugRecorderConfig struct {
 type agentRunConfig struct {
 	Type *string `yaml:"type,omitempty"`
 
-	AddSessionSummary       *bool `yaml:"add_session_summary,omitempty"`
-	EnableContextCompaction *bool `yaml:"enable_context_compaction,omitempty"`
-	ContextCompactionOversizedToolResultMaxTokens *int `yaml:"context_compaction_oversized_tool_result_max_tokens,omitempty"`
-	MaxHistoryRuns          *int  `yaml:"max_history_runs,omitempty"`
-	PreloadMemory           *int  `yaml:"preload_memory,omitempty"`
+	AddSessionSummary                             *bool `yaml:"add_session_summary,omitempty"`
+	EnableContextCompaction                       *bool `yaml:"enable_context_compaction,omitempty"`
+	ContextCompactionOversizedToolResultMaxTokens *int  `yaml:"context_compaction_oversized_tool_result_max_tokens,omitempty"`
+	MaxHistoryRuns                                *int  `yaml:"max_history_runs,omitempty"`
+	PreloadMemory                                 *int  `yaml:"preload_memory,omitempty"`
 
 	Instruction      *string  `yaml:"instruction,omitempty"`
 	InstructionFiles []string `yaml:"instruction_files,omitempty"`

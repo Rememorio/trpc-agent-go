@@ -147,9 +147,9 @@ type Options struct {
 
 var (
 	defaultOptions = Options{
-		ChannelBufferSize:                    defaultChannelBufferSize,
-		ContextCompactionToolResultMaxTokens: processor.DefaultContextCompactionToolResultMaxTokens,
-		ContextCompactionKeepRecentRequests:  processor.DefaultContextCompactionKeepRecentRequests,
+		ChannelBufferSize:                             defaultChannelBufferSize,
+		ContextCompactionToolResultMaxTokens:          processor.DefaultContextCompactionToolResultMaxTokens,
+		ContextCompactionKeepRecentRequests:           processor.DefaultContextCompactionKeepRecentRequests,
 		ContextCompactionOversizedToolResultMaxTokens: processor.DefaultContextCompactionOversizedToolResultMaxTokens,
 	}
 )
