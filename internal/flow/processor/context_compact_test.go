@@ -332,6 +332,54 @@ func TestCompactIncrementEvents_Pass2WorksWithoutPass1Context(t *testing.T) {
 	require.Greater(t, stats.EstimatedTokensSaved, 0)
 }
 
+func TestTruncateOversizedToolResultMessage_PreservesContentParts(t *testing.T) {
+	partText := "structured payload"
+	msg := model.Message{
+		Role:    model.RoleTool,
+		Content: "HEAD-" + strings.Repeat("middle-", 400) + "-TAIL",
+		ContentParts: []model.ContentPart{{
+			Type: model.ContentTypeText,
+			Text: &partText,
+		}},
+		ToolID:   "tool-call-current",
+		ToolName: "worker",
+	}
+
+	compacted, changed, savedTokens := truncateOversizedToolResultMessage(
+		context.Background(),
+		msg,
+		32,
+	)
+
+	require.True(t, changed)
+	require.Greater(t, savedTokens, 0)
+	require.Contains(t, compacted.Content, "[... ")
+	require.Equal(t, msg.ContentParts, compacted.ContentParts)
+}
+
+func TestTruncateOversizedToolResultMessage_ContentPartsOnlyKeepsPayload(t *testing.T) {
+	partText := strings.Repeat("segment-", 400)
+	msg := model.Message{
+		Role: model.RoleTool,
+		ContentParts: []model.ContentPart{{
+			Type: model.ContentTypeText,
+			Text: &partText,
+		}},
+		ToolID:   "tool-call-current",
+		ToolName: "worker",
+	}
+
+	compacted, changed, savedTokens := truncateOversizedToolResultMessage(
+		context.Background(),
+		msg,
+		32,
+	)
+
+	require.False(t, changed)
+	require.Zero(t, savedTokens)
+	require.Equal(t, msg, compacted)
+}
+
 func TestTruncateMiddle(t *testing.T) {
 	require.Equal(t, "short", truncateMiddle("short", 10))
 

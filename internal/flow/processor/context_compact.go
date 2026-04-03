@@ -331,11 +331,13 @@ func truncateOversizedToolResultMessage(
 	maxChars := maxTokens * 4
 	truncated := truncateMiddle(msg.Content, maxChars)
 
-	result := model.Message{
-		Role:     msg.Role,
-		Content:  truncated,
-		ToolID:   msg.ToolID,
-		ToolName: msg.ToolName,
+	result := msg
+	result.Content = truncated
+	if len(msg.ContentParts) > 0 {
+		result.ContentParts = append([]model.ContentPart(nil), msg.ContentParts...)
+	}
+	if len(msg.ToolCalls) > 0 {
+		result.ToolCalls = append([]model.ToolCall(nil), msg.ToolCalls...)
 	}
 	resultTokens, err := counter.CountTokens(ctx, result)
 	if err != nil || resultTokens >= originalTokens {
