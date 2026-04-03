@@ -1181,6 +1181,25 @@ func (p *ContentRequestProcessor) getCurrentInvocationMessages(inv *agent.Invoca
 	}
 
 	messages = p.mergeUserMessages(messages)
+	if p.ContextCompactionConfig.Enabled &&
+		p.ContextCompactionConfig.OversizedToolResultMaxTokens > 0 {
+		var cloned bool
+		for i := range messages {
+			msg, truncated, _ := truncateOversizedToolResultMessage(
+				context.Background(),
+				messages[i],
+				p.ContextCompactionConfig.OversizedToolResultMaxTokens,
+			)
+			if !truncated {
+				continue
+			}
+			if !cloned {
+				messages = append([]model.Message(nil), messages...)
+				cloned = true
+			}
+			messages[i] = msg
+		}
+	}
 	messages = annotateUserMessagesWithAttachedFiles(messages)
 	return messages
 }

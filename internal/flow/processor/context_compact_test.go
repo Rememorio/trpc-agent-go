@@ -249,6 +249,48 @@ func TestCompactIncrementEvents_TruncatesOversizedCurrentToolResult(t *testing.T
 	require.Greater(t, stats.EstimatedTokensSaved, 0)
 }
 
+func TestCompactIncrementEvents_Pass2WorksWithoutPass1Context(t *testing.T) {
+	content := "HEAD-" + strings.Repeat("middle-", 400) + "-TAIL"
+	evt := event.Event{
+		InvocationID: "inv-current",
+		FilterKey:    "test-agent",
+		Response: &model.Response{
+			Done: true,
+			Choices: []model.Choice{{
+				Message: model.NewToolMessage("tool-call-current", "worker", content),
+			}},
+		},
+	}
+
+	compacted, stats := compactIncrementEvents(
+		context.Background(),
+		[]event.Event{evt},
+		"",
+		"",
+		ContextCompactionConfig{
+			Enabled:                      true,
+			ToolResultMaxTokens:          0,
+			OversizedToolResultMaxTokens: 32,
+		},
+	)
+
+	require.Len(t, compacted, 1)
+	got := compacted[0].Response.Choices[0].Message.Content
+	require.NotEqual(t, content, got)
+	require.Contains(t, got, "[... ")
+	require.Equal(t, 1, stats.ToolResultsCompacted)
+	require.Greater(t, stats.EstimatedTokensSaved, 0)
+}
+
+func TestTruncateMiddle(t *testing.T) {
+	require.Equal(t, "short", truncateMiddle("short", 10))
+
+	truncated := truncateMiddle("ABCDEFGHIJ0123456789", 10)
+	require.Contains(t, truncated, "[... 10 characters truncated ...]")
+	require.True(t, strings.HasPrefix(truncated, "ABCDE"))
+	require.True(t, strings.HasSuffix(truncated, "56789"))
+}
+
 func TestContentRequestProcessor_ProcessRequest_ContextCompactionWithoutSummary(t *testing.T) {
 	sess := &session.Session{
 		Events: []event.Event{

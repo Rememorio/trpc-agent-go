@@ -77,17 +77,11 @@ func compactIncrementEvents(
 	cfg ContextCompactionConfig,
 ) ([]event.Event, ContextCompactionStats) {
 	cfg = normalizeContextCompactionConfig(cfg)
-	currentKey := compactionUnitKey(currentRequestID, currentInvocationID)
-	if !cfg.Enabled || cfg.ToolResultMaxTokens <= 0 ||
-		len(events) == 0 || currentKey == "" {
+	if !cfg.Enabled || len(events) == 0 ||
+		(cfg.ToolResultMaxTokens <= 0 &&
+			cfg.OversizedToolResultMaxTokens <= 0) {
 		return events, ContextCompactionStats{}
 	}
-
-	protectedRequestIDs := collectProtectedRequestIDs(
-		events,
-		currentKey,
-		cfg.KeepRecentRequests,
-	)
 
 	compacted := make([]event.Event, len(events))
 	copy(compacted, events)
@@ -95,42 +89,52 @@ func compactIncrementEvents(
 	var stats ContextCompactionStats
 
 	// Pass 1: historical tool results → full placeholder replacement.
-	for i := range compacted {
-		evt := compacted[i]
-		unitKey := compactionUnitKey(evt.RequestID, evt.InvocationID)
-		if unitKey == "" {
-			continue
-		}
-		if _, keep := protectedRequestIDs[unitKey]; keep {
-			continue
-		}
-		if evt.Response == nil || len(evt.Response.Choices) == 0 {
-			continue
-		}
-
-		var choiceChanged bool
-		clonedResponse := evt.Response
-		for j := range evt.Response.Choices {
-			msg, compactedMsg, savedTokens := compactHistoricalToolResultMessage(
-				ctx,
-				evt.Response.Choices[j].Message,
-				cfg.ToolResultMaxTokens,
+	if cfg.ToolResultMaxTokens > 0 {
+		currentKey := compactionUnitKey(currentRequestID, currentInvocationID)
+		if currentKey != "" {
+			protectedRequestIDs := collectProtectedRequestIDs(
+				events,
+				currentKey,
+				cfg.KeepRecentRequests,
 			)
-			if !compactedMsg {
-				continue
-			}
-			if !choiceChanged {
-				clonedResponse = evt.Response.Clone()
-				choiceChanged = true
-			}
-			clonedResponse.Choices[j].Message = msg
-			stats.ToolResultsCompacted++
-			stats.EstimatedTokensSaved += savedTokens
-		}
+			for i := range compacted {
+				evt := compacted[i]
+				unitKey := compactionUnitKey(evt.RequestID, evt.InvocationID)
+				if unitKey == "" {
+					continue
+				}
+				if _, keep := protectedRequestIDs[unitKey]; keep {
+					continue
+				}
+				if evt.Response == nil || len(evt.Response.Choices) == 0 {
+					continue
+				}
 
-		if choiceChanged {
-			evt.Response = clonedResponse
-			compacted[i] = evt
+				var choiceChanged bool
+				clonedResponse := evt.Response
+				for j := range evt.Response.Choices {
+					msg, compactedMsg, savedTokens := compactHistoricalToolResultMessage(
+						ctx,
+						evt.Response.Choices[j].Message,
+						cfg.ToolResultMaxTokens,
+					)
+					if !compactedMsg {
+						continue
+					}
+					if !choiceChanged {
+						clonedResponse = evt.Response.Clone()
+						choiceChanged = true
+					}
+					clonedResponse.Choices[j].Message = msg
+					stats.ToolResultsCompacted++
+					stats.EstimatedTokensSaved += savedTokens
+				}
+
+				if choiceChanged {
+					evt.Response = clonedResponse
+					compacted[i] = evt
+				}
+			}
 		}
 	}
 
