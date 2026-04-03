@@ -43,6 +43,18 @@ func WithPrompt(prompt string) Option {
 	}
 }
 
+// WithSystemPrompt sets an additional system prompt for summarization.
+// The prompt is rendered into a dedicated system message before the user prompt.
+// It should not include the {conversation_text} placeholder; keep conversation
+// content in the user prompt instead.
+func WithSystemPrompt(prompt string) Option {
+	return func(s *sessionSummarizer) {
+		if prompt != "" {
+			s.systemPrompt = prompt
+		}
+	}
+}
+
 // WithMaxSummaryWords sets the maximum word count for summaries.
 // A value <= 0 means no word limit. The word limit will be included in the
 // prompt to guide the model's generation rather than truncating the output.

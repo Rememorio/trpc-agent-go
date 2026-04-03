@@ -139,6 +139,20 @@ func validatePrompt(template string, maxSummaryWords int) error {
 	return nil
 }
 
+// validateSystemPrompt validates that the system prompt does not include
+// conversation payload placeholders. Keep the conversation content in the user
+// prompt so the system message stays instruction-only.
+func validateSystemPrompt(template string) error {
+	textPrompt := prompt.Text{Template: template}
+	if textPrompt.ValidateRequired(conversationTextVar) == nil {
+		return fmt.Errorf(
+			"system prompt must not include %s placeholder",
+			conversationTextPlaceholder,
+		)
+	}
+	return nil
+}
+
 // getDefaultSummarizerPrompt returns the default prompt for summarization.
 // If maxWords > 0, includes word count instruction placeholder; otherwise, omits it.
 func getDefaultSummarizerPrompt(maxWords int) string {
@@ -163,6 +177,7 @@ type sessionSummarizer struct {
 	model           model.Model
 	name            string
 	prompt          string
+	systemPrompt    string
 	checks          []ContextChecker
 	maxSummaryWords int
 	skipRecentFunc  SkipRecentFunc
@@ -199,6 +214,11 @@ func NewSummarizer(m model.Model, opts ...Option) SessionSummarizer {
 		s.prompt = getDefaultSummarizerPrompt(s.maxSummaryWords)
 	} else if err := validatePrompt(s.prompt, s.maxSummaryWords); err != nil {
 		log.Warnf("invalid prompt in NewSummarizer: %v", err)
+	}
+	if s.systemPrompt != "" {
+		if err := validateSystemPrompt(s.systemPrompt); err != nil {
+			log.Warnf("invalid system prompt in NewSummarizer: %v", err)
+		}
 	}
 
 	return s
@@ -570,11 +590,10 @@ func (s *sessionSummarizer) generateSummary(
 	_, span := trace.Tracer.Start(ctx, itelemetry.NewChatSpanName(modelName))
 	defer span.End()
 
-	prompt, err := s.buildSummaryPrompt(conversationText)
+	request, err := s.buildSummaryRequest(conversationText)
 	if err != nil {
-		return ctx, "", fmt.Errorf("failed to render summary prompt: %w", err)
+		return ctx, "", fmt.Errorf("failed to build summary request: %w", err)
 	}
-	request := newSummaryRequest(prompt)
 
 	invocation, ok := agent.InvocationFromContext(ctx)
 	if !ok || invocation == nil {
@@ -683,12 +702,43 @@ func (s *sessionSummarizer) buildSummaryPrompt(conversationText string) (string,
 	)
 }
 
-func newSummaryRequest(prompt string) *model.Request {
+func (s *sessionSummarizer) buildSystemPrompt() (string, error) {
+	if s.systemPrompt == "" {
+		return "", nil
+	}
+	vars := prompt.Vars{
+		maxSummaryWordsVar: "",
+	}
+	if s.maxSummaryWords > 0 {
+		vars[maxSummaryWordsVar] = strconv.Itoa(s.maxSummaryWords)
+	}
+	return prompt.Text{Template: s.systemPrompt}.Render(
+		prompt.RenderEnv{Vars: vars},
+		prompt.WithUnknownBehavior(prompt.ErrorOnUnknown),
+	)
+}
+
+func (s *sessionSummarizer) buildSummaryRequest(conversationText string) (*model.Request, error) {
+	messages := make([]model.Message, 0, 2)
+	systemPrompt, err := s.buildSystemPrompt()
+	if err != nil {
+		return nil, fmt.Errorf("render system prompt: %w", err)
+	}
+	if trimmed := strings.TrimSpace(systemPrompt); trimmed != "" {
+		messages = append(messages, model.NewSystemMessage(systemPrompt))
+	}
+
+	userPrompt, err := s.buildSummaryPrompt(conversationText)
+	if err != nil {
+		return nil, fmt.Errorf("render user prompt: %w", err)
+	}
+	messages = append(messages, model.NewUserMessage(userPrompt))
+	return newSummaryRequest(messages), nil
+}
+
+func newSummaryRequest(messages []model.Message) *model.Request {
 	return &model.Request{
-		Messages: []model.Message{{
-			Role:    authorUser,
-			Content: prompt,
-		}},
+		Messages: messages,
 		GenerationConfig: model.GenerationConfig{
 			Stream: false, // Non-streaming for summarization.
 		},
