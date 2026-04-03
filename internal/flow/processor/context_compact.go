@@ -366,16 +366,20 @@ func truncateMiddle(s string, maxChars int) string {
 		return s
 	}
 
-	halfBudget := maxChars / 2
 	removed := runeCount - maxChars
+	marker := fmt.Sprintf("\n\n[... %d characters truncated ...]\n\n", removed)
+	markerLen := utf8.RuneCountInString(marker)
+
+	available := maxChars - markerLen
+	if available < 2 {
+		runes := []rune(s)
+		return string(runes[:maxChars])
+	}
+	halfBudget := available / 2
 
 	runes := []rune(s)
 	head := string(runes[:halfBudget])
 	tail := string(runes[runeCount-halfBudget:])
-	marker := fmt.Sprintf(
-		"\n\n[... %d characters truncated ...]\n\n",
-		removed,
-	)
 	return head + marker + tail
 }
 

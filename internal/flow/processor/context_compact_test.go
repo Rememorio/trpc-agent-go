@@ -200,9 +200,9 @@ func TestCompactHistoricalToolResultMessage_SkipsWhenPlaceholderIsNotSmaller(t *
 
 func TestNormalizeContextCompactionConfig(t *testing.T) {
 	cfg := normalizeContextCompactionConfig(ContextCompactionConfig{
-		Enabled:                      true,
-		KeepRecentRequests:           -1,
-		ToolResultMaxTokens:          -5,
+		Enabled:                     true,
+		KeepRecentRequests:          -1,
+		ToolResultMaxTokens:         -5,
 		OversizedToolResultMaxTokens: -9,
 	})
 
@@ -232,9 +232,9 @@ func TestCompactIncrementEvents_TruncatesOversizedCurrentToolResult(t *testing.T
 		"req-current",
 		"inv-current",
 		ContextCompactionConfig{
-			Enabled:                      true,
-			KeepRecentRequests:           1,
-			ToolResultMaxTokens:          10,
+			Enabled:                     true,
+			KeepRecentRequests:          1,
+			ToolResultMaxTokens:         10,
 			OversizedToolResultMaxTokens: 32,
 		},
 	)
@@ -381,12 +381,17 @@ func TestTruncateOversizedToolResultMessage_ContentPartsOnlyKeepsPayload(t *test
 }
 
 func TestTruncateMiddle(t *testing.T) {
-	require.Equal(t, "short", truncateMiddle("short", 10))
+	require.Equal(t, "short", truncateMiddle("short", 100))
 
-	truncated := truncateMiddle("ABCDEFGHIJ0123456789", 10)
-	require.Contains(t, truncated, "[... 10 characters truncated ...]")
-	require.True(t, strings.HasPrefix(truncated, "ABCDE"))
-	require.True(t, strings.HasSuffix(truncated, "56789"))
+	input := strings.Repeat("x", 500)
+	truncated := truncateMiddle(input, 200)
+	require.Contains(t, truncated, "[... 300 characters truncated ...]")
+	require.LessOrEqual(t, len([]rune(truncated)), 200,
+		"output must not exceed maxChars")
+
+	tiny := truncateMiddle("ABCDEFGHIJ0123456789", 10)
+	require.Equal(t, "ABCDEFGHIJ", tiny,
+		"when marker is too large, fall back to head-only truncation")
 }
 
 func TestContentRequestProcessor_ProcessRequest_ContextCompactionWithoutSummary(t *testing.T) {
