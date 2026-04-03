@@ -57,6 +57,15 @@ func TestService_NewService_ModeSelection(t *testing.T) {
 		assert.Equal(t, memory.SearchToolName, tools[0].Declaration().Name)
 	})
 
+	t.Run("default without extractor is agentic mode", func(t *testing.T) {
+		svc := newTestService(t, srv.URL)
+		assert.Nil(t, svc.autoMemoryWorker)
+		assert.Nil(t, svc.ingestWorker)
+
+		tools := svc.Tools()
+		require.GreaterOrEqual(t, len(tools), 4)
+	})
+
 	t.Run("ingest disabled uses default tools", func(t *testing.T) {
 		svc := newTestService(t, srv.URL, WithIngestEnabled(false))
 		assert.Nil(t, svc.autoMemoryWorker)
@@ -64,6 +73,27 @@ func TestService_NewService_ModeSelection(t *testing.T) {
 
 		tools := svc.Tools()
 		require.GreaterOrEqual(t, len(tools), 4)
+	})
+
+	t.Run("disable extractor auto implies ingest", func(t *testing.T) {
+		svc := newTestService(t, srv.URL,
+			WithUseExtractorForAutoMemory(false),
+		)
+		assert.Nil(t, svc.autoMemoryWorker)
+		require.NotNil(t, svc.ingestWorker)
+
+		tools := svc.Tools()
+		require.Len(t, tools, 1)
+		assert.Equal(t, memory.SearchToolName, tools[0].Declaration().Name)
+	})
+
+	t.Run("disable extractor auto but explicit ingest off", func(t *testing.T) {
+		svc := newTestService(t, srv.URL,
+			WithIngestEnabled(false),
+			WithUseExtractorForAutoMemory(false),
+		)
+		assert.Nil(t, svc.autoMemoryWorker)
+		assert.Nil(t, svc.ingestWorker)
 	})
 
 	t.Run("auto mode honors exposed tools", func(t *testing.T) {

@@ -84,7 +84,7 @@ var defaultOptions = serviceOpts{
 	memoryQueueSize:  imemory.DefaultMemoryQueueSize,
 	memoryJobTimeout: imemory.DefaultMemoryJobTimeout,
 
-	ingestEnabled:             true,
+	ingestEnabled:             false,
 	useExtractorForAutoMemory: true,
 }
 
@@ -238,10 +238,16 @@ func WithExtractor(e extractor.MemoryExtractor) ServiceOpt {
 	}
 }
 
-// WithUseExtractorForAutoMemory selects extractor-driven auto memory over mem0 ingestion.
+// WithUseExtractorForAutoMemory selects extractor-driven auto memory
+// over mem0 ingestion. When set to false and the user has not explicitly
+// configured ingest via WithIngestEnabled, native ingest is automatically
+// enabled so that the service still has an active auto-memory path.
 func WithUseExtractorForAutoMemory(enabled bool) ServiceOpt {
 	return func(opts *serviceOpts) {
 		opts.useExtractorForAutoMemory = enabled
+		if !enabled && !opts.ingestExplicit {
+			opts.ingestEnabled = true
+		}
 	}
 }
 

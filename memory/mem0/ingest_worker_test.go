@@ -218,9 +218,11 @@ func TestIngestWorker_ProcessUpdatesState(t *testing.T) {
 	}
 
 	w.process(job)
-	raw, ok := sess.GetState(memory.SessionStateKeyAutoMemoryLastExtractAt)
-	require.True(t, ok)
-	assert.Contains(t, string(raw), "2025-01-02")
+
+	// Watermark is now advanced eagerly in enqueueIngestJob, not
+	// in process. Verify that process only performs the API call.
+	_, ok := sess.GetState(memory.SessionStateKeyAutoMemoryLastExtractAt)
+	assert.False(t, ok)
 	assert.True(t, got.Infer)
 	assert.Equal(t, "sid", got.RunID)
 }

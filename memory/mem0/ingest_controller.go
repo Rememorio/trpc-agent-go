@@ -45,6 +45,11 @@ func (s *Service) enqueueIngestJob(ctx context.Context, sess *session.Session) e
 		return nil
 	}
 
+	// Advance watermark eagerly so that a second call for the same
+	// session does not re-scan the same delta and send duplicate
+	// ingest requests to mem0.
+	writeLastExtractAt(sess, latestTs)
+
 	job := &ingestJob{
 		Ctx:      context.WithoutCancel(ctx),
 		UserKey:  userKey,
@@ -71,9 +76,5 @@ func (s *Service) enqueueIngestJob(ctx context.Context, sess *session.Session) e
 	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
 
-	if err := s.ingestWorker.ingest(syncCtx, userKey, sess, messages); err != nil {
-		return err
-	}
-	writeLastExtractAt(sess, latestTs)
-	return nil
+	return s.ingestWorker.ingest(syncCtx, userKey, sess, messages)
 }

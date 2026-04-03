@@ -102,6 +102,37 @@ func TestIngestController_CtxCancelled(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestIngestController_EagerWatermark_PreventsDuplicate(t *testing.T) {
+	var callCount int
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	})
+
+	svc := newTestService(t, srv.URL, WithUseExtractorForAutoMemory(false))
+	require.NotNil(t, svc.ingestWorker)
+	svc.ingestWorker.Stop()
+
+	ts := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	userMsg := model.Message{Role: model.RoleUser, Content: "test"}
+	e := event.Event{Timestamp: ts, Response: &model.Response{
+		Choices: []model.Choice{{Message: userMsg}},
+	}}
+	sess := session.NewSession(testAppID, testUserID, "sid",
+		session.WithSessionEvents([]event.Event{e}))
+
+	err := svc.enqueueIngestJob(context.Background(), sess)
+	require.NoError(t, err)
+	assert.Equal(t, 1, callCount)
+
+	// Second call for the same session should find no new messages
+	// because the watermark was already advanced.
+	err = svc.enqueueIngestJob(context.Background(), sess)
+	require.NoError(t, err)
+	assert.Equal(t, 1, callCount)
+}
+
 func TestIngestController_IngestError(t *testing.T) {
 	srv := newHTTPTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
