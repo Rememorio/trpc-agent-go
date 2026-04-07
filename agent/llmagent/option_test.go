@@ -259,7 +259,6 @@ func TestWithSkipSkillsFallbackOnSessionSummary(t *testing.T) {
 func TestNew_DefaultGenerationConfigKeepsLegacyNonStreaming(t *testing.T) {
 	a := New("test-agent")
 	require.False(t, a.genConfig.Stream)
-	require.False(t, a.option.generationConfigConfigured)
 }
 
 func TestWithGenerationConfig_ExplicitFalseDisablesStreaming(
@@ -270,7 +269,6 @@ func TestWithGenerationConfig_ExplicitFalseDisablesStreaming(
 		WithGenerationConfig(model.GenerationConfig{Stream: false}),
 	)
 	require.False(t, a.genConfig.Stream)
-	require.True(t, a.option.generationConfigConfigured)
 }
 
 func TestBuildRequestProcessors_DefaultGenerationConfigUsesZeroValue(
