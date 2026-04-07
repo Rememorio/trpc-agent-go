@@ -3,14 +3,14 @@
 This example demonstrates the two session summary injection modes:
 
 - **System mode** (default): Summary is merged into the system message, protected from token tailoring trimming.
-- **User mode**: Summary is injected as a user message before session history, participating in token-budget trimming for a true sliding-window experience.
+- **User mode**: Summary is injected as a user message before session history, participating in token-budget trimming for a true sliding-window experience. When the first history message is also a user message, the summary is automatically merged into it.
 
 ## What it shows
 
-- Two sequential conversations with the same session — each using a different injection mode.
+- Two sessions with identical conversation history — each using a different injection mode for the follow-up turn.
 - The actual message sequence sent to the LLM is printed via a `BeforeModel` callback, so you can see exactly where the summary appears and with which role.
-- In **system mode**, the summary is merged into the system prompt (or prepended as a new system message).
-- In **user mode**, the summary appears as a user message between any system/few-shot content and the session history. If the first history message is also a user message, the summary is merged into it to avoid consecutive user messages.
+- In **system mode**, the summary is merged into the system prompt.
+- In **user mode**, the summary is merged into the first user history message (avoiding consecutive user messages).
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ Environment variables:
 ```bash
 cd examples/summary/injection
 export OPENAI_API_KEY="your-api-key"
-go run main.go -model deepseek-chat
+go run main.go
 ```
 
 Command-line flags:
@@ -36,12 +36,11 @@ Command-line flags:
 
 ## Example Output
 
-```
+```text
 🧪 Summary Injection Mode Demo
 Model: deepseek-chat
-Session: injection-demo-1712500000
 ======================================================================
-== Phase 1: Build conversation history (2 turns) ==
+== Phase 1: Build conversation history (session: injection-base-...) ==
 
 👤 User: My name is Alice and I work at TechCorp as a senior engineer.
 🤖 Assistant: Nice to meet you, Alice! ...
@@ -49,30 +48,34 @@ Session: injection-demo-1712500000
 🤖 Assistant: That sounds like an interesting project! ...
 
 📝 Forcing summary generation...
-✅ Summary: Alice is a senior engineer at TechCorp working on a distributed cache system using Go and Redis.
+✅ Summary: Alice is a senior engineer at TechCorp ...
 
 ======================================================================
 == Phase 2: System injection mode (default) ==
 
-🧾 LLM request messages:
-   [0] role=system content="You are a helpful assistant.\n\nHere is a brief summary..."
-   [1] role=user   content="Based on our previous discussion, what language am I using?"
+🧾 LLM request #3 (2 messages):
+   [0] role=system    You are a helpful assistant. ... Here is a brief summary... ← SUMMARY
+   [1] role=user      Based on our previous discussion, what language am I using?
 
-🤖 Assistant: Based on our conversation, you're using Go ...
+🤖 Assistant: You are using **Go** ...
 
 ======================================================================
-== Phase 3: User injection mode ==
+== Phase 3: User injection mode (session: injection-user-...) ==
 
-🧾 LLM request messages:
-   [0] role=system content="You are a helpful assistant."
-   [1] role=user   content="Context from previous interactions:\n\n<summary>..."
-   [2] role=user   content="Based on our previous discussion, what language am I using?"
+🧾 LLM request #6 (2 messages):
+   [0] role=system    You are a helpful assistant. Be concise, keep responses under 80 words.
+   [1] role=user      Context from previous interactions: ... Based on our previous discussion... ← SUMMARY (merged)
 
-🤖 Assistant: You mentioned you're using Go ...
+🤖 Assistant: You are using **Go** ...
+
+== Comparison ==
+• System mode: summary merged into system message (preserved head, not trimmable)
+• User mode:   summary as user message (participates in token-budget trimming)
 ```
 
 ## Key Observations
 
 1. **System mode**: Summary appears inside `messages[0]` (system role), merged with agent instruction.
-2. **User mode**: Summary appears as a separate user message between system prompt and history. Token tailoring can trim it like any other user round.
+2. **User mode**: Summary is merged into the first user message alongside the follow-up question. Token tailoring can trim it like any other user round.
 3. Both modes produce correct responses — the LLM can access the summary context regardless of injection position.
+4. Phase 2 and Phase 3 run on separate sessions with identical history, ensuring a clean A/B comparison.

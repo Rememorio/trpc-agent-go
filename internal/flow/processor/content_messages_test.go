@@ -1249,12 +1249,12 @@ func TestPrependSummaryUserMessage(t *testing.T) {
 
 	t.Run("empty_summary", func(t *testing.T) {
 		msgs := []model.Message{model.NewUserMessage("hello")}
-		result := p.prependSummaryUserMessage("", msgs)
+		result := p.prependSummaryUserMessage("", msgs, nil)
 		require.Equal(t, msgs, result)
 	})
 
 	t.Run("empty_messages", func(t *testing.T) {
-		result := p.prependSummaryUserMessage("some summary", nil)
+		result := p.prependSummaryUserMessage("some summary", nil, nil)
 		require.Len(t, result, 1)
 		require.Equal(t, model.RoleUser, result[0].Role)
 		require.Contains(t, result[0].Content, "some summary")
@@ -1265,7 +1265,7 @@ func TestPrependSummaryUserMessage(t *testing.T) {
 			model.NewAssistantMessage("hi"),
 			model.NewUserMessage("hello"),
 		}
-		result := p.prependSummaryUserMessage("some summary", msgs)
+		result := p.prependSummaryUserMessage("some summary", msgs, nil)
 		require.Len(t, result, 3)
 		require.Equal(t, model.RoleUser, result[0].Role)
 		require.Contains(t, result[0].Content, "some summary")
@@ -1277,7 +1277,7 @@ func TestPrependSummaryUserMessage(t *testing.T) {
 			model.NewUserMessage("hello"),
 			model.NewAssistantMessage("hi"),
 		}
-		result := p.prependSummaryUserMessage("some summary", msgs)
+		result := p.prependSummaryUserMessage("some summary", msgs, nil)
 		require.Len(t, result, 2)
 		require.Equal(t, model.RoleUser, result[0].Role)
 		require.Contains(t, result[0].Content, "some summary")
@@ -1290,11 +1290,43 @@ func TestPrependSummaryUserMessage(t *testing.T) {
 			model.NewUserMessage("original content"),
 		}
 		originalContent := original[0].Content
-		result := p.prependSummaryUserMessage("summary", original)
+		result := p.prependSummaryUserMessage("summary", original, nil)
 		// Original should not be mutated.
 		require.Equal(t, originalContent, original[0].Content)
 		// Result should have merged content.
 		require.Contains(t, result[0].Content, "summary")
 		require.Contains(t, result[0].Content, "original content")
+	})
+
+	t.Run("req_prefix_ends_with_user_merges_into_prefix", func(t *testing.T) {
+		prefix := []model.Message{
+			model.NewSystemMessage("system prompt"),
+			model.NewUserMessage("few-shot user example"),
+		}
+		msgs := []model.Message{
+			model.NewAssistantMessage("history assistant"),
+		}
+		result := p.prependSummaryUserMessage("some summary", msgs, prefix)
+		// Summary should be merged into prefix's last user message.
+		require.Contains(t, prefix[len(prefix)-1].Content, "some summary")
+		require.Contains(t, prefix[len(prefix)-1].Content, "few-shot user example")
+		// messages should be returned unchanged.
+		require.Equal(t, msgs, result)
+	})
+
+	t.Run("req_prefix_ends_with_system_no_merge_into_prefix", func(t *testing.T) {
+		prefix := []model.Message{
+			model.NewSystemMessage("system prompt"),
+		}
+		msgs := []model.Message{
+			model.NewUserMessage("history user"),
+		}
+		result := p.prependSummaryUserMessage("some summary", msgs, prefix)
+		// Should merge into first history user message instead.
+		require.Len(t, result, 1)
+		require.Contains(t, result[0].Content, "some summary")
+		require.Contains(t, result[0].Content, "history user")
+		// Prefix should be untouched.
+		require.Equal(t, "system prompt", prefix[0].Content)
 	})
 }

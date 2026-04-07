@@ -656,19 +656,38 @@ agent := llmagent.New(
 
 **User 模式的消息结构**：
 
+当 history 第一条消息为 user role 时，摘要会自动合并进去：
+
+```text
+┌─────────────────────────────────────────┐
+│ System Prompt                           │ ← 不包含摘要
+├─────────────────────────────────────────┤
+│ [Few-shot examples, if any]             │
+├─────────────────────────────────────────┤
+│ User: [summary context] + [original    │
+│        first user message]              │ ← 摘要合并到第一条 user history
+├─────────────────────────────────────────┤
+│ Assistant: ...                          │
+│ User: ...                               │
+│ ...                                     │
+│ User: current message                   │
+└─────────────────────────────────────────┘
 ```
+
+当 history 第一条消息不是 user role 时，摘要作为独立 user message 插入：
+
+```text
 ┌─────────────────────────────────────────┐
 │ System Prompt                           │ ← 不包含摘要
 ├─────────────────────────────────────────┤
 │ [Few-shot examples, if any]             │
 ├─────────────────────────────────────────┤
 │ User: Context from previous             │
-│ interactions: <summary>...</summary>    │ ← 摘要作为 user message
-│ (merged with first history user msg)    │
+│ interactions: <summary>...</summary>    │ ← 独立的摘要 user message
 ├─────────────────────────────────────────┤
-│ Session history events                  │
+│ Assistant/Tool history events           │
 │ ...                                     │
-│ Event N (current message)               │
+│ User: current message                   │
 └─────────────────────────────────────────┘
 ```
 

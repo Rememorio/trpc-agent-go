@@ -653,19 +653,38 @@ agent := llmagent.New(
 
 **User mode message structure**:
 
+When the first history message is a user role, the summary is merged into it:
+
+```text
+┌─────────────────────────────────────────┐
+│ System Prompt                           │ ← Does not contain summary
+├─────────────────────────────────────────┤
+│ [Few-shot examples, if any]             │
+├─────────────────────────────────────────┤
+│ User: [summary context] + [original    │
+│        first user message]              │ ← Summary merged into first user history
+├─────────────────────────────────────────┤
+│ Assistant: ...                          │
+│ User: ...                               │
+│ ...                                     │
+│ User: current message                   │
+└─────────────────────────────────────────┘
 ```
+
+When the first history message is not a user role, the summary is a standalone user message:
+
+```text
 ┌─────────────────────────────────────────┐
 │ System Prompt                           │ ← Does not contain summary
 ├─────────────────────────────────────────┤
 │ [Few-shot examples, if any]             │
 ├─────────────────────────────────────────┤
 │ User: Context from previous             │
-│ interactions: <summary>...</summary>    │ ← Summary as user message
-│ (merged with first history user msg)    │
+│ interactions: <summary>...</summary>    │ ← Standalone summary user message
 ├─────────────────────────────────────────┤
-│ Session history events                  │
+│ Assistant/Tool history events           │
 │ ...                                     │
-│ Event N (current message)               │
+│ User: current message                   │
 └─────────────────────────────────────────┘
 ```
 
