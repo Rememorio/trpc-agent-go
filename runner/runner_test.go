@@ -7436,3 +7436,38 @@ func TestRunner_WithAppName_IsolatesDifferentProjects(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, sessDefault, "default app name should have no session")
 }
+
+// TestRunner_WithAppName_CompletionEventAuthor verifies that the runner
+// completion event uses the overridden app name as its Author, not the
+// runner's default app name.
+func TestRunner_WithAppName_CompletionEventAuthor(t *testing.T) {
+	const (
+		defaultAppName  = "default-app"
+		overrideAppName = "tenant-x"
+		userID          = "user-1"
+		sessionID       = "session-completion"
+	)
+
+	sessionService := sessioninmemory.NewSessionService()
+	ag := &mockAgent{name: "completion-author-agent"}
+	r := NewRunner(defaultAppName, ag, WithSessionService(sessionService))
+
+	ch, err := r.Run(
+		context.Background(),
+		userID,
+		sessionID,
+		model.NewUserMessage("hello"),
+		agent.WithAppName(overrideAppName),
+	)
+	require.NoError(t, err)
+
+	var completionAuthor string
+	for ev := range ch {
+		if ev.Response != nil && ev.Response.Object == model.ObjectTypeRunnerCompletion {
+			completionAuthor = ev.Author
+		}
+	}
+
+	assert.Equal(t, overrideAppName, completionAuthor,
+		"runner completion event Author should use the overridden app name")
+}

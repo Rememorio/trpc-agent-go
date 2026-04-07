@@ -1420,10 +1420,16 @@ func shouldPropagateFallbackState(err *model.ResponseError) bool {
 // emitRunnerCompletion creates and emits the final runner completion event,
 // optionally propagating graph-level completion data.
 func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContext) {
+	// Resolve per-request app name override for the completion Author.
+	completionAuthor := r.appName
+	if ro := loop.invocation.RunOptions; ro.AppName != "" {
+		completionAuthor = ro.AppName
+	}
+
 	// Create runner completion event.
 	runnerCompletionEvent := event.NewResponseEvent(
 		loop.invocation.InvocationID,
-		r.appName,
+		completionAuthor,
 		&model.Response{
 			ID:        "runner-completion-" + uuid.New().String(),
 			Object:    model.ObjectTypeRunnerCompletion,
