@@ -89,6 +89,29 @@ go run .
 
 [Read full documentation →](./compare/README.md)
 
+### 📁 mem0/
+
+**Mem0-Focused Route Demo**
+
+A focused example for `memory/mem0` that demonstrates all three supported
+integration routes:
+
+- `agentic`: agent tool call writes existing memory text
+- `auto-extractor`: framework extractor writes existing memory text
+- `auto-ingest`: raw transcript is ingested by mem0 and mirrored back into
+  framework-visible memories
+
+**Getting Started:**
+
+```bash
+cd examples/memory/mem0
+export OPENAI_API_KEY="your-api-key"
+export MEM0_API_KEY="your-mem0-api-key"
+go run . -route agentic
+```
+
+[Read full documentation →](./mem0/README.md)
+
 ## Common Features
 
 The chat examples (`simple/` and `auto/`) share the following capabilities:
