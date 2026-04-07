@@ -15,6 +15,7 @@ Within the same conversation, it enables natural continuity between turns, preve
 - **Context Management**: Automatically loads conversation history for true multi-turn conversations
 - **Session Summary**: Uses LLM to automatically compress long conversation history, significantly reducing token consumption while preserving key context
 - **Event Limit**: Controls the maximum number of events stored per session to prevent memory overflow
+- **Event Pagination**: PostgreSQL/MySQL support paged history reads for `GetSession`
 - **TTL Management**: Supports automatic expiration and cleanup of session data
 - **Multiple Storage Backends**: Supports Memory, SQLite, Redis, PostgreSQL, PGVector, MySQL, and ClickHouse
 - **Concurrency Safe**: Built-in read-write locks ensure safe concurrent access
@@ -80,7 +81,8 @@ func main() {
         // Optional: compact oversized historical tool results before the LLM call
         // WithAddSessionSummary(true) additionally enables one sync summary retry when needed
         llmagent.WithEnableContextCompaction(true),
-        llmagent.WithContextCompactionToolResultMaxTokens(1024),
+        llmagent.WithContextCompactionToolResultMaxTokens(1024),  // old tool results → placeholder
+        llmagent.WithContextCompactionOversizedToolResultMaxTokens(8192),  // any huge result → head+tail truncation
         llmagent.WithContextCompactionKeepRecentRequests(1),
         // Note: WithAddSessionSummary(true) ignores WithMaxHistoryRuns
         // Summary includes all history, incremental events are fully retained
@@ -460,6 +462,12 @@ sess, err := sessionService.GetSession(ctx, key,
 // Get events after a specific time
 sess, err := sessionService.GetSession(ctx, key,
     session.WithEventTime(time.Now().Add(-1*time.Hour)))
+
+// Get paged history events
+// Supported only by PostgreSQL / MySQL GetSession
+// EventPage cannot be combined with EventNum / EventTime
+sess, err := sessionService.GetSession(ctx, key,
+    session.WithGetSessionEventPage(20, 10))
 ```
 
 #### Append Events to Session Directly

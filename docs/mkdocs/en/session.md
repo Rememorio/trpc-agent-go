@@ -1787,9 +1787,9 @@ The framework provides two distinct modes for managing conversation context sent
 
 When `WithEnableContextCompaction(true)` is enabled, the framework adds a lightweight Phase 1 compaction pass before the LLM call:
 
-- Historical oversized tool results from older requests are replaced with a placeholder while keeping `ToolID` and `ToolName`.
-- The current request is never compacted.
-- The latest `ContextCompactionKeepRecentRequests` completed requests are kept intact.
+- **Pass 1** — Historical tool results from older requests that exceed `ContextCompactionToolResultMaxTokens` (default 1024 tokens) are replaced with a placeholder while keeping `ToolID` and `ToolName`.
+- **Pass 2** — Any single tool result (including the current request) exceeding `ContextCompactionOversizedToolResultMaxTokens` (default 8192 tokens) is truncated using head+tail preservation with a `[...N characters truncated...]` marker. Pass 2 fires independently of `EnableContextCompaction`.
+- The latest `ContextCompactionKeepRecentRequests` completed requests are exempt from Pass 1 (but not Pass 2).
 - If `WithAddSessionSummary(true)` is also enabled and the rebuilt request still approaches the model context window, the framework performs one synchronous `CreateSessionSummary(...)` retry before calling the model.
 - Model-layer token tailoring remains the final fallback.
 
@@ -1800,7 +1800,8 @@ llmAgent := llmagent.New(
     llmagent.WithAddSessionSummary(true),
     llmagent.WithEnableContextCompaction(true),
     llmagent.WithContextCompactionThresholdRatio(0.7),
-    llmagent.WithContextCompactionToolResultMaxTokens(1024),
+    llmagent.WithContextCompactionToolResultMaxTokens(1024),  // Pass 1: old tool results → placeholder
+    llmagent.WithContextCompactionOversizedToolResultMaxTokens(8192),  // Pass 2: any huge result → head+tail
     llmagent.WithContextCompactionKeepRecentRequests(1),
 )
 ```
@@ -1810,7 +1811,7 @@ llmAgent := llmagent.New(
 - No summary is prepended.
 - Only the **most recent `MaxHistoryRuns` conversation turns** are included.
 - When `MaxHistoryRuns=0` (default), no limit is applied and all history is included.
-- If `WithEnableContextCompaction(true)` is enabled, oversized tool results in older retained requests can still be compacted during request projection.
+- If `WithEnableContextCompaction(true)` is enabled, oversized tool results in older retained requests can still be compacted (Pass 1) and extremely large tool results in any request can be head+tail truncated (Pass 2) during request projection.
 - The pre-LLM synchronous summary retry is disabled in this mode.
 - Use this mode for short sessions or when you want direct control over context window size.
 
@@ -1903,7 +1904,8 @@ Configure the summarizer behavior with the following options:
 **Summary Generation:**
 
 - **`WithMaxSummaryWords(maxWords int)`**: Limit the summary to a maximum word count. The limit is included in the prompt to guide the model's generation. Example: `WithMaxSummaryWords(150)` requests summaries within 150 words.
-- **`WithPrompt(prompt string)`**: Provide a custom summarization prompt. The prompt must include the placeholder `{conversation_text}`, which will be replaced with the conversation content. Optionally include `{max_summary_words}` for word limit instructions.
+- **`WithPrompt(prompt string)`**: Provide a custom summarization prompt. The prompt must include the placeholder `{conversation_text}`, which will be replaced with the conversation content. When `WithMaxSummaryWords(...)` is set, include `{max_summary_words}` in either `WithPrompt(...)` or `WithSystemPrompt(...)`.
+- **`WithSystemPrompt(prompt string)`**: Add a dedicated system message for summarization instructions. It must not include `{conversation_text}`; keep the conversation content in `WithPrompt(...)` so the system message remains instruction-only.
 - **`WithSkipRecent(skipFunc SkipRecentFunc)`**: Skip the _most recent_ events during summarization using a custom function. The function receives all events and returns how many tail events to skip. Return 0 to skip none. Useful for avoiding summarizing very recent/incomplete conversations, or applying time/content-based skipping strategies.
 
 #### Token Counter Configuration
@@ -2039,6 +2041,25 @@ summarizer := summary.NewSummarizer(
     summaryModel,
     summary.WithPrompt(customPrompt), // Custom Prompt
     summary.WithMaxSummaryWords(100), // Inject into {max_summary_words}
+    summary.WithEventThreshold(15),
+)
+
+// Split instructions into a dedicated system message
+systemPrompt := `Summarize faithfully.
+Focus on decisions and action items.
+Keep it within {max_summary_words} words.`
+
+userPrompt := `<conversation>
+{conversation_text}
+</conversation>
+
+Summary:`
+
+summarizer = summary.NewSummarizer(
+    summaryModel,
+    summary.WithSystemPrompt(systemPrompt),
+    summary.WithPrompt(userPrompt),
+    summary.WithMaxSummaryWords(100),
     summary.WithEventThreshold(15),
 )
 

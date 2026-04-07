@@ -86,6 +86,11 @@ type Surface struct {
 	Value     SurfaceValue
 }
 
+// SurfaceID returns the stable surface id for one node and surface type.
+func SurfaceID(nodeID string, surfaceType SurfaceType) string {
+	return nodeID + "#" + string(surfaceType)
+}
+
 // SurfaceValue is a discriminated union keyed by SurfaceType.
 type SurfaceValue struct {
 	Text         *string
@@ -122,7 +127,12 @@ type FewShotMessage struct {
 
 // ModelRef is a stable model reference.
 type ModelRef struct {
-	Name string
+	Provider string            `json:",omitempty"`
+	Name     string            `json:",omitempty"`
+	Variant  string            `json:",omitempty"`
+	BaseURL  string            `json:",omitempty"`
+	APIKey   string            `json:",omitempty"`
+	Headers  map[string]string `json:",omitempty"`
 }
 
 // ToolRef is a stable tool declaration snapshot.

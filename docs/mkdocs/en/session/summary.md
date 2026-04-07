@@ -221,6 +221,7 @@ summary.WithChecksAny(
 | --- | --- |
 | `WithMaxSummaryWords(maxWords int)` | Limit summary word count; included in prompt to guide model |
 | `WithPrompt(prompt string)` | Custom summary prompt; must contain `{conversation_text}` placeholder |
+| `WithSystemPrompt(prompt string)` | Add a separate system message for summarization instructions; must not contain `{conversation_text}` |
 | `WithSkipRecent(skipFunc SkipRecentFunc)` | Custom function to skip recent events |
 
 ### Hook Options
@@ -351,7 +352,37 @@ summarizer := summary.NewSummarizer(
 **Required placeholders**:
 
 - `{conversation_text}`: Must be included; replaced with conversation content
-- `{max_summary_words}`: Must be included when `maxSummaryWords > 0`
+- `{max_summary_words}`: Must be included in either `WithPrompt(...)` or `WithSystemPrompt(...)` when `maxSummaryWords > 0`
+
+If you want to keep summarization instructions in a dedicated system message,
+combine `WithSystemPrompt` with a lighter user prompt that only carries the
+conversation payload:
+
+```go
+systemPrompt := `Summarize the conversation faithfully.
+Focus on key decisions and action items.
+Keep it within {max_summary_words} words.`
+
+userPrompt := `<conversation>
+{conversation_text}
+</conversation>
+
+Summary:`
+
+summarizer := summary.NewSummarizer(
+    summaryModel,
+    summary.WithSystemPrompt(systemPrompt),
+    summary.WithPrompt(userPrompt),
+    summary.WithMaxSummaryWords(100),
+    summary.WithEventThreshold(15),
+)
+```
+
+Notes:
+
+- `WithPrompt` still renders into the **user message**
+- `WithSystemPrompt` renders into a dedicated **system message**
+- `WithSystemPrompt` must not include `{conversation_text}`; keep conversation content in the user prompt
 
 ## Token Counter Configuration
 
@@ -600,11 +631,28 @@ llmagent.WithAddSessionSummary(true)
 
 **Optional: Prompt-side context compaction**
 
-When `WithEnableContextCompaction(true)` is enabled, the framework adds a lightweight Phase 1 compaction pass before the LLM call:
+When `WithEnableContextCompaction(true)` is enabled, the framework adds two compaction passes before the LLM call:
 
-- Historical oversized tool results from older requests are replaced with a placeholder while keeping `ToolID` and `ToolName`
-- The current request is never compacted
-- The latest `ContextCompactionKeepRecentRequests` completed requests are kept intact
+**Pass 1 — Historical tool result placeholder** (`ContextCompactionToolResultMaxTokens`, default 1024 tokens):
+
+- Tool results from **older** requests that exceed the threshold are replaced entirely with a short placeholder while keeping `ToolID` and `ToolName`
+- The current request and the latest `ContextCompactionKeepRecentRequests` completed requests are never affected
+- This cleans up accumulated long tool outputs from earlier conversation turns
+
+**Pass 2 — Oversized tool result truncation** (`ContextCompactionOversizedToolResultMaxTokens`, default 8192 tokens):
+
+- Applies to **all** tool results including the current request
+- Tool results exceeding this threshold are truncated using head+tail preservation: the beginning and end of the content are kept, with a `[...N characters truncated...]` marker in the middle
+- This is the safety net for single tool results large enough to overflow the context window on their own (e.g. `web_fetch` returning 800K+ chars of HTML)
+
+The two passes have different roles: Pass 1 aggressively cleans old history (low threshold, full replacement); Pass 2 is a high-threshold guard that only kicks in for extreme cases but protects the current request too.
+
+Additionally:
+
+Pass 2 fires regardless of `EnableContextCompaction`; it only requires `ContextCompactionOversizedToolResultMaxTokens > 0`.
+
+Additionally:
+
 - If `WithAddSessionSummary(true)` is also enabled and the rebuilt request still approaches the model context window, the framework performs one synchronous `CreateSessionSummary(...)` retry before calling the model
 - Model-layer token tailoring remains the final fallback
 
@@ -615,7 +663,8 @@ agent := llmagent.New(
     llmagent.WithAddSessionSummary(true),
     llmagent.WithEnableContextCompaction(true),
     llmagent.WithContextCompactionThresholdRatio(0.7),
-    llmagent.WithContextCompactionToolResultMaxTokens(1024),
+    llmagent.WithContextCompactionToolResultMaxTokens(1024),  // Pass 1: old tool results → placeholder
+    llmagent.WithContextCompactionOversizedToolResultMaxTokens(8192),  // Pass 2: any huge result → head+tail
     llmagent.WithContextCompactionKeepRecentRequests(1),
 )
 ```
@@ -655,7 +704,7 @@ llmagent.WithMaxHistoryRuns(10)
 - No summary message added
 - Only includes the most recent `MaxHistoryRuns` conversation turns
 - `MaxHistoryRuns=0` means no limit, includes all history
-- If `WithEnableContextCompaction(true)` is enabled, oversized tool results in older retained requests can still be compacted during request projection
+- If `WithEnableContextCompaction(true)` is enabled, oversized tool results in older retained requests can still be compacted during request projection; additionally, extremely large tool results in any request (including the current one) will be head+tail truncated whenever `ContextCompactionOversizedToolResultMaxTokens > 0` (this fires even without `EnableContextCompaction`)
 - The pre-LLM synchronous summary retry is disabled in this mode
 
 **Context structure**:
@@ -681,6 +730,8 @@ llmagent.WithMaxHistoryRuns(10)
 | High concurrency | `AddSessionSummary=true`<br>Increase worker count | Async processing, no impact on response speed |
 
 If your long sessions frequently contain large tool outputs such as search results, logs, or code scan output, enable `EnableContextCompaction=true`. Pair it with `AddSessionSummary=true` when you also want the pre-LLM synchronous summary retry.
+
+> **Tip**: If your agent uses tools like `web_fetch` that can return extremely large results in a single call, `ContextCompactionOversizedToolResultMaxTokens` is particularly valuable — it prevents a single tool result from consuming the entire context window, even when that result belongs to the current (protected) request. It fires independently of `EnableContextCompaction`.
 
 ## Summary Format Customization
 
