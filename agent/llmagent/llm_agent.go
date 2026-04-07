@@ -382,10 +382,14 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 func resolveDefaultGenerationConfig(
 	options *Options,
 ) model.GenerationConfig {
-	if options != nil && options.generationConfigConfigured {
-		return options.GenerationConfig
+	if options == nil {
+		return model.GenerationConfig{}
 	}
-	return model.GenerationConfig{Stream: true}
+	// Preserve LLMAgent's historical default: when callers do not explicitly
+	// configure generation behavior, the zero-value config is forwarded as-is.
+	// Higher-level wrappers (for example OpenClaw) can still opt into their own
+	// defaults by explicitly calling WithGenerationConfig.
+	return options.GenerationConfig
 }
 
 func hasStaticOutputResponseProcessor(options *Options) bool {

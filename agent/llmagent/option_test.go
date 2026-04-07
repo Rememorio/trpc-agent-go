@@ -256,9 +256,9 @@ func TestWithSkipSkillsFallbackOnSessionSummary(t *testing.T) {
 	require.False(t, b.option.SkipSkillsFallbackOnSessionSummary)
 }
 
-func TestNew_DefaultGenerationConfigKeepsStreaming(t *testing.T) {
+func TestNew_DefaultGenerationConfigKeepsLegacyNonStreaming(t *testing.T) {
 	a := New("test-agent")
-	require.True(t, a.genConfig.Stream)
+	require.False(t, a.genConfig.Stream)
 	require.False(t, a.option.generationConfigConfigured)
 }
 
@@ -273,7 +273,7 @@ func TestWithGenerationConfig_ExplicitFalseDisablesStreaming(
 	require.True(t, a.option.generationConfigConfigured)
 }
 
-func TestBuildRequestProcessors_DefaultGenerationConfigUsesStreamTrue(
+func TestBuildRequestProcessors_DefaultGenerationConfigUsesZeroValue(
 	t *testing.T,
 ) {
 	procs := buildRequestProcessors("test-agent", &Options{})
@@ -285,7 +285,7 @@ func TestBuildRequestProcessors_DefaultGenerationConfigUsesStreamTrue(
 		}
 	}
 	require.NotNil(t, basicProc)
-	require.True(t, basicProc.GenerationConfig.Stream)
+	require.False(t, basicProc.GenerationConfig.Stream)
 }
 
 func TestWithMaxLimits_OnOptions(t *testing.T) {
