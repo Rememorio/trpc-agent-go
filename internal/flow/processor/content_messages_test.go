@@ -1329,4 +1329,113 @@ func TestPrependSummaryUserMessage(t *testing.T) {
 		// Prefix should be untouched.
 		require.Equal(t, "system prompt", prefix[0].Content)
 	})
+
+	t.Run("req_prefix_ends_with_empty_user_sets_content", func(t *testing.T) {
+		prefix := []model.Message{
+			model.NewSystemMessage("system prompt"),
+			{Role: model.RoleUser, Content: ""},
+		}
+		msgs := []model.Message{
+			model.NewAssistantMessage("history assistant"),
+		}
+		result := p.prependSummaryUserMessage("some summary", msgs, prefix)
+		// Summary should be set (not appended) on the empty user message.
+		require.Contains(t, prefix[len(prefix)-1].Content, "some summary")
+		require.Equal(t, msgs, result)
+	})
+
+	t.Run("custom_formatter_empty_return_skips", func(t *testing.T) {
+		custom := NewContentRequestProcessor(
+			WithSummaryFormatter(func(_ string) string { return "" }),
+		)
+		msgs := []model.Message{model.NewUserMessage("hello")}
+		result := custom.prependSummaryUserMessage("some summary", msgs, nil)
+		require.Equal(t, msgs, result)
+	})
+}
+
+// Test formatSummaryForUser with custom SummaryFormatter.
+func TestFormatSummaryForUser_CustomFormatter(t *testing.T) {
+	p := NewContentRequestProcessor(
+		WithSummaryFormatter(func(s string) string {
+			return "CUSTOM: " + s
+		}),
+	)
+	result := p.formatSummaryForUser("test summary")
+	require.Equal(t, "CUSTOM: test summary", result)
+}
+
+// Test WithSessionSummaryInjectionMode option.
+func TestWithSessionSummaryInjectionMode(t *testing.T) {
+	p := NewContentRequestProcessor(
+		WithSessionSummaryInjectionMode(SessionSummaryInjectionUser),
+	)
+	require.Equal(t, SessionSummaryInjectionUser, p.SessionSummaryInjectionMode)
+
+	p2 := NewContentRequestProcessor(
+		WithSessionSummaryInjectionMode(SessionSummaryInjectionSystem),
+	)
+	require.Equal(t, SessionSummaryInjectionSystem, p2.SessionSummaryInjectionMode)
+
+	// Unknown value defaults to system.
+	p3 := NewContentRequestProcessor(
+		WithSessionSummaryInjectionMode("unknown"),
+	)
+	require.Equal(t, SessionSummaryInjectionSystem, p3.SessionSummaryInjectionMode)
+}
+
+// Test user injection mode with injected context ending in user message.
+func TestProcessRequest_SessionSummary_UserMode_InjectedContextEndsWithUser(t *testing.T) {
+	summaryTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	sess := &session.Session{
+		Summaries: map[string]*session.Summary{
+			"test-agent": {
+				Summary:   "injected context summary",
+				UpdatedAt: summaryTime,
+			},
+		},
+	}
+
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationEventFilterKey("test-agent"),
+		agent.WithInvocationMessage(model.NewUserMessage("current request")),
+		agent.WithInvocationRunOptions(agent.RunOptions{
+			InjectedContextMessages: []model.Message{
+				model.NewUserMessage("injected context user msg"),
+			},
+		}),
+	)
+	inv.AgentName = "test-agent"
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewSystemMessage("system prompt"),
+		},
+	}
+	p := NewContentRequestProcessor(
+		WithAddSessionSummary(true),
+		WithSessionSummaryInjectionMode(SessionSummaryInjectionUser),
+	)
+	p.ProcessRequest(context.Background(), inv, req, nil)
+
+	// The summary should be merged into the injected context user message
+	// (the trailing user msg in req.Messages before history appended).
+	// System prompt should NOT contain the summary.
+	require.Equal(t, model.RoleSystem, req.Messages[0].Role)
+	require.NotContains(t, req.Messages[0].Content, "injected context summary",
+		"system prompt should not contain summary in user injection mode")
+
+	// Find the injected context message and verify summary was merged into it.
+	foundMerged := false
+	for _, msg := range req.Messages {
+		if msg.Role == model.RoleUser &&
+			strings.Contains(msg.Content, "injected context user msg") &&
+			strings.Contains(msg.Content, "injected context summary") {
+			foundMerged = true
+			break
+		}
+	}
+	require.True(t, foundMerged,
+		"summary should be merged into the injected context user message")
 }
