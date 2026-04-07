@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ import (
 func TestIngestWorker_NewDefaults(t *testing.T) {
 	c := &client{hc: &http.Client{}, apiKey: testAPIKey}
 	opts := serviceOpts{asyncMemoryNum: 0, memoryQueueSize: 0}
-	w := newIngestWorker(c, opts)
+	w := newIngestWorker(c, opts, nil)
 	require.NotNil(t, w)
 	assert.Len(t, w.jobChans, defaultIngestWorkers)
 	w.Stop()
@@ -36,7 +37,7 @@ func TestIngestWorker_NewDefaults(t *testing.T) {
 func TestIngestWorker_StartAlreadyStarted(t *testing.T) {
 	c := &client{hc: &http.Client{}, apiKey: testAPIKey}
 	opts := serviceOpts{asyncMemoryNum: 1, memoryQueueSize: 1}
-	w := newIngestWorker(c, opts)
+	w := newIngestWorker(c, opts, nil)
 	w.start()
 	w.Stop()
 }
@@ -225,4 +226,119 @@ func TestIngestWorker_ProcessUpdatesState(t *testing.T) {
 	assert.False(t, ok)
 	assert.True(t, got.Infer)
 	assert.Equal(t, "sid", got.RunID)
+}
+
+func TestIngestWorker_IngestQueuedEventMirrorsShadowMemory(t *testing.T) {
+	var (
+		pollCount     int
+		createdShadow createMemoryRequest
+	)
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodPost && r.URL.Path == pathV1Memories:
+			body, _ := io.ReadAll(r.Body)
+			var req createMemoryRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			if req.Infer {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[{"status":"PENDING","event_id":"evt-1","message":"queued"}]`))
+				return
+			}
+			createdShadow = req
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"id":"shadow-1","event":"ADD","data":{"memory":"User likes tea"}}]`))
+			return
+		case r.Method == httpMethodGet && r.URL.Path == "/v1/event/evt-1/":
+			pollCount++
+			w.WriteHeader(http.StatusOK)
+			if pollCount == 1 {
+				_, _ = w.Write([]byte(`{"id":"evt-1","status":"RUNNING","results":null}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"evt-1","status":"SUCCEEDED","results":[{"id":"native-1","event":"ADD","data":{"memory":"User likes tea"}}]}`))
+			return
+		case r.Method == httpMethodGet && r.URL.Path == pathV1Memories:
+			q := r.URL.Query()
+			switch {
+			case q.Get(metadataQueryKey(metadataKeyTRPCMem0SourceID)) == "native-1":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+				return
+			case strings.TrimSpace(q.Get(metadataQueryKey(metadataKeyTRPCMemoryID))) != "":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	opts := defaultOptions.clone()
+	opts.apiKey = testAPIKey
+	opts.host = srv.URL
+	c, err := newClient(opts)
+	require.NoError(t, err)
+
+	svc := &Service{opts: opts, c: c}
+	w := &ingestWorker{
+		c:         c,
+		service:   svc,
+		asyncMode: true,
+		version:   "v2",
+		timeout:   5 * time.Second,
+	}
+
+	err = w.ingest(
+		context.Background(),
+		memory.UserKey{AppName: testAppID, UserID: testUserID},
+		session.NewSession(testAppID, testUserID, "sid"),
+		[]model.Message{{Role: model.RoleUser, Content: "hi"}},
+	)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, pollCount, 2)
+	assert.False(t, createdShadow.Infer)
+	assert.Equal(t, testUserID, createdShadow.UserID)
+	assert.Equal(t, testAppID, createdShadow.AppID)
+	assert.Equal(t, "native-1", createdShadow.Metadata[metadataKeyTRPCMem0SourceID])
+	assert.NotEmpty(t, createdShadow.Metadata[metadataKeyTRPCMemoryID])
+}
+
+func TestIngestWorker_IngestQueuedEventFailure(t *testing.T) {
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodPost && r.URL.Path == pathV1Memories:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"status":"PENDING","event_id":"evt-1","message":"queued"}]`))
+			return
+		case r.Method == httpMethodGet && r.URL.Path == "/v1/event/evt-1/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"evt-1","status":"FAILED","results":null}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	opts := defaultOptions.clone()
+	opts.apiKey = testAPIKey
+	opts.host = srv.URL
+	c, err := newClient(opts)
+	require.NoError(t, err)
+
+	svc := &Service{opts: opts, c: c}
+	w := &ingestWorker{
+		c:         c,
+		service:   svc,
+		asyncMode: true,
+		version:   "v2",
+		timeout:   5 * time.Second,
+	}
+
+	err = w.ingest(
+		context.Background(),
+		memory.UserKey{AppName: testAppID, UserID: testUserID},
+		session.NewSession(testAppID, testUserID, "sid"),
+		[]model.Message{{Role: model.RoleUser, Content: "hi"}},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ingest event evt-1 failed")
 }

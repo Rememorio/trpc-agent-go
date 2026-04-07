@@ -34,10 +34,13 @@ type createMemoryRequest struct {
 }
 
 type createMemoryEvent struct {
-	ID     string `json:"id"`
-	Event  string `json:"event"`
-	Memory string `json:"memory"`
-	Data   struct {
+	ID      string `json:"id"`
+	Event   string `json:"event"`
+	EventID string `json:"event_id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Memory  string `json:"memory"`
+	Data    struct {
 		Memory string `json:"memory"`
 	} `json:"data"`
 }
@@ -75,6 +78,12 @@ func (e *createMemoryEvents) UnmarshalJSON(data []byte) error {
 	}
 	*e = wrapped.Results
 	return nil
+}
+
+type eventStatusResponse struct {
+	ID      string              `json:"id"`
+	Status  string              `json:"status"`
+	Results []createMemoryEvent `json:"results"`
 }
 
 type updateMemoryRequest struct {

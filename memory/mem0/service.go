@@ -29,6 +29,7 @@ import (
 const (
 	metadataKeyTRPCTopics       = "trpc_topics"
 	metadataKeyTRPCMemoryID     = "trpc_memory_id"
+	metadataKeyTRPCMem0SourceID = "trpc_mem0_source_id"
 	metadataKeyTRPCAppName      = "trpc_app_name"
 	metadataKeyTRPCKind         = "trpc_kind"
 	metadataKeyTRPCEventTime    = "trpc_event_time"
@@ -122,7 +123,7 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 	}
 
 	if opts.ingestEnabled {
-		svc.ingestWorker = newIngestWorker(c, opts)
+		svc.ingestWorker = newIngestWorker(c, opts, svc)
 	}
 
 	return svc, nil
@@ -651,22 +652,46 @@ func (s *Service) findMemoryIDByTRPCID(
 	userKey memory.UserKey,
 	trpcID string,
 ) (string, error) {
+	rec, err := s.findMemoryRecordByMetadata(
+		ctx,
+		userKey,
+		metadataKeyTRPCMemoryID,
+		trpcID,
+	)
+	if err != nil || rec == nil {
+		return "", err
+	}
+	return rec.ID, nil
+}
+
+func (s *Service) findMemoryRecordByMetadata(
+	ctx context.Context,
+	userKey memory.UserKey,
+	key string,
+	value string,
+) (*memoryRecord, error) {
+	if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
 	q := url.Values{}
 	q.Set(queryKeyUserID, userKey.UserID)
 	q.Set(queryKeyAppID, userKey.AppName)
 	q.Set(queryKeyPage, itoa(1))
 	q.Set(queryKeyPageSize, itoa(1))
-	q.Set(metadataQueryKey(metadataKeyTRPCMemoryID), trpcID)
+	q.Set(metadataQueryKey(key), value)
 	addOrgProjectQuery(q, s.opts)
 
 	var out listMemoriesResponse
 	if err := s.c.doJSON(ctx, httpMethodGet, pathV1Memories, q, nil, &out); err != nil {
-		return "", err
+		if isInvalidPageError(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	if len(out.Results) == 0 {
-		return "", nil
+		return nil, nil
 	}
-	return out.Results[0].ID, nil
+	return &out.Results[0], nil
 }
 
 func (s *Service) getMemory(ctx context.Context, memoryID string) (*memoryRecord, error) {
@@ -699,6 +724,145 @@ func mergeMetadata(dst map[string]any, src map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *Service) syncIngestedMemoryEvent(
+	ctx context.Context,
+	userKey memory.UserKey,
+	evt createMemoryEvent,
+) error {
+	sourceID := strings.TrimSpace(evt.ID)
+	memoryText := strings.TrimSpace(evt.Data.Memory)
+	if memoryText == "" {
+		memoryText = strings.TrimSpace(evt.Memory)
+	}
+	switch strings.ToUpper(strings.TrimSpace(evt.Event)) {
+	case "DELETE":
+		return s.deleteIngestedShadowMemory(ctx, userKey, sourceID, memoryText)
+	case "", "ADD", "UPDATE":
+		if memoryText == "" {
+			return nil
+		}
+		return s.upsertIngestedShadowMemory(ctx, userKey, memoryText, sourceID)
+	default:
+		return nil
+	}
+}
+
+func (s *Service) upsertIngestedShadowMemory(
+	ctx context.Context,
+	userKey memory.UserKey,
+	memoryText string,
+	sourceID string,
+) error {
+	if err := userKey.CheckUserKey(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(memoryText) == "" {
+		return nil
+	}
+
+	memObj := &memory.Memory{Memory: memoryText}
+	targetRec, err := s.findIngestedShadowMemory(
+		ctx,
+		userKey,
+		sourceID,
+		memoryText,
+	)
+	if err != nil {
+		return err
+	}
+
+	meta := s.baseMetadata(userKey.AppName, memObj)
+	meta[metadataKeyTRPCMemoryID] = imemory.GenerateMemoryID(
+		memObj,
+		userKey.AppName,
+		userKey.UserID,
+	)
+	if sourceID != "" {
+		meta[metadataKeyTRPCMem0SourceID] = sourceID
+	}
+
+	if targetRec != nil {
+		memKey := memory.Key{
+			AppName:  userKey.AppName,
+			UserID:   userKey.UserID,
+			MemoryID: targetRec.ID,
+		}
+		return s.updateMemoryWithMergedMetadata(ctx, memKey, memoryText, meta)
+	}
+	return s.createManagedMemory(ctx, userKey, memoryText, meta)
+}
+
+func (s *Service) deleteIngestedShadowMemory(
+	ctx context.Context,
+	userKey memory.UserKey,
+	sourceID string,
+	memoryText string,
+) error {
+	rec, err := s.findIngestedShadowMemory(ctx, userKey, sourceID, memoryText)
+	if err != nil || rec == nil {
+		return err
+	}
+	return s.DeleteMemory(ctx, memory.Key{
+		AppName:  userKey.AppName,
+		UserID:   userKey.UserID,
+		MemoryID: rec.ID,
+	})
+}
+
+func (s *Service) findIngestedShadowMemory(
+	ctx context.Context,
+	userKey memory.UserKey,
+	sourceID string,
+	memoryText string,
+) (*memoryRecord, error) {
+	if sourceID != "" {
+		rec, err := s.findMemoryRecordByMetadata(
+			ctx,
+			userKey,
+			metadataKeyTRPCMem0SourceID,
+			sourceID,
+		)
+		if err != nil || rec != nil {
+			return rec, err
+		}
+	}
+	if strings.TrimSpace(memoryText) == "" {
+		return nil, nil
+	}
+	trpcID := imemory.GenerateMemoryID(
+		&memory.Memory{Memory: memoryText},
+		userKey.AppName,
+		userKey.UserID,
+	)
+	return s.findMemoryRecordByMetadata(
+		ctx,
+		userKey,
+		metadataKeyTRPCMemoryID,
+		trpcID,
+	)
+}
+
+func (s *Service) createManagedMemory(
+	ctx context.Context,
+	userKey memory.UserKey,
+	memoryText string,
+	metadata map[string]any,
+) error {
+	req := createMemoryRequest{
+		Messages:  []apiMessage{{Role: memoryUserRole, Content: memoryText}},
+		UserID:    userKey.UserID,
+		AppID:     userKey.AppName,
+		Metadata:  metadata,
+		Infer:     false,
+		Async:     s.opts.asyncMode,
+		Version:   s.opts.version,
+		OrgID:     s.opts.orgID,
+		ProjectID: s.opts.projectID,
+	}
+	var events createMemoryEvents
+	return s.c.doJSON(ctx, httpMethodPost, pathV1Memories, nil, req, &events)
 }
 
 func applyIngestModeDefaults(

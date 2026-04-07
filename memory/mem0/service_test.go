@@ -129,6 +129,42 @@ func TestService_SearchMemories_EmptyQueryReturnsNoResults(t *testing.T) {
 	assert.Empty(t, results)
 }
 
+func TestService_SyncIngestedMemoryEvent_DeletesShadowRecord(t *testing.T) {
+	userKey := memory.UserKey{AppName: testAppID, UserID: testUserID}
+	var deleted bool
+	srv := newHTTPTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == httpMethodGet && r.URL.Path == pathV1Memories:
+			if r.URL.Query().Get(metadataQueryKey(metadataKeyTRPCMem0SourceID)) == "native-1" {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[{"id":"shadow-1","memory":"old fact","metadata":{"trpc_mem0_source_id":"native-1"},"created_at":"2025-01-02T03:04:05Z","updated_at":"2025-01-02T03:04:06Z","user_id":"` + testUserID + `","app_id":"` + testAppID + `"}]`))
+				return
+			}
+		case r.Method == httpMethodGet && r.URL.Path == buildMemoryPath("shadow-1"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"shadow-1","memory":"old fact","metadata":{"trpc_mem0_source_id":"native-1"},"created_at":"2025-01-02T03:04:05Z","updated_at":"2025-01-02T03:04:06Z","user_id":"` + testUserID + `","app_id":"` + testAppID + `"}`))
+			return
+		case r.Method == httpMethodDelete && r.URL.Path == buildMemoryPath("shadow-1"):
+			deleted = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"message":"deleted"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	svc := newTestService(t, srv.URL)
+	err := svc.syncIngestedMemoryEvent(context.Background(), userKey, createMemoryEvent{
+		ID:    "native-1",
+		Event: "DELETE",
+		Data: struct {
+			Memory string `json:"memory"`
+		}{Memory: "old fact"},
+	})
+	require.NoError(t, err)
+	assert.True(t, deleted)
+}
+
 func TestService_SearchMemories_HybridSearch(t *testing.T) {
 	userKey := memory.UserKey{AppName: testAppID, UserID: testUserID}
 	var searchCalls int

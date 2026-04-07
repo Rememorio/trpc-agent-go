@@ -125,6 +125,16 @@ func TestHelpers_CreateMemoryEventsUnmarshal(t *testing.T) {
 		assert.Equal(t, "m", events[0].Memory)
 		assert.Equal(t, "m", events[0].Data.Memory)
 	})
+
+	t.Run("queued event response", func(t *testing.T) {
+		var events createMemoryEvents
+		err := json.Unmarshal([]byte(`[{"message":"queued","status":"PENDING","event_id":"evt-1"}]`), &events)
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "queued", events[0].Message)
+		assert.Equal(t, "PENDING", events[0].Status)
+		assert.Equal(t, "evt-1", events[0].EventID)
+	})
 }
 
 func TestHelpers_IsInvalidPageError(t *testing.T) {

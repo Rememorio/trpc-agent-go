@@ -11,7 +11,9 @@ package mem0
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,7 +32,8 @@ type ingestJob struct {
 }
 
 type ingestWorker struct {
-	c *client
+	c       *client
+	service *Service
 
 	asyncMode bool
 	version   string
@@ -46,7 +49,15 @@ type ingestWorker struct {
 	started bool
 }
 
-func newIngestWorker(c *client, opts serviceOpts) *ingestWorker {
+const (
+	ingestEventStatusPending   = "PENDING"
+	ingestEventStatusRunning   = "RUNNING"
+	ingestEventStatusSucceeded = "SUCCEEDED"
+	ingestEventStatusFailed    = "FAILED"
+	ingestEventPollInterval    = 2 * time.Second
+)
+
+func newIngestWorker(c *client, opts serviceOpts, service *Service) *ingestWorker {
 	num := opts.asyncMemoryNum
 	if num <= 0 {
 		num = defaultIngestWorkers
@@ -58,6 +69,7 @@ func newIngestWorker(c *client, opts serviceOpts) *ingestWorker {
 
 	w := &ingestWorker{
 		c:         c,
+		service:   service,
 		asyncMode: opts.asyncMode,
 		version:   opts.version,
 		timeout:   opts.memoryJobTimeout,
@@ -196,7 +208,69 @@ func (w *ingestWorker) ingest(
 	}
 
 	var events createMemoryEvents
-	return w.c.doJSON(ctx, httpMethodPost, pathV1Memories, nil, req, &events)
+	if err := w.c.doJSON(ctx, httpMethodPost, pathV1Memories, nil, req, &events); err != nil {
+		return err
+	}
+	return w.syncIngestResults(ctx, userKey, events)
+}
+
+func (w *ingestWorker) syncIngestResults(
+	ctx context.Context,
+	userKey memory.UserKey,
+	events createMemoryEvents,
+) error {
+	if w == nil || w.service == nil || len(events) == 0 {
+		return nil
+	}
+	for _, evt := range events {
+		if eventID := strings.TrimSpace(evt.EventID); eventID != "" {
+			resolved, err := w.awaitIngestEvent(ctx, eventID)
+			if err != nil {
+				return err
+			}
+			for _, result := range resolved.Results {
+				if err := w.service.syncIngestedMemoryEvent(ctx, userKey, result); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := w.service.syncIngestedMemoryEvent(ctx, userKey, evt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *ingestWorker) awaitIngestEvent(
+	ctx context.Context,
+	eventID string,
+) (*eventStatusResponse, error) {
+	path := "/v1/event/" + eventID + "/"
+	for {
+		var out eventStatusResponse
+		if err := w.c.doJSON(ctx, httpMethodGet, path, nil, nil, &out); err != nil {
+			return nil, err
+		}
+		switch strings.ToUpper(strings.TrimSpace(out.Status)) {
+		case "", ingestEventStatusSucceeded:
+			return &out, nil
+		case ingestEventStatusFailed:
+			return nil, fmt.Errorf("mem0: ingest event %s failed", eventID)
+		case ingestEventStatusPending, ingestEventStatusRunning:
+		default:
+			if len(out.Results) > 0 {
+				return &out, nil
+			}
+		}
+		timer := time.NewTimer(ingestEventPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func hashUserKey(userKey memory.UserKey) int {
