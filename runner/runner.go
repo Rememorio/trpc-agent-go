@@ -398,11 +398,19 @@ func (r *runner) Run(
 		ro.RequestID = uuid.NewString()
 	}
 
+	// Resolve per-request app name override. When the caller provides an
+	// AppName via RunOption, it takes precedence over the runner default so
+	// that a single runner can isolate session/memory data across projects.
+	effectiveAppName := r.appName
+	if ro.AppName != "" {
+		effectiveAppName = ro.AppName
+	}
+
 	execCtx, execCancel := r.newExecutionContext(ctx, ro)
 
 	// Resolve or create the session for this user and conversation.
 	sessionKey := session.Key{
-		AppName:   r.appName,
+		AppName:   effectiveAppName,
 		UserID:    userID,
 		SessionID: sessionID,
 	}
@@ -419,7 +427,7 @@ func (r *runner) Run(
 		return nil, fmt.Errorf("select agent: %w", err)
 	}
 
-	eventFilterKey := r.appName
+	eventFilterKey := effectiveAppName
 	if ro.EventFilterKey != "" {
 		eventFilterKey = ro.EventFilterKey
 	}
