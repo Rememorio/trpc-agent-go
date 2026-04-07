@@ -629,6 +629,55 @@ llmagent.WithAddSessionSummary(true)
 - Guarantees complete context: compressed history + full new conversation
 - **`WithMaxHistoryRuns` parameter is ignored**
 
+#### Summary Injection Mode
+
+By default, the summary is injected as a **system message** (merged into the existing system prompt). In this mode, the summary is protected by token tailoring's preserved head and will not be trimmed by the sliding window.
+
+To allow the summary to participate in token-budget trimming for a true **sliding-window** experience, switch the injection mode to `user`:
+
+```go
+agent := llmagent.New(
+    "my-agent",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithAddSessionSummary(true),
+    llmagent.WithSessionSummaryInjectionMode(llmagent.SessionSummaryInjectionUser),
+)
+```
+
+**Injection mode comparison**:
+
+| Mode | Injection Position | Token Tailoring Behavior | Use Case |
+| --- | --- | --- | --- |
+| `SessionSummaryInjectionSystem` (default) | Merged into system message | Summary in preserved head, never trimmed | Summary must always be present |
+| `SessionSummaryInjectionUser` | User message between few-shot and history | Summary participates in round trimming, can be evicted | Sliding window for very long conversations |
+
+**User mode message structure**:
+
+```
+┌─────────────────────────────────────────┐
+│ System Prompt                           │ ← Does not contain summary
+├─────────────────────────────────────────┤
+│ [Few-shot examples, if any]             │
+├─────────────────────────────────────────┤
+│ User: Context from previous             │
+│ interactions: <summary>...</summary>    │ ← Summary as user message
+│ (merged with first history user msg)    │
+├─────────────────────────────────────────┤
+│ Session history events                  │
+│ ...                                     │
+│ Event N (current message)               │
+└─────────────────────────────────────────┘
+```
+
+**Notes**:
+
+- In user mode, if the first session history message is also a user role, the summary is **automatically merged** into it to avoid consecutive user messages (which some models reject)
+- User mode uses a more neutral default template ("Context from previous interactions") to avoid system-instruction tone in a user role message
+- Custom `WithSummaryFormatter` also applies to user mode
+- The summary **generation pipeline is unaffected** — injection mode only changes prompt assembly, not the summarizer itself
+
+> **Tip**: For very long conversations (hundreds of turns) where you want old summaries to naturally age out (replaced by newer summaries), use `SessionSummaryInjectionUser` mode.
+
 **Optional: Prompt-side context compaction**
 
 When `WithEnableContextCompaction(true)` is enabled, the framework adds two compaction passes before the LLM call:
@@ -939,3 +988,4 @@ func main() {
 
 - [Summary Examples](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary)
 - [FilterKey Examples](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey)
+- [Injection Mode Examples](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/injection)
