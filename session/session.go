@@ -790,6 +790,50 @@ type SearchableService interface {
 	) ([]EventSearchResult, error)
 }
 
+// EventWindowRequest describes a request to load a
+// small event window around one anchor event.
+type EventWindowRequest struct {
+	// Key identifies the target session.
+	Key Key
+	// AnchorEventID identifies the center event.
+	AnchorEventID string
+	// Before controls how many events before the anchor
+	// are included.
+	Before int
+	// After controls how many events after the anchor are
+	// included.
+	After int
+	// Roles optionally restrict the window to specific
+	// message roles.
+	Roles []model.Role
+}
+
+// EventWindowEntry stores one event plus its persisted
+// creation timestamp.
+type EventWindowEntry struct {
+	Event     event.Event
+	CreatedAt time.Time
+}
+
+// EventWindow contains the events loaded around one
+// anchor event.
+type EventWindow struct {
+	SessionKey    Key
+	AnchorEventID string
+	Entries       []EventWindowEntry
+}
+
+// WindowService extends session.Service with precise
+// anchor-based window loading.
+type WindowService interface {
+	// GetEventWindow returns a small ordered event window
+	// around one anchor event.
+	GetEventWindow(
+		ctx context.Context,
+		req EventWindowRequest,
+	) (*EventWindow, error)
+}
+
 // Service is the interface that all session services must implement.
 type Service interface {
 	// CreateSession creates a new session.

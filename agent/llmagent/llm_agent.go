@@ -40,6 +40,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	toolsessionrecall "trpc.group/trpc-go/trpc-agent-go/tool/sessionrecall"
 	toolskill "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool/transfer"
 	toolworkspaceexec "trpc.group/trpc-go/trpc-agent-go/tool/workspaceexec"
@@ -363,14 +364,18 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 	contentProcessor := processor.NewContentRequestProcessor(contentOpts...)
 	requestProcessors = append(requestProcessors, contentProcessor)
 
-	// 8. Post-tool processor - injects dynamic prompt after tool results.
+	// 8. On-demand session processor - injects a small overview for
+	// session_search / session_load when enabled.
+	requestProcessors = appendOnDemandSessionProcessor(options, requestProcessors)
+
+	// 9. Post-tool processor - injects dynamic prompt after tool results.
 	requestProcessors = appendPostToolProcessor(options, requestProcessors)
 
-	// 9. Skills tool result processor - materializes loaded skill content
+	// 10. Skills tool result processor - materializes loaded skill content
 	// into tool result messages.
 	requestProcessors = appendSkillsToolResultProcessor(a, options, requestProcessors)
 
-	// 10. Time processor - adds current time information if enabled.
+	// 11. Time processor - adds current time information if enabled.
 	// Moved after content processor to avoid invalidating system message cache.
 	// Time information changes frequently, so placing it last allows previous
 	// stable content (instructions, identity, skills, history) to be cached.
@@ -414,6 +419,16 @@ func appendPostToolProcessor(options *Options, requestProcessors []flow.RequestP
 	}
 	postToolProcessor := processor.NewPostToolRequestProcessor(postToolOpts...)
 	return append(requestProcessors, postToolProcessor)
+}
+
+func appendOnDemandSessionProcessor(options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
+	if !options.EnableOnDemandSession {
+		return requestProcessors
+	}
+	return append(
+		requestProcessors,
+		processor.NewOnDemandSessionRequestProcessor(),
+	)
 }
 
 func appendSkillsToolResultProcessor(a *LLMAgent, options *Options, requestProcessors []flow.RequestProcessor) []flow.RequestProcessor {
@@ -562,6 +577,7 @@ func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
 		nil,
 	)
 	allTools = appendSkillTools(allTools, options, runTool)
+	allTools = appendOnDemandSessionTools(allTools, options, nil)
 	return allTools, userToolNames
 }
 
@@ -766,6 +782,24 @@ func appendWorkspaceExecTool(
 		)
 	}
 	return allTools
+}
+
+func appendOnDemandSessionTools(
+	allTools []tool.Tool,
+	options *Options,
+	inv *agent.Invocation,
+) []tool.Tool {
+	if options == nil || !options.EnableOnDemandSession {
+		return allTools
+	}
+	if inv != nil && !toolsessionrecall.SupportsOnDemandSession(inv) {
+		return allTools
+	}
+	return append(
+		allTools,
+		toolsessionrecall.NewSearchTool(),
+		toolsessionrecall.NewLoadTool(),
+	)
 }
 
 func buildWorkspaceRegistry() *codeexecutor.WorkspaceRegistry {

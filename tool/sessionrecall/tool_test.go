@@ -1,0 +1,206 @@
+//
+// Tencent is pleased to support the open source community by making
+// trpc-agent-go available.
+//
+// Copyright (C) 2025 Tencent.  All rights reserved.
+//
+// trpc-agent-go is licensed under the Apache License Version 2.0.
+//
+
+package sessionrecall
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/session"
+	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+)
+
+type mockSessionService struct {
+	session.Service
+	searchResults []session.EventSearchResult
+	searchErr     error
+	lastSearchReq session.EventSearchRequest
+	window        *session.EventWindow
+	windowErr     error
+	lastWindowReq session.EventWindowRequest
+}
+
+func (m *mockSessionService) SearchEvents(
+	_ context.Context,
+	req session.EventSearchRequest,
+) ([]session.EventSearchResult, error) {
+	m.lastSearchReq = req
+	return m.searchResults, m.searchErr
+}
+
+func (m *mockSessionService) GetEventWindow(
+	_ context.Context,
+	req session.EventWindowRequest,
+) (*session.EventWindow, error) {
+	m.lastWindowReq = req
+	return m.window, m.windowErr
+}
+
+func TestSearchTool_CurrentHidden(t *testing.T) {
+	summaryUpdatedAt := time.Date(2025, 4, 7, 10, 0, 0, 0, time.UTC)
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchResults: []session.EventSearchResult{
+			{
+				SessionKey: session.Key{
+					AppName:   "app",
+					UserID:    "user",
+					SessionID: "sess",
+				},
+				EventCreatedAt: summaryUpdatedAt.Add(-time.Minute),
+				Event:          event.Event{ID: "evt-1"},
+				Role:           model.RoleAssistant,
+				Text:           "assistant: remembered detail",
+				Score:          0.91,
+			},
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session: session.NewSession(
+			"app",
+			"user",
+			"sess",
+			session.WithSessionSummaries(map[string]*session.Summary{
+				"": {
+					Summary:   "summary",
+					UpdatedAt: summaryUpdatedAt,
+				},
+			}),
+		),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&SearchSessionRequest{
+		Query: "remembered detail",
+		Scope: ScopeCurrentHidden,
+	})
+	require.NoError(t, err)
+
+	result, err := NewSearchTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*SearchSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, "evt-1", resp.Results[0].EventID)
+	assert.Equal(t, ScopeCurrentHidden, resp.Results[0].Scope)
+	assert.Equal(t, session.SearchModeHybrid, svc.lastSearchReq.SearchMode)
+	assert.Equal(t, []string{"sess"}, svc.lastSearchReq.SessionIDs)
+	require.NotNil(t, svc.lastSearchReq.CreatedBefore)
+	assert.Equal(t, summaryUpdatedAt, *svc.lastSearchReq.CreatedBefore)
+	assert.ElementsMatch(
+		t,
+		[]model.Role{model.RoleUser, model.RoleAssistant},
+		svc.lastSearchReq.Roles,
+	)
+}
+
+func TestLoadTool(t *testing.T) {
+	createdAt := time.Date(2025, 4, 7, 11, 0, 0, 0, time.UTC)
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		window: &session.EventWindow{
+			SessionKey: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			AnchorEventID: "evt-2",
+			Entries: []session.EventWindowEntry{
+				{
+					Event: event.Event{
+						ID: "evt-1",
+						Response: &model.Response{
+							Choices: []model.Choice{
+								{
+									Message: model.Message{
+										Role:    model.RoleUser,
+										Content: "first question",
+									},
+								},
+							},
+						},
+					},
+					CreatedAt: createdAt,
+				},
+				{
+					Event: event.Event{
+						ID: "evt-2",
+						Response: &model.Response{
+							Choices: []model.Choice{
+								{
+									Message: model.Message{
+										Role:    model.RoleAssistant,
+										Content: "second answer",
+									},
+								},
+							},
+						},
+					},
+					CreatedAt: createdAt.Add(time.Minute),
+				},
+			},
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session:        session.NewSession("app", "user", "sess"),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&LoadSessionRequest{
+		EventID: "evt-2",
+		Before:  4,
+		After:   4,
+	})
+	require.NoError(t, err)
+
+	result, err := NewLoadTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*LoadSessionResponse)
+	require.True(t, ok)
+	assert.Equal(t, "sess", resp.SessionID)
+	assert.Equal(t, "evt-2", resp.EventID)
+	assert.Equal(t, 2, resp.Before)
+	assert.Equal(t, 2, resp.After)
+	assert.Equal(t, loadContextNote, resp.Note)
+	require.Len(t, resp.Messages, 2)
+	assert.Equal(t, "evt-1", resp.Messages[0].EventID)
+	assert.Equal(t, model.RoleUser, resp.Messages[0].Role)
+	assert.Equal(t, "first question", resp.Messages[0].Content)
+	assert.Equal(t, "sess", svc.lastWindowReq.Key.SessionID)
+	assert.Equal(t, "evt-2", svc.lastWindowReq.AnchorEventID)
+	assert.ElementsMatch(
+		t,
+		[]model.Role{model.RoleUser, model.RoleAssistant},
+		svc.lastWindowReq.Roles,
+	)
+}
+
+func TestNormalizeWindowSize_PreservesExplicitZeroSide(t *testing.T) {
+	before, after := normalizeWindowSize(0, 3)
+	assert.Equal(t, 0, before)
+	assert.Equal(t, 3, after)
+
+	before, after = normalizeWindowSize(3, 0)
+	assert.Equal(t, 3, before)
+	assert.Equal(t, 0, after)
+}

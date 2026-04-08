@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
+	toolsessionrecall "trpc.group/trpc-go/trpc-agent-go/tool/sessionrecall"
 	"trpc.group/trpc-go/trpc-agent-go/tool/transfer"
 )
 
@@ -148,6 +149,9 @@ func (a *LLMAgent) InvocationToolSurface(
 		workspaceRegistry,
 		nil,
 	)
+	if toolsessionrecall.SupportsOnDemandSession(inv) {
+		allTools = appendOnDemandSessionTools(allTools, &options, inv)
+	}
 	if len(subAgents) == 0 {
 		return allTools, userToolNames
 	}
