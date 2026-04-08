@@ -5329,6 +5329,56 @@ func TestExecuteToolCall_LocalAfterToolCustomResultProducesToolMessage(
 	require.Contains(t, choices[0].Message.Content, "Formatted error")
 }
 
+// TestExecuteToolWithCallbacks_StopErrorPreservedWithCustomResult verifies that
+// when a tool returns a StopError, the error is NOT cleared even if the
+// AfterTool callback provides a CustomResult. StopError is a control-flow
+// signal that must propagate so the agent can stop execution.
+func TestExecuteToolWithCallbacks_StopErrorPreservedWithCustomResult(
+	t *testing.T,
+) {
+	local := tool.NewCallbacks()
+	local.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		if args.Error != nil {
+			return &tool.AfterToolResult{
+				CustomResult: "friendly stop message",
+			}, nil
+		}
+		return nil, nil
+	})
+
+	proc := NewFunctionCallResponseProcessor(false, local)
+	inv := &agent.Invocation{AgentName: "test-agent"}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "stop_tool"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return nil, agent.NewStopError("max iterations reached")
+		},
+	}
+	toolCall := model.ToolCall{
+		ID: "call-stop",
+		Function: model.FunctionDefinitionParam{
+			Name:      "stop_tool",
+			Arguments: []byte(`{}`),
+		},
+	}
+
+	_, _, _, _, _, err := proc.executeToolWithCallbacks(
+		context.Background(),
+		inv,
+		toolCall,
+		tl,
+		nil,
+	)
+	// StopError must be preserved even though the callback returned a
+	// CustomResult.
+	require.Error(t, err)
+	_, ok := agent.AsStopError(err)
+	require.True(t, ok, "expected StopError to be preserved")
+}
+
 func TestExecuteToolWithCallbacks_BeforeError(t *testing.T) {
 	cb := tool.NewCallbacks()
 	cb.RegisterBeforeTool(func(_ context.Context, _ string,

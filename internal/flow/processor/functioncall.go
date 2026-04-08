@@ -1410,8 +1410,16 @@ func (p *FunctionCallResponseProcessor) executeToolWithCallbacks(
 // replaced the original (failed) tool result with a non-nil custom result.
 // In that case the original toolErr should be cleared so that the framework
 // sends the replacement result as the tool response message to the model.
+// StopError is excluded because it carries a control-flow signal that must
+// not be silently swallowed by a callback result replacement.
 func afterCallbackReplacedResult(toolErr error, toolResult any) bool {
-	return toolErr != nil && toolResult != nil
+	if toolErr == nil || toolResult == nil {
+		return false
+	}
+	if _, ok := agent.AsStopError(toolErr); ok {
+		return false
+	}
+	return true
 }
 
 // isStreamable returns true if the tool supports streaming and its stream
