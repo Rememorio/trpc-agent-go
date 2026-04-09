@@ -38,11 +38,15 @@ const (
 	// sessions.
 	ScopeAllSessions = "all_sessions"
 
-	defaultSearchTopK   = 5
-	maxSearchTopK       = 10
-	defaultWindowBefore = 1
-	defaultWindowAfter  = 1
-	maxWindowSpan       = 4
+	defaultSearchTopK    = 5
+	maxSearchTopK        = 10
+	defaultWindowBefore  = 1
+	defaultWindowAfter   = 1
+	maxWindowSpan        = 4
+	maxSessionScanEvents = 10000
+	searchExpandedHits   = 2
+	searchSnippetBefore  = 2
+	searchSnippetAfter   = 2
 )
 
 var (
@@ -63,13 +67,14 @@ type SearchSessionRequest struct {
 
 // SearchSessionHit is one session_search result.
 type SearchSessionHit struct {
-	Scope     string     `json:"scope"`
-	SessionID string     `json:"session_id"`
-	EventID   string     `json:"event_id"`
-	Created   time.Time  `json:"created"`
-	Role      model.Role `json:"role,omitempty"`
-	Score     float64    `json:"score"`
-	Snippet   string     `json:"snippet"`
+	Scope     string                 `json:"scope"`
+	SessionID string                 `json:"session_id"`
+	EventID   string                 `json:"event_id"`
+	Created   time.Time              `json:"created"`
+	Role      model.Role             `json:"role,omitempty"`
+	Score     float64                `json:"score"`
+	Snippet   string                 `json:"snippet"`
+	Context   []LoadedSessionMessage `json:"context,omitempty"`
 }
 
 // SearchSessionResponse is the response from session_search.
@@ -169,6 +174,19 @@ func windowServiceFromContext(
 		return nil, inv, errWindowUnavailable
 	}
 	return windowSvc, inv, nil
+}
+
+func optionalWindowServiceFromInvocation(
+	inv *agent.Invocation,
+) session.WindowService {
+	if inv == nil || inv.SessionService == nil {
+		return nil
+	}
+	windowSvc, ok := inv.SessionService.(session.WindowService)
+	if !ok {
+		return nil
+	}
+	return windowSvc
 }
 
 func currentUserKey(
@@ -352,4 +370,30 @@ func extractSessionMessageText(
 		return "", "", false
 	}
 	return text, role, true
+}
+
+func loadedMessagesFromWindow(
+	window *session.EventWindow,
+) []LoadedSessionMessage {
+	if window == nil || len(window.Entries) == 0 {
+		return nil
+	}
+
+	messages := make([]LoadedSessionMessage, 0, len(window.Entries))
+	for _, entry := range window.Entries {
+		text, role, ok := extractSessionMessageText(entry.Event)
+		if !ok {
+			continue
+		}
+		messages = append(messages, LoadedSessionMessage{
+			EventID: entry.Event.ID,
+			Role:    role,
+			Created: entry.CreatedAt,
+			Content: text,
+		})
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	return messages
 }

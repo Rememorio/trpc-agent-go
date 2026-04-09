@@ -80,19 +80,7 @@ func NewLoadTool() tool.CallableTool {
 			)
 		}
 
-		messages := make([]LoadedSessionMessage, 0, len(window.Entries))
-		for _, entry := range window.Entries {
-			text, role, ok := extractSessionMessageText(entry.Event)
-			if !ok {
-				continue
-			}
-			messages = append(messages, LoadedSessionMessage{
-				EventID: entry.Event.ID,
-				Role:    role,
-				Created: entry.CreatedAt,
-				Content: text,
-			})
-		}
+		messages := loadedMessagesFromWindow(window)
 
 		return &LoadSessionResponse{
 			SessionID: key.SessionID,

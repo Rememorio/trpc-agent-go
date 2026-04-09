@@ -26,20 +26,39 @@ import (
 
 type mockSessionService struct {
 	session.Service
-	searchResults []session.EventSearchResult
-	searchErr     error
-	lastSearchReq session.EventSearchRequest
-	window        *session.EventWindow
-	windowErr     error
-	lastWindowReq session.EventWindowRequest
+	searchResults  []session.EventSearchResult
+	searchErr      error
+	searchFunc     func(session.EventSearchRequest) ([]session.EventSearchResult, error)
+	searchReqs     []session.EventSearchRequest
+	getSessionFunc func(session.Key, ...session.Option) (*session.Session, error)
+	lastSearchReq  session.EventSearchRequest
+	window         *session.EventWindow
+	windowErr      error
+	windowFunc     func(session.EventWindowRequest) (*session.EventWindow, error)
+	lastWindowReq  session.EventWindowRequest
 }
 
 func (m *mockSessionService) SearchEvents(
 	_ context.Context,
 	req session.EventSearchRequest,
 ) ([]session.EventSearchResult, error) {
+	m.searchReqs = append(m.searchReqs, req)
 	m.lastSearchReq = req
+	if m.searchFunc != nil {
+		return m.searchFunc(req)
+	}
 	return m.searchResults, m.searchErr
+}
+
+func (m *mockSessionService) GetSession(
+	_ context.Context,
+	key session.Key,
+	opts ...session.Option,
+) (*session.Session, error) {
+	if m.getSessionFunc != nil {
+		return m.getSessionFunc(key, opts...)
+	}
+	return m.Service.GetSession(context.Background(), key, opts...)
 }
 
 func (m *mockSessionService) GetEventWindow(
@@ -47,11 +66,15 @@ func (m *mockSessionService) GetEventWindow(
 	req session.EventWindowRequest,
 ) (*session.EventWindow, error) {
 	m.lastWindowReq = req
+	if m.windowFunc != nil {
+		return m.windowFunc(req)
+	}
 	return m.window, m.windowErr
 }
 
 func TestSearchTool_CurrentHidden(t *testing.T) {
 	summaryUpdatedAt := time.Date(2025, 4, 7, 10, 0, 0, 0, time.UTC)
+	createdAt := summaryUpdatedAt.Add(-time.Minute)
 	svc := &mockSessionService{
 		Service: sessioninmemory.NewSessionService(),
 		searchResults: []session.EventSearchResult{
@@ -61,11 +84,81 @@ func TestSearchTool_CurrentHidden(t *testing.T) {
 					UserID:    "user",
 					SessionID: "sess",
 				},
-				EventCreatedAt: summaryUpdatedAt.Add(-time.Minute),
-				Event:          event.Event{ID: "evt-1"},
-				Role:           model.RoleAssistant,
-				Text:           "assistant: remembered detail",
-				Score:          0.91,
+				EventCreatedAt: createdAt,
+				Event: event.Event{
+					ID: "evt-1",
+					Response: &model.Response{
+						Choices: []model.Choice{
+							{
+								Message: model.Message{
+									Role:    model.RoleAssistant,
+									Content: "remembered detail",
+								},
+							},
+						},
+					},
+				},
+				Role:  model.RoleAssistant,
+				Text:  "assistant: remembered detail",
+				Score: 0.91,
+			},
+		},
+		window: &session.EventWindow{
+			SessionKey: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			AnchorEventID: "evt-1",
+			Entries: []session.EventWindowEntry{
+				{
+					Event: event.Event{
+						ID: "evt-0",
+						Response: &model.Response{
+							Choices: []model.Choice{
+								{
+									Message: model.Message{
+										Role:    model.RoleUser,
+										Content: "what happened earlier?",
+									},
+								},
+							},
+						},
+					},
+					CreatedAt: createdAt.Add(-time.Minute),
+				},
+				{
+					Event: event.Event{
+						ID: "evt-1",
+						Response: &model.Response{
+							Choices: []model.Choice{
+								{
+									Message: model.Message{
+										Role:    model.RoleAssistant,
+										Content: "remembered detail",
+									},
+								},
+							},
+						},
+					},
+					CreatedAt: createdAt,
+				},
+				{
+					Event: event.Event{
+						ID: "evt-2",
+						Response: &model.Response{
+							Choices: []model.Choice{
+								{
+									Message: model.Message{
+										Role:    model.RoleUser,
+										Content: "thanks, that helps",
+									},
+								},
+							},
+						},
+					},
+					CreatedAt: createdAt.Add(time.Minute),
+				},
 			},
 		},
 	}
@@ -100,15 +193,252 @@ func TestSearchTool_CurrentHidden(t *testing.T) {
 	require.Len(t, resp.Results, 1)
 	assert.Equal(t, "evt-1", resp.Results[0].EventID)
 	assert.Equal(t, ScopeCurrentHidden, resp.Results[0].Scope)
+	assert.Equal(
+		t,
+		"user: what happened earlier?\n[match] assistant: remembered detail\nuser: thanks, that helps",
+		resp.Results[0].Snippet,
+	)
+	require.Len(t, resp.Results[0].Context, 3)
+	assert.Equal(t, "evt-0", resp.Results[0].Context[0].EventID)
+	assert.Equal(t, model.RoleAssistant, resp.Results[0].Context[1].Role)
+	assert.Equal(t, "remembered detail", resp.Results[0].Context[1].Content)
 	assert.Equal(t, session.SearchModeHybrid, svc.lastSearchReq.SearchMode)
 	assert.Equal(t, []string{"sess"}, svc.lastSearchReq.SessionIDs)
 	require.NotNil(t, svc.lastSearchReq.CreatedBefore)
 	assert.Equal(t, summaryUpdatedAt, *svc.lastSearchReq.CreatedBefore)
+	assert.Equal(t, "evt-1", svc.lastWindowReq.AnchorEventID)
+	assert.Equal(t, 2, svc.lastWindowReq.Before)
+	assert.Equal(t, 2, svc.lastWindowReq.After)
 	assert.ElementsMatch(
 		t,
 		[]model.Role{model.RoleUser, model.RoleAssistant},
 		svc.lastSearchReq.Roles,
 	)
+}
+
+func TestSearchTool_FallbackQuery(t *testing.T) {
+	const originalQuery = "What did Alice say about budget planning for April?"
+	const fallbackQuery = "alice budget planning april"
+
+	createdAt := time.Date(2025, 4, 7, 10, 30, 0, 0, time.UTC)
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchFunc: func(
+			req session.EventSearchRequest,
+		) ([]session.EventSearchResult, error) {
+			switch req.Query {
+			case originalQuery:
+				return nil, nil
+			case fallbackQuery:
+				return []session.EventSearchResult{
+					{
+						SessionKey: session.Key{
+							AppName:   "app",
+							UserID:    "user",
+							SessionID: "sess-old",
+						},
+						EventCreatedAt: createdAt,
+						Event: event.Event{
+							ID: "evt-budget",
+							Response: &model.Response{
+								Choices: []model.Choice{
+									{
+										Message: model.Message{
+											Role:    model.RoleAssistant,
+											Content: "Alice said the April budget review had to move up by one week.",
+										},
+									},
+								},
+							},
+						},
+						Role:  model.RoleAssistant,
+						Score: 0.88,
+					},
+				}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session:        session.NewSession("app", "user", "sess-now"),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&SearchSessionRequest{
+		Query: originalQuery,
+		Scope: ScopeOtherSessions,
+	})
+	require.NoError(t, err)
+
+	result, err := NewSearchTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*SearchSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, fallbackQuery, svc.searchReqs[1].Query)
+	assert.Equal(t, "sess-old", resp.Results[0].SessionID)
+	assert.Len(t, svc.searchReqs, 2)
+}
+
+func TestSearchTool_CurrentHiddenSessionScanFallback(t *testing.T) {
+	summaryUpdatedAt := time.Date(2025, 4, 7, 10, 0, 0, 0, time.UTC)
+	createdAt := summaryUpdatedAt.Add(-2 * time.Minute)
+
+	hiddenSession := session.NewSession("app", "user", "sess")
+	hiddenSession.Events = []event.Event{
+		{
+			ID:        "evt-before",
+			Timestamp: createdAt,
+			Response: &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:    model.RoleUser,
+						Content: "[Turn 031] David Hopkins: I agree the new Act will put more pressure on schools.",
+					},
+				}},
+			},
+		},
+		{
+			ID:        "evt-after",
+			Timestamp: summaryUpdatedAt.Add(time.Minute),
+			Response: &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:    model.RoleUser,
+						Content: "[Turn 220] Later speaker: unrelated follow-up",
+					},
+				}},
+			},
+		},
+	}
+
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchFunc: func(
+			req session.EventSearchRequest,
+		) ([]session.EventSearchResult, error) {
+			return nil, nil
+		},
+		getSessionFunc: func(
+			key session.Key,
+			_ ...session.Option,
+		) (*session.Session, error) {
+			return hiddenSession, nil
+		},
+		window: &session.EventWindow{
+			SessionKey: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			AnchorEventID: "evt-before",
+			Entries: []session.EventWindowEntry{
+				{
+					Event:     hiddenSession.Events[0],
+					CreatedAt: createdAt,
+				},
+			},
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session: session.NewSession(
+			"app",
+			"user",
+			"sess",
+			session.WithSessionSummaries(map[string]*session.Summary{
+				"": {
+					Summary:   "summary",
+					UpdatedAt: summaryUpdatedAt,
+				},
+			}),
+		),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&SearchSessionRequest{
+		Query: "What did David Hopkins think of the new Act?",
+		Scope: ScopeCurrentHidden,
+	})
+	require.NoError(t, err)
+
+	result, err := NewSearchTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*SearchSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, "evt-before", resp.Results[0].EventID)
+	assert.Contains(t, resp.Results[0].Snippet, "David Hopkins")
+	assert.GreaterOrEqual(t, len(svc.searchReqs), 2)
+}
+
+func TestSearchTool_BroadensSparsePrimaryResults(t *testing.T) {
+	const originalQuery = "What did David Hopkins think of the new Act?"
+	const fallbackQuery = "david hopkins think new act"
+
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchFunc: func(
+			req session.EventSearchRequest,
+		) ([]session.EventSearchResult, error) {
+			switch req.Query {
+			case originalQuery:
+				return []session.EventSearchResult{
+					{
+						SessionKey: session.Key{
+							AppName:   "app",
+							UserID:    "user",
+							SessionID: "sess-a",
+						},
+						Event: event.Event{ID: "evt-a"},
+						Score: 0.60,
+					},
+				}, nil
+			case fallbackQuery:
+				return []session.EventSearchResult{
+					{
+						SessionKey: session.Key{
+							AppName:   "app",
+							UserID:    "user",
+							SessionID: "sess-b",
+						},
+						Event: event.Event{ID: "evt-b"},
+						Score: 0.83,
+					},
+				}, nil
+			default:
+				return nil, nil
+			}
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session:        session.NewSession("app", "user", "sess-now"),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&SearchSessionRequest{
+		Query: originalQuery,
+		Scope: ScopeOtherSessions,
+	})
+	require.NoError(t, err)
+
+	result, err := NewSearchTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*SearchSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Results, 2)
+	assert.Equal(t, fallbackQuery, svc.searchReqs[1].Query)
+	assert.Equal(t, "evt-b", resp.Results[0].EventID)
+	assert.Equal(t, "evt-a", resp.Results[1].EventID)
 }
 
 func TestLoadTool(t *testing.T) {
