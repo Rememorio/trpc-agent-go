@@ -67,9 +67,6 @@ const (
 			INDEX idx_event_time (event_time DESC),
 			INDEX idx_kind (app_name, user_id, memory_kind)
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
-
-	// sqlCheckVectorSupport detects native VECTOR type support.
-	sqlCheckVectorSupport = `SELECT 1 FROM information_schema.COLUMNS WHERE 1=0 AND DATA_TYPE = 'vector' LIMIT 0`
 )
 
 // detectVectorSupport checks if the MySQL server supports native VECTOR type (9.0+).
