@@ -1346,9 +1346,9 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 搜索行为取决于后端：
 
 - 对 `inmemory` / `redis` / `mysql` / `postgres`：`SearchMemories` 使用**Token 匹配**（不是语义搜索）。
-- 对 `pgvector`：`SearchMemories` 使用**向量相似度检索**，并且需要配置 Embedder。
+- 对 `pgvector` / `mysqlvec` / `sqlitevec`：`SearchMemories` 使用**向量相似度检索**，并且需要配置 Embedder。
 
-**Token 匹配细节**（非 pgvector 后端）：
+**Token 匹配细节**（非向量后端）：
 
 **英文分词**：转小写 → 过滤停用词（a、the、is 等）→ 空格分割
 
@@ -1371,7 +1371,7 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 搜索："写代码" ❌ 不匹配（词不同）
 ```
 
-**限制**（非 pgvector 后端）：
+**限制**（非向量后端）：
 
 - 这些后端均在**应用层**过滤和排序（\[O(n)\] 复杂度）
 - 数据量大时性能受影响
@@ -1382,7 +1382,7 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 **建议**：
 
 - 使用明确关键词和主题标签提高命中率
-- 如需语义相似度检索，使用 pgvector 后端
+- 如需语义相似度检索，使用 pgvector、mysqlvec 或 sqlitevec 后端
 
 ### 软删除的注意事项
 

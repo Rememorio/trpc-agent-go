@@ -1300,7 +1300,7 @@ Search behavior depends on the backend:
 - For `inmemory` / `redis` / `mysql` / `postgres`: `SearchMemories` uses **token matching** (not semantic search).
 - For `pgvector` / `mysqlvec` / `sqlitevec`: `SearchMemories` uses **vector similarity search** and requires an embedder.
 
-**Token matching details** (non-pgvector backends):
+**Token matching details** (non-vector backends):
 
 **English tokenization**: lowercase → filter stopwords (a, the, is, etc.) → split by spaces
 
@@ -1323,7 +1323,7 @@ Search: "编程" ✅ Match (word-level hit)
 Search: "写代码" ❌ No match (different words)
 ```
 
-**Limitations** (non-pgvector backends):
+**Limitations** (non-vector backends):
 
 - These backends perform filtering and sorting in **application layer** (\[O(n)\] complexity)
 - Performance affected by data volume
@@ -1334,7 +1334,7 @@ Search: "写代码" ❌ No match (different words)
 **Recommendations**:
 
 - Use explicit keywords and topic tags to improve hit rate
-- If you need semantic similarity search, use the pgvector backend
+- If you need semantic similarity search, use the pgvector, mysqlvec, or sqlitevec backend
 
 ### Soft Delete Considerations
 
