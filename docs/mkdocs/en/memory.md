@@ -1015,7 +1015,7 @@ mysqlvecService, err := memorymysqlvec.NewService(
 - `WithExtraOptions(...options)`: Extra options passed to MySQL client
 - `WithSkipDBInit(skip)`: Skip table initialization (for users without DDL permissions)
 
-**Note**: Requires MySQL 9.0+ for native VECTOR support. Falls back to BLOB + Go-side cosine similarity on MySQL 8.x. No additional vector library required.
+**Note**: Requires MySQL 5.7.8+ (for JSON column type). Uses native VECTOR on MySQL 9.0+; falls back to BLOB + Go-side cosine similarity on MySQL 5.7/8.x. No additional vector library required.
 
 **Table schema** (auto-created, MySQL 9.0+):
 
