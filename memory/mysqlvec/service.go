@@ -90,6 +90,14 @@ func NewService(options ...ServiceOpt) (*Service, error) {
 		cachedTools: make(map[string]tool.Tool),
 	}
 
+	// Always detect vector support (even when skipDBInit is set) so that
+	// pre-created MySQL 9.0+ VECTOR tables are not forced onto the BLOB path.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), defaultDBInitTimeout)
+		defer cancel()
+		s.supportsVector = s.detectVectorSupport(ctx)
+	}
+
 	// Initialize database schema unless skipped.
 	if !opts.skipDBInit {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultDBInitTimeout)
@@ -684,8 +692,8 @@ func (s *Service) vectorSearch(
 ) ([]*memory.Entry, error) {
 	var searchQuery strings.Builder
 	vecStr := vectorToString(queryEmbedding)
-	args := []any{vecStr, vecStr, userKey.AppName, userKey.UserID}
-	argIdx := 5
+	// Args order matches SQL placeholders: SELECT(vecStr), WHERE(appName, userID), ..., ORDER BY(vecStr).
+	args := []any{vecStr, userKey.AppName, userKey.UserID}
 
 	fmt.Fprintf(&searchQuery,
 		"SELECT memory_id, app_name, user_id, memory_content, topics, "+
@@ -701,25 +709,23 @@ func (s *Service) vectorSearch(
 
 	if opts.Kind != "" {
 		if opts.Kind == memory.KindFact {
-			fmt.Fprintf(&searchQuery, " AND (memory_kind = ? OR memory_kind = '')")
+			searchQuery.WriteString(" AND (memory_kind = ? OR memory_kind = '')")
 		} else {
-			fmt.Fprintf(&searchQuery, " AND memory_kind = ?")
+			searchQuery.WriteString(" AND memory_kind = ?")
 		}
 		args = append(args, string(opts.Kind))
-		argIdx++
 	}
 	if opts.TimeAfter != nil {
-		fmt.Fprintf(&searchQuery, " AND (event_time >= ? OR event_time IS NULL)")
+		searchQuery.WriteString(" AND (event_time >= ? OR event_time IS NULL)")
 		args = append(args, *opts.TimeAfter)
-		argIdx++
 	}
 	if opts.TimeBefore != nil {
-		fmt.Fprintf(&searchQuery, " AND (event_time <= ? OR event_time IS NULL)")
+		searchQuery.WriteString(" AND (event_time <= ? OR event_time IS NULL)")
 		args = append(args, *opts.TimeBefore)
-		argIdx++
 	}
 
-	_ = argIdx
+	// Append vecStr again for the ORDER BY DISTANCE clause.
+	args = append(args, vecStr)
 	fmt.Fprintf(&searchQuery,
 		" ORDER BY DISTANCE(embedding, STRING_TO_VECTOR(?), 'COSINE') LIMIT %d",
 		maxResults,

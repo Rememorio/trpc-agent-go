@@ -82,11 +82,10 @@ func (s *Service) detectVectorSupport(ctx context.Context) bool {
 }
 
 // initDB initializes the database schema.
+// Note: s.supportsVector must be set before calling this method.
 func (s *Service) initDB(ctx context.Context) error {
 	log.InfoContext(ctx, "initializing mysqlvec memory database schema...")
 
-	// Detect VECTOR support.
-	s.supportsVector = s.detectVectorSupport(ctx)
 	if s.supportsVector {
 		log.InfoContext(ctx, "mysqlvec: MySQL VECTOR type detected")
 	} else {
