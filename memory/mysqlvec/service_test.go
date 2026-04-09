@@ -77,9 +77,9 @@ func (m *mockMemoryExtractor) Extract(_ context.Context, _ []model.Message, _ []
 }
 func (m *mockMemoryExtractor) ShouldExtract(_ *extractor.ExtractionContext) bool { return true }
 func (m *mockMemoryExtractor) SetPrompt(_ string)                                {}
-func (m *mockMemoryExtractor) SetModel(_ model.Model)                             {}
-func (m *mockMemoryExtractor) SetEnabledTools(_ map[string]struct{})              {}
-func (m *mockMemoryExtractor) Metadata() map[string]any                           { return nil }
+func (m *mockMemoryExtractor) SetModel(_ model.Model)                            {}
+func (m *mockMemoryExtractor) SetEnabledTools(_ map[string]struct{})             {}
+func (m *mockMemoryExtractor) Metadata() map[string]any                          { return nil }
 
 // ---------------------------------------------------------------------------
 // Test infrastructure: sqlmock + testClient + setupMockService
