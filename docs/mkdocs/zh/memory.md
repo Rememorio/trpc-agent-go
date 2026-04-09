@@ -632,6 +632,11 @@ export MYSQL_HOST=localhost
 export MYSQL_PASSWORD=password
 go run main.go -memory mysql -soft-delete
 
+# 使用 MySQL Vector 存储
+export MYSQLVEC_HOST=localhost
+export MYSQLVEC_PASSWORD=password
+go run main.go -memory mysqlvec -soft-delete
+
 # 使用 PostgreSQL 存储
 export PG_HOST=localhost
 export PG_PASSWORD=password
