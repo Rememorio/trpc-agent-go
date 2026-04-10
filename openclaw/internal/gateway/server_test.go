@@ -786,6 +786,7 @@ func TestServerInjectedContextMessages_UsesLayeredMemoryAndStorageScopedUploads(
 	require.Contains(t, msgs[0].Content, "the current chat scope")
 	require.Contains(t, msgs[1].Content, "Remember my name")
 	require.Contains(t, msgs[1].Content, "this user")
+	require.Contains(t, msgs[2].Content, recentUploadContextHeader)
 	require.Contains(t, msgs[2].Content, "clip.mp4 [video]")
 }
 

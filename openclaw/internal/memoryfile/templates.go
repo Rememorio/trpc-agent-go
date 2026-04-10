@@ -11,6 +11,13 @@ package memoryfile
 
 import "strings"
 
+var (
+	defaultTemplateTrimmed       = strings.TrimSpace(DefaultTemplate())
+	legacyDefaultTemplateTrimmed = strings.TrimSpace(
+		legacyDefaultTemplate(),
+	)
+)
+
 func DefaultTemplate() string {
 	return strings.Join([]string{
 		"# Memory",
@@ -105,8 +112,6 @@ func legacyDefaultTemplate() string {
 
 func IsDefaultTemplate(content string) bool {
 	trimmed := strings.TrimSpace(content)
-	if trimmed == strings.TrimSpace(DefaultTemplate()) {
-		return true
-	}
-	return trimmed == strings.TrimSpace(legacyDefaultTemplate())
+	return trimmed == defaultTemplateTrimmed ||
+		trimmed == legacyDefaultTemplateTrimmed
 }

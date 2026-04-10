@@ -643,6 +643,7 @@ func TestIsDefaultTemplate(t *testing.T) {
 	t.Parallel()
 
 	require.True(t, IsDefaultTemplate(DefaultTemplate()))
+	require.True(t, IsDefaultTemplate("\n"+DefaultTemplate()+"\n"))
 	require.False(t, IsDefaultTemplate("# Memory\n\n- custom fact"))
 
 	// Legacy template text should also be recognised as default.
@@ -688,10 +689,12 @@ func TestIsDefaultTemplate(t *testing.T) {
 		"",
 	}, "\n")
 	require.True(t, IsDefaultTemplate(legacyTemplate))
+	require.True(t, IsDefaultTemplate("\n"+legacyTemplate+"\n"))
 
 	// Edited legacy template with user content should not be default.
 	editedLegacy := legacyTemplate + "\n- My name is Alice"
 	require.False(t, IsDefaultTemplate(editedLegacy))
+	require.False(t, IsDefaultTemplate("\n"+editedLegacy+"\n"))
 }
 
 func TestContextErr_NilContextReturnsNil(t *testing.T) {
