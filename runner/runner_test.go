@@ -2006,6 +2006,27 @@ func TestWithMemoryService(t *testing.T) {
 	})
 }
 
+func TestWithSessionIngestor(t *testing.T) {
+	t.Run("sets session ingestor in options", func(t *testing.T) {
+		ingestor := &mockSessionIngestor{}
+		opts := &Options{}
+
+		option := WithSessionIngestor(ingestor)
+		option(opts)
+
+		assert.Equal(t, ingestor, opts.sessionIngestor, "Session ingestor should be set in options")
+	})
+
+	t.Run("sets nil session ingestor", func(t *testing.T) {
+		opts := &Options{}
+
+		option := WithSessionIngestor(nil)
+		option(opts)
+
+		assert.Nil(t, opts.sessionIngestor, "Session ingestor should be nil")
+	})
+}
+
 func TestWithArtifactService(t *testing.T) {
 	t.Run("sets artifact service in options", func(t *testing.T) {
 		artifactService := artifactinmemory.NewService()

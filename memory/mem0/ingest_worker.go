@@ -32,8 +32,7 @@ type ingestJob struct {
 }
 
 type ingestWorker struct {
-	c       *client
-	service *Service
+	c *client
 
 	asyncMode bool
 	version   string
@@ -57,7 +56,7 @@ const (
 	ingestEventPollInterval    = 2 * time.Second
 )
 
-func newIngestWorker(c *client, opts serviceOpts, service *Service) *ingestWorker {
+func newIngestWorker(c *client, opts serviceOpts) *ingestWorker {
 	num := opts.asyncMemoryNum
 	if num <= 0 {
 		num = defaultIngestWorkers
@@ -66,10 +65,8 @@ func newIngestWorker(c *client, opts serviceOpts, service *Service) *ingestWorke
 	if queueSize <= 0 {
 		queueSize = defaultIngestQueueSize
 	}
-
 	w := &ingestWorker{
 		c:         c,
-		service:   service,
 		asyncMode: opts.asyncMode,
 		version:   opts.version,
 		timeout:   opts.memoryJobTimeout,
@@ -113,7 +110,6 @@ func (w *ingestWorker) Stop() {
 	}
 	w.started = false
 	w.mu.Unlock()
-
 	w.wg.Wait()
 }
 
@@ -126,13 +122,11 @@ func (w *ingestWorker) tryEnqueue(ctx context.Context, job *ingestJob) bool {
 			return false
 		}
 	}
-
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if !w.started || len(w.jobChans) == 0 {
 		return false
 	}
-
 	idx := 0
 	if job.Session != nil {
 		idx = job.Session.Hash
@@ -165,19 +159,12 @@ func (w *ingestWorker) process(job *ingestJob) {
 		ctx, cancel = context.WithTimeout(ctx, w.timeout)
 		defer cancel()
 	}
-
 	if err := w.ingest(ctx, job.UserKey, job.Session, job.Messages); err != nil {
-		log.WarnfContext(ctx, "mem0: ingest failed for user %s/%s: %v",
-			job.UserKey.AppName, job.UserKey.UserID, err)
+		log.WarnfContext(ctx, "mem0: ingest failed for user %s/%s: %v", job.UserKey.AppName, job.UserKey.UserID, err)
 	}
 }
 
-func (w *ingestWorker) ingest(
-	ctx context.Context,
-	userKey memory.UserKey,
-	sess *session.Session,
-	messages []model.Message,
-) error {
+func (w *ingestWorker) ingest(ctx context.Context, userKey memory.UserKey, _ *session.Session, messages []model.Message) error {
 	apiMsgs := make([]apiMessage, 0, len(messages))
 	for _, m := range messages {
 		content := messageText(m)
@@ -189,63 +176,39 @@ func (w *ingestWorker) ingest(
 	if len(apiMsgs) == 0 {
 		return nil
 	}
-
-	var runID string
-	if sess != nil {
-		runID = sess.ID
-	}
-
 	req := createMemoryRequest{
 		Messages:  apiMsgs,
 		UserID:    userKey.UserID,
 		AppID:     userKey.AppName,
-		RunID:     runID,
 		Infer:     true,
 		Async:     w.asyncMode,
 		Version:   w.version,
 		OrgID:     w.orgID,
 		ProjectID: w.projectID,
 	}
-
 	var events createMemoryEvents
 	if err := w.c.doJSON(ctx, httpMethodPost, pathV1Memories, nil, req, &events); err != nil {
 		return err
 	}
-	return w.syncIngestResults(ctx, userKey, events)
+	return w.awaitQueuedEvents(ctx, events)
 }
 
-func (w *ingestWorker) syncIngestResults(
-	ctx context.Context,
-	userKey memory.UserKey,
-	events createMemoryEvents,
-) error {
-	if w == nil || w.service == nil || len(events) == 0 {
-		return nil
-	}
+func (w *ingestWorker) awaitQueuedEvents(ctx context.Context, events createMemoryEvents) error {
 	for _, evt := range events {
 		if eventID := strings.TrimSpace(evt.EventID); eventID != "" {
-			resolved, err := w.awaitIngestEvent(ctx, eventID)
-			if err != nil {
+			if _, err := w.awaitIngestEvent(ctx, eventID); err != nil {
 				return err
-			}
-			for _, result := range resolved.Results {
-				if err := w.service.syncIngestedMemoryEvent(ctx, userKey, result); err != nil {
-					return err
-				}
 			}
 			continue
 		}
-		if err := w.service.syncIngestedMemoryEvent(ctx, userKey, evt); err != nil {
-			return err
+		if strings.EqualFold(strings.TrimSpace(evt.Status), ingestEventStatusFailed) {
+			return fmt.Errorf("mem0: ingest failed: %s", strings.TrimSpace(evt.Message))
 		}
 	}
 	return nil
 }
 
-func (w *ingestWorker) awaitIngestEvent(
-	ctx context.Context,
-	eventID string,
-) (*eventStatusResponse, error) {
+func (w *ingestWorker) awaitIngestEvent(ctx context.Context, eventID string) (*eventStatusResponse, error) {
 	path := "/v1/event/" + eventID + "/"
 	for {
 		var out eventStatusResponse
@@ -275,7 +238,7 @@ func (w *ingestWorker) awaitIngestEvent(
 
 func hashUserKey(userKey memory.UserKey) int {
 	h := fnv.New32a()
-	h.Write([]byte(userKey.AppName))
-	h.Write([]byte(userKey.UserID))
+	_, _ = h.Write([]byte(userKey.AppName))
+	_, _ = h.Write([]byte(userKey.UserID))
 	return int(h.Sum32())
 }

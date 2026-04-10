@@ -29,6 +29,18 @@ type mockMemoryServiceForAutoMemory struct {
 	sess          *session.Session
 }
 
+type mockSessionIngestor struct {
+	enqueueCalled bool
+	enqueueErr    error
+	sess          *session.Session
+}
+
+func (m *mockSessionIngestor) EnqueueSessionIngest(ctx context.Context, sess *session.Session) error {
+	m.enqueueCalled = true
+	m.sess = sess
+	return m.enqueueErr
+}
+
 func (m *mockMemoryServiceForAutoMemory) AddMemory(ctx context.Context, userKey memory.UserKey, memoryStr string, topics []string, _ ...memory.AddOption) error {
 	return nil
 }
@@ -123,4 +135,27 @@ func TestRunner_WithMemoryService_AutoMemoryIntegration(t *testing.T) {
 	require.NotNil(t, mockMemSvc.sess)
 	require.Equal(t, "test-app", mockMemSvc.sess.AppName)
 	require.Equal(t, "user", mockMemSvc.sess.UserID)
+}
+
+func TestRunner_WithSessionIngestor_Integration(t *testing.T) {
+	mockIngestor := &mockSessionIngestor{}
+	sessSvc := sessioninmemory.NewSessionService()
+	mockAgent := &mockAgent{name: "test-agent"}
+
+	r := NewRunner("test-app", mockAgent,
+		WithSessionService(sessSvc),
+		WithSessionIngestor(mockIngestor),
+	)
+
+	ctx := context.Background()
+	eventCh, err := r.Run(ctx, "user", "session", model.NewUserMessage("hello"))
+	require.NoError(t, err)
+
+	for range eventCh {
+	}
+
+	require.True(t, mockIngestor.enqueueCalled)
+	require.NotNil(t, mockIngestor.sess)
+	require.Equal(t, "test-app", mockIngestor.sess.AppName)
+	require.Equal(t, "user", mockIngestor.sess.UserID)
 }

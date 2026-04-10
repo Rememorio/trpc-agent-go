@@ -24,7 +24,6 @@ type createMemoryRequest struct {
 	UserID    string         `json:"user_id,omitempty"`
 	AppID     string         `json:"app_id,omitempty"`
 	RunID     string         `json:"run_id,omitempty"`
-	AgentID   string         `json:"agent_id,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 	Infer     bool           `json:"infer"`
 	Async     bool           `json:"async_mode"`
@@ -35,30 +34,9 @@ type createMemoryRequest struct {
 
 type createMemoryEvent struct {
 	ID      string `json:"id"`
-	Event   string `json:"event"`
 	EventID string `json:"event_id"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
-	Memory  string `json:"memory"`
-	Data    struct {
-		Memory string `json:"memory"`
-	} `json:"data"`
-}
-
-func (e *createMemoryEvent) UnmarshalJSON(data []byte) error {
-	type rawCreateMemoryEvent createMemoryEvent
-	var raw rawCreateMemoryEvent
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*e = createMemoryEvent(raw)
-	if e.Data.Memory == "" && e.Memory != "" {
-		e.Data.Memory = e.Memory
-	}
-	if e.Memory == "" && e.Data.Memory != "" {
-		e.Memory = e.Data.Memory
-	}
-	return nil
 }
 
 type createMemoryEvents []createMemoryEvent
@@ -84,11 +62,6 @@ type eventStatusResponse struct {
 	ID      string              `json:"id"`
 	Status  string              `json:"status"`
 	Results []createMemoryEvent `json:"results"`
-}
-
-type updateMemoryRequest struct {
-	Text     string         `json:"text,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type memoryRecord struct {

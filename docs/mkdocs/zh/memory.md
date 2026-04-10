@@ -439,30 +439,7 @@ appRunner := runner.NewRunner(
 
 ### 记忆服务 (Memory Service)
 
-记忆服务支持多种存储后端（InMemory、SQLite、SQLiteVec、Redis、MySQL、PostgreSQL、pgvector、mem0），可根据场景选择。
-
-对于托管的远程后端，mem0 使用 API 凭据而不是数据库 DSN：
-
-```go
-import (
-    "os"
-
-    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
-)
-
-host := os.Getenv("MEM0_HOST")
-if host == "" {
-    host = os.Getenv("MEM0_BASE_URL")
-}
-
-mem0Service, err := memorymem0.NewService(
-    memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
-    memorymem0.WithHost(host),
-)
-if err != nil {
-    // 处理错误
-}
-```
+记忆服务支持多种存储后端（InMemory、SQLite、SQLiteVec、Redis、MySQL、PostgreSQL、pgvector），可根据场景选择。
 
 #### 配置示例
 
@@ -664,11 +641,6 @@ go run main.go -memory postgres -soft-delete
 export PGVECTOR_HOST=localhost
 export PGVECTOR_PASSWORD=password
 go run main.go -memory pgvector -soft-delete
-
-# 使用 mem0 托管存储
-export MEM0_API_KEY=your-mem0-api-key
-export MEM0_BASE_URL=https://api.mem0.ai
-go run main.go -memory mem0
 
 # 非流式输出模式
 go run main.go -streaming=false
@@ -1217,48 +1189,19 @@ CREATE INDEX ON memories USING hnsw (embedding vector_cosine_ops);
 defer pgvectorService.Close()
 ```
 
-### mem0 托管存储
-
-**适用场景**：通过 API 使用托管的语义记忆服务
-
-```go
-import (
-    "os"
-
-    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
-)
-
-host := os.Getenv("MEM0_HOST")
-if host == "" {
-    host = os.Getenv("MEM0_BASE_URL")
-}
-
-mem0Service, err := memorymem0.NewService(
-    memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
-    memorymem0.WithHost(host),
-)
-if err != nil {
-    panic(err)
-}
-
-defer mem0Service.Close()
-```
-
-**说明**：`MEM0_API_KEY` 为必填。示例辅助函数同时兼容 `MEM0_HOST` 与 `MEM0_BASE_URL` 两种主机/Base URL 环境变量。
-
 ### 后端对比与选择
 
-| 特性         | InMemory | SQLite     | SQLiteVec | Redis  | MySQL    | PostgreSQL | pgvector | mem0             |
-| ------------ | -------- | ---------- | -------- | ------ | -------- | ---------- | -------- | ---------------- |
-| **持久化**   | ❌       | ✅         | ✅       | ✅     | ✅       | ✅         | ✅       | ✅               |
-| **分布式**   | ❌       | ❌         | ❌       | ✅     | ✅       | ✅         | ✅       | ✅               |
-| **事务**     | ❌       | ✅ ACID    | ✅ ACID  | 部分   | ✅ ACID  | ✅ ACID    | ✅ ACID  | 服务侧定义       |
-| **查询**     | 简单     | SQL        | SQL+向量 | 中等   | SQL      | SQL        | SQL+向量 | 托管语义检索     |
-| **JSON**     | ❌       | 基础       | 基础     | 基础   | JSON     | JSONB      | JSONB    | Metadata         |
-| **性能**     | 极高     | 中高       | 中高     | 高     | 中高     | 中高       | 中高     | 托管             |
-| **配置**     | 零配置   | 简单       | 中等     | 简单   | 中等     | 中等       | 中等     | 简单             |
-| **软删除**   | ❌       | ✅         | ✅       | ❌     | ✅       | ✅         | ✅       | ❌               |
-| **适用场景** | 开发测试 | 本地持久化 | 本地向量 | 高并发 | 企业应用 | 高级特性   | 向量搜索 | 托管语义记忆服务 |
+| 特性         | InMemory | SQLite     | SQLiteVec | Redis  | MySQL    | PostgreSQL | pgvector |
+| ------------ | -------- | ---------- | -------- | ------ | -------- | ---------- | -------- |
+| **持久化**   | ❌       | ✅         | ✅       | ✅     | ✅       | ✅         | ✅       |
+| **分布式**   | ❌       | ❌         | ❌       | ✅     | ✅       | ✅         | ✅       |
+| **事务**     | ❌       | ✅ ACID    | ✅ ACID  | 部分   | ✅ ACID  | ✅ ACID    | ✅ ACID  |
+| **查询**     | 简单     | SQL        | SQL+向量 | 中等   | SQL      | SQL        | SQL+向量 |
+| **JSON**     | ❌       | 基础       | 基础     | 基础   | JSON     | JSONB      | JSONB    |
+| **性能**     | 极高     | 中高       | 中高     | 高     | 中高     | 中高       | 中高     |
+| **配置**     | 零配置   | 简单       | 中等     | 简单   | 中等     | 中等       | 中等     |
+| **软删除**   | ❌       | ✅         | ✅       | ❌     | ✅       | ✅         | ✅       |
+| **适用场景** | 开发测试 | 本地持久化 | 本地向量 | 高并发 | 企业应用 | 高级特性   | 向量搜索 |
 
 **选择建议**：
 
@@ -1270,7 +1213,6 @@ defer mem0Service.Close()
 需要 ACID → MySQL/PostgreSQL（事务保证）
 复杂 JSON → PostgreSQL（JSONB 索引和查询）
 向量搜索 → pgvector（基于 embedding 的相似度搜索）
-托管语义记忆 → mem0（通过 API 接入的托管记忆服务）
 审计追踪 → MySQL/PostgreSQL/pgvector/SQLite/SQLiteVec（软删除支持）
 ```
 
@@ -1326,11 +1268,10 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 
 搜索行为取决于后端：
 
-- 对 `inmemory` / `sqlite` / `redis` / `mysql` / `postgres`：`SearchMemories` 使用**Token 匹配**（不是语义搜索）。
-- 对 `sqlitevec` / `pgvector`：`SearchMemories` 使用**向量相似度检索**，并且需要配置 Embedder。
-- 对 `mem0`：`SearchMemories` 默认使用 mem0 托管语义检索；当启用 `HybridSearch` 时，还会叠加本地 `ReadMemories` 的关键词结果做融合排序。
+- 对 `inmemory` / `redis` / `mysql` / `postgres`：`SearchMemories` 使用**Token 匹配**（不是语义搜索）。
+- 对 `pgvector`：`SearchMemories` 使用**向量相似度检索**，并且需要配置 Embedder。
 
-**Token 匹配细节**（关键词检索后端）：
+**Token 匹配细节**（非 pgvector 后端）：
 
 **英文分词**：转小写 → 过滤停用词（a、the、is 等）→ 空格分割
 
@@ -1353,7 +1294,7 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 搜索："写代码" ❌ 不匹配（词不同）
 ```
 
-**限制**（关键词检索后端）：
+**限制**（非 pgvector 后端）：
 
 - 这些后端均在**应用层**过滤和排序（\[O(n)\] 复杂度）
 - 数据量大时性能受影响
@@ -1364,14 +1305,14 @@ memory.AddMemory(ctx, userKey, "用户喜欢编程", []string{"爱好"})
 **建议**：
 
 - 使用明确关键词和主题标签提高命中率
-- 如需语义相似度检索，使用 `sqlitevec`、`pgvector` 或 `mem0`
+- 如需语义相似度检索，使用 pgvector 后端
 
 ### 软删除的注意事项
 
 **支持情况**：
 
 - ✅ MySQL、PostgreSQL、pgvector、SQLite、SQLiteVec：支持软删除
-- ❌ InMemory、Redis、mem0：不支持可配置软删除（只有硬删除）
+- ❌ InMemory、Redis：不支持（只有硬删除）
 
 **软删除配置**：
 

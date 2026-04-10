@@ -10,16 +10,25 @@
 package mem0
 
 import (
+	"errors"
+	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
-	imemory "trpc.group/trpc-go/trpc-agent-go/memory/internal/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
 const (
+	metadataKeyTRPCTopics       = "trpc_topics"
+	metadataKeyTRPCAppName      = "trpc_app_name"
+	metadataKeyTRPCKind         = "trpc_kind"
+	metadataKeyTRPCEventTime    = "trpc_event_time"
+	metadataKeyTRPCParticipants = "trpc_participants"
+	metadataKeyTRPCLocation     = "trpc_location"
+
 	pathV1Memories = "/v1/memories/"
 	pathV2Search   = "/v2/memories/search/"
 
@@ -29,17 +38,10 @@ const (
 	queryKeyPageSize = "page_size"
 
 	memoryUserRole = "user"
+
+	defaultListPageSize = 100
+	defaultSearchTopK   = 20
 )
-
-func buildMemoryPath(memoryID string) string {
-	id := strings.TrimSpace(memoryID)
-	return pathV1Memories + url.PathEscape(id) + "/"
-}
-
-func metadataQueryKey(key string) string {
-	k := strings.TrimSpace(key)
-	return "metadata[" + k + "]"
-}
 
 func addOrgProjectQuery(q url.Values, opts serviceOpts) {
 	if q == nil {
@@ -105,19 +107,11 @@ func parseMem0Time(s string) (time.Time, bool) {
 }
 
 func toEntry(appName, userID string, rec *memoryRecord) *memory.Entry {
-	if rec == nil {
+	if rec == nil || strings.TrimSpace(rec.ID) == "" || strings.TrimSpace(rec.Memory) == "" {
 		return nil
 	}
-	if strings.TrimSpace(rec.ID) == "" {
-		return nil
-	}
-	if strings.TrimSpace(rec.Memory) == "" {
-		return nil
-	}
-
 	times := parseMem0Times(rec)
 	updatedAt := times.UpdatedAt
-
 	mem := &memory.Memory{
 		Memory:      rec.Memory,
 		Topics:      readTopicsFromMetadata(rec.Metadata),
@@ -129,8 +123,6 @@ func toEntry(appName, userID string, rec *memoryRecord) *memory.Entry {
 		),
 		Location: readLocationFromMetadata(rec.Metadata),
 	}
-	imemory.NormalizeMemory(mem)
-
 	return &memory.Entry{
 		ID:        rec.ID,
 		AppName:   appName,
@@ -149,29 +141,19 @@ func readTopicsFromMetadata(meta map[string]any) []string {
 	if !ok || raw == nil {
 		return nil
 	}
-
-	// Prefer the native JSON decoded shape.
-	arr, ok := raw.([]any)
-	if ok {
+	if arr, ok := raw.([]any); ok {
 		out := make([]string, 0, len(arr))
 		for _, v := range arr {
 			s, ok := v.(string)
-			if !ok || strings.TrimSpace(s) == "" {
-				continue
+			if ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
 			}
-			out = append(out, s)
 		}
 		return out
 	}
-
-	// Allow a single string for compatibility.
-	if s, ok := raw.(string); ok {
-		if strings.TrimSpace(s) == "" {
-			return nil
-		}
+	if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
 		return []string{s}
 	}
-
 	return nil
 }
 
@@ -179,30 +161,15 @@ func readKindFromMetadata(meta map[string]any) memory.Kind {
 	if meta == nil {
 		return ""
 	}
-	raw, ok := meta[metadataKeyTRPCKind]
-	if !ok {
-		return ""
-	}
-	kind, ok := raw.(string)
-	if !ok {
-		return ""
-	}
-	kind = strings.TrimSpace(kind)
-	return memory.Kind(kind)
+	kind, _ := meta[metadataKeyTRPCKind].(string)
+	return memory.Kind(strings.TrimSpace(kind))
 }
 
 func readEventTimeFromMetadata(meta map[string]any) *time.Time {
 	if meta == nil {
 		return nil
 	}
-	raw, ok := meta[metadataKeyTRPCEventTime]
-	if !ok {
-		return nil
-	}
-	value, ok := raw.(string)
-	if !ok {
-		return nil
-	}
+	value, _ := meta[metadataKeyTRPCEventTime].(string)
 	eventTime, ok := parseMem0Time(value)
 	if !ok {
 		return nil
@@ -218,33 +185,28 @@ func readParticipantsFromMetadata(meta map[string]any) []string {
 	if !ok || raw == nil {
 		return nil
 	}
-	arr, ok := raw.([]any)
-	if ok {
+	if arr, ok := raw.([]any); ok {
 		out := make([]string, 0, len(arr))
 		for _, v := range arr {
 			s, ok := v.(string)
-			if !ok || strings.TrimSpace(s) == "" {
-				continue
+			if ok && strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
 			}
-			out = append(out, strings.TrimSpace(s))
 		}
-		if len(out) == 0 {
-			return nil
+		if len(out) > 0 {
+			return out
 		}
-		return out
 	}
 	if arr, ok := raw.([]string); ok {
 		out := make([]string, 0, len(arr))
 		for _, s := range arr {
-			if strings.TrimSpace(s) == "" {
-				continue
+			if strings.TrimSpace(s) != "" {
+				out = append(out, strings.TrimSpace(s))
 			}
-			out = append(out, strings.TrimSpace(s))
 		}
-		if len(out) == 0 {
-			return nil
+		if len(out) > 0 {
+			return out
 		}
-		return out
 	}
 	return nil
 }
@@ -253,14 +215,7 @@ func readLocationFromMetadata(meta map[string]any) string {
 	if meta == nil {
 		return ""
 	}
-	raw, ok := meta[metadataKeyTRPCLocation]
-	if !ok {
-		return ""
-	}
-	location, ok := raw.(string)
-	if !ok {
-		return ""
-	}
+	location, _ := meta[metadataKeyTRPCLocation].(string)
 	return strings.TrimSpace(location)
 }
 
@@ -282,4 +237,78 @@ func messageText(msg model.Message) string {
 		parts = append(parts, strings.TrimSpace(*part.Text))
 	}
 	return strings.Join(parts, "\n")
+}
+
+func matchesSearchFilters(entry *memory.Entry, opts memory.SearchOptions) bool {
+	if entry == nil || entry.Memory == nil {
+		return false
+	}
+	strictKind := opts.Kind != "" && !opts.KindFallback
+	if strictKind && entry.Memory.Kind != opts.Kind {
+		return false
+	}
+	if opts.TimeAfter != nil && entry.Memory.EventTime != nil && entry.Memory.EventTime.Before(*opts.TimeAfter) {
+		return false
+	}
+	if opts.TimeBefore != nil && entry.Memory.EventTime != nil && entry.Memory.EventTime.After(*opts.TimeBefore) {
+		return false
+	}
+	if opts.SimilarityThreshold > 0 && entry.Score < opts.SimilarityThreshold {
+		return false
+	}
+	return true
+}
+
+func sortSearchResults(results []*memory.Entry, opts memory.SearchOptions) {
+	sort.Slice(results, func(i, j int) bool {
+		if opts.Kind != "" && opts.KindFallback {
+			ik := results[i] != nil && results[i].Memory != nil && results[i].Memory.Kind == opts.Kind
+			jk := results[j] != nil && results[j].Memory != nil && results[j].Memory.Kind == opts.Kind
+			if ik != jk {
+				return ik
+			}
+		}
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		if opts.OrderByEventTime {
+			it, jt := results[i].Memory.EventTime, results[j].Memory.EventTime
+			switch {
+			case it != nil && jt != nil && !it.Equal(*jt):
+				return it.Before(*jt)
+			case it != nil && jt == nil:
+				return true
+			case it == nil && jt != nil:
+				return false
+			}
+		}
+		if results[i].UpdatedAt.Equal(results[j].UpdatedAt) {
+			return results[i].CreatedAt.After(results[j].CreatedAt)
+		}
+		return results[i].UpdatedAt.After(results[j].UpdatedAt)
+	})
+}
+
+func searchCandidateLimit(opts memory.SearchOptions, maxResults int) int {
+	limit := defaultSearchTopK
+	if maxResults > limit {
+		limit = maxResults
+	}
+	if opts.Kind != "" || opts.TimeAfter != nil || opts.TimeBefore != nil {
+		if limit < defaultListPageSize {
+			limit = defaultListPageSize
+		}
+		if maxResults > 0 && limit < maxResults*3 {
+			limit = maxResults * 3
+		}
+	}
+	return limit
+}
+
+func isInvalidPageError(err error) bool {
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(apiErr.Body), "invalid page")
 }

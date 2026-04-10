@@ -17,8 +17,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
-// readLastExtractAt reads the last ingestion timestamp from session state.
-// Returns zero time if not found or parsing fails.
 func readLastExtractAt(sess *session.Session) time.Time {
 	if sess == nil {
 		return time.Time{}
@@ -34,21 +32,14 @@ func readLastExtractAt(sess *session.Session) time.Time {
 	return ts
 }
 
-// writeLastExtractAt writes the last ingestion timestamp to session state.
 func writeLastExtractAt(sess *session.Session, ts time.Time) {
 	if sess == nil {
 		return
 	}
-	sess.SetState(memory.SessionStateKeyAutoMemoryLastExtractAt,
-		[]byte(ts.UTC().Format(time.RFC3339Nano)))
+	sess.SetState(memory.SessionStateKeyAutoMemoryLastExtractAt, []byte(ts.UTC().Format(time.RFC3339Nano)))
 }
 
-// scanDeltaSince scans session events since the given timestamp and extracts
-// user/assistant messages.
-func scanDeltaSince(
-	sess *session.Session,
-	since time.Time,
-) (time.Time, []model.Message) {
+func scanDeltaSince(sess *session.Session, since time.Time) (time.Time, []model.Message) {
 	if sess == nil {
 		return time.Time{}, nil
 	}
@@ -70,10 +61,7 @@ func scanDeltaSince(
 		}
 		for _, choice := range e.Response.Choices {
 			msg := choice.Message
-			if msg.Role == model.RoleTool || msg.ToolID != "" {
-				continue
-			}
-			if len(msg.ToolCalls) > 0 {
+			if msg.Role == model.RoleTool || msg.ToolID != "" || len(msg.ToolCalls) > 0 {
 				continue
 			}
 			if msg.Role != model.RoleUser && msg.Role != model.RoleAssistant {

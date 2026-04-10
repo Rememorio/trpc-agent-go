@@ -24,7 +24,7 @@ A simple example that demonstrates manual memory tool integration where LLM agen
   delete, clear)
 - Custom tool implementations
 - Streaming and non-streaming response modes
-- Multiple storage backends (in-memory, SQLite, SQLiteVec, Redis, MySQL, PostgreSQL, pgvector, mem0)
+- Multiple storage backends (in-memory, SQLite, Redis, MySQL, PostgreSQL, pgvector)
 
 **Use Cases:**
 
@@ -89,29 +89,6 @@ go run .
 
 [Read full documentation →](./compare/README.md)
 
-### 📁 mem0/
-
-**Mem0-Focused Route Demo**
-
-A focused example for `memory/mem0` that demonstrates all three supported
-integration routes:
-
-- `agentic`: agent tool call writes existing memory text
-- `auto-extractor`: framework extractor writes existing memory text
-- `auto-ingest`: raw transcript is ingested by mem0 and mirrored back into
-  framework-visible memories
-
-**Getting Started:**
-
-```bash
-cd examples/memory/mem0
-export OPENAI_API_KEY="your-api-key"
-export MEM0_API_KEY="your-mem0-api-key"
-go run . -route agentic
-```
-
-[Read full documentation →](./mem0/README.md)
-
 ## Common Features
 
 The chat examples (`simple/` and `auto/`) share the following capabilities:
@@ -129,7 +106,6 @@ All examples support multiple storage backends:
 | `mysql`    | MySQL-based storage                         | `-memory=mysql`    |
 | `postgres` | PostgreSQL-based storage                    | `-memory=postgres` |
 | `pgvector` | pgvector PostgreSQL storage with embeddings | `-memory=pgvector` |
-| `mem0`     | mem0 managed memory service                 | `-memory=mem0`     |
 
 ### Session Management
 
@@ -226,11 +202,6 @@ Memory provides 6 tools with different availability in each mode:
 | `MYSQL_USER`              | MySQL user                   | `root`                      |
 | `MYSQL_PASSWORD`          | MySQL password               | (empty)                     |
 | `MYSQL_DATABASE`          | MySQL database               | `trpc_agent_go`             |
-| `MEM0_API_KEY`            | mem0 API key                 | (empty)                     |
-| `MEM0_HOST`               | mem0 API host                | `https://api.mem0.ai`       |
-| `MEM0_BASE_URL`           | Alias of `MEM0_HOST`         | `https://api.mem0.ai`       |
-| `MEM0_ORG_ID`             | mem0 organization ID         | (empty)                     |
-| `MEM0_PROJECT_ID`         | mem0 project ID              | (empty)                     |
 
 ## Quick Start
 
@@ -300,13 +271,6 @@ export PGVECTOR_PASSWORD=""
 export PGVECTOR_DATABASE=trpc-agent-go-pgmemory
 export PGVECTOR_EMBEDDER_MODEL=text-embedding-3-small
 go run main.go -memory pgvector
-
-# mem0 managed memory service
-export MEM0_API_KEY=your-mem0-api-key
-export MEM0_BASE_URL=https://api.mem0.ai
-export MEM0_ORG_ID=
-export MEM0_PROJECT_ID=
-go run main.go -memory mem0
 ```
 
 ### Custom Models
@@ -366,7 +330,7 @@ Agent (LLM)
     ↓
 Memory Service
     ↓
-Storage Backend (InMemory/SQLite/SQLiteVec/Redis/MySQL/PostgreSQL/pgvector/mem0)
+Storage Backend (InMemory/Redis/MySQL/PostgreSQL)
 ```
 
 ## Extensibility

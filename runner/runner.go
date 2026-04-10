@@ -82,10 +82,23 @@ type AgentFactory func(
 	ro agent.RunOptions,
 ) (agent.Agent, error)
 
+// SessionIngestor ingests a completed session transcript into an external
+// long-term memory platform.
+type SessionIngestor interface {
+	EnqueueSessionIngest(ctx context.Context, sess *session.Session) error
+}
+
 // WithMemoryService sets the memory service to use.
 func WithMemoryService(service memory.Service) Option {
 	return func(opts *Options) {
 		opts.memoryService = service
+	}
+}
+
+// WithSessionIngestor sets the external session ingestor to use.
+func WithSessionIngestor(ingestor SessionIngestor) Option {
+	return func(opts *Options) {
+		opts.sessionIngestor = ingestor
 	}
 }
 
@@ -199,6 +212,7 @@ type runner struct {
 	agentFactories   map[string]AgentFactory
 	sessionService   session.Service
 	memoryService    memory.Service
+	sessionIngestor  SessionIngestor
 	artifactService  artifact.Service
 	pluginManager    agent.PluginManager
 	ralphLoop        *RalphLoopConfig
@@ -223,6 +237,7 @@ type runHandle struct {
 type Options struct {
 	sessionService  session.Service
 	memoryService   memory.Service
+	sessionIngestor SessionIngestor
 	artifactService artifact.Service
 	agents          map[string]agent.Agent
 	agentFactories  map[string]AgentFactory
@@ -273,6 +288,7 @@ func NewRunner(appName string, ag agent.Agent, opts ...Option) Runner {
 		agentFactories:      options.agentFactories,
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
+		sessionIngestor:     options.sessionIngestor,
 		artifactService:     options.artifactService,
 		pluginManager:       pm,
 		ralphLoop:           options.ralphLoop,
@@ -323,6 +339,7 @@ func NewRunnerWithAgentFactory(
 		agentFactories:      options.agentFactories,
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
+		sessionIngestor:     options.sessionIngestor,
 		artifactService:     options.artifactService,
 		pluginManager:       pm,
 		ralphLoop:           options.ralphLoop,
@@ -1502,6 +1519,8 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 
 	// Enqueue auto memory extraction job if memory service is configured.
 	r.enqueueAutoMemoryJob(ctx, loop.sess)
+	// Enqueue external session ingestion if configured.
+	r.enqueueSessionIngest(ctx, loop.sess)
 }
 
 func resolveExecutionTraceStatus(loop *eventLoopContext, ctxErr error) trace.TraceStatus {
@@ -2022,5 +2041,14 @@ func (r *runner) enqueueAutoMemoryJob(ctx context.Context, sess *session.Session
 	if err := r.memoryService.EnqueueAutoMemoryJob(ctx, sess); err != nil {
 		log.DebugfContext(ctx, "Auto memory extraction skipped or failed: %v", err)
 		return
+	}
+}
+
+func (r *runner) enqueueSessionIngest(ctx context.Context, sess *session.Session) {
+	if r.sessionIngestor == nil || sess == nil {
+		return
+	}
+	if err := r.sessionIngestor.EnqueueSessionIngest(ctx, sess); err != nil {
+		log.DebugfContext(ctx, "Session ingest skipped or failed: %v", err)
 	}
 }

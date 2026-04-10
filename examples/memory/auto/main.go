@@ -59,7 +59,7 @@ var (
 		"memory",
 		"inmemory",
 		"Memory service type: inmemory, sqlite, sqlitevec, redis, "+
-			"postgres, pgvector, mysql, mem0",
+			"postgres, pgvector, mysql",
 	)
 )
 
@@ -437,4 +437,8 @@ func (c *autoMemoryChat) startNewSession() {
 
 func intPtr(i int) *int {
 	return &i
+}
+
+func floatPtr(f float64) *float64 {
+	return &f
 }

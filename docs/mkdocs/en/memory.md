@@ -342,8 +342,8 @@ appRunner := runner.NewRunner(
 
 ### Memory Service
 
-Configure the memory service in code. Eight backends are supported:
-in-memory, SQLite, SQLiteVec, Redis, MySQL, PostgreSQL, pgvector, and mem0.
+Configure the memory service in code. Five backends are supported: in-memory,
+Redis, MySQL, PostgreSQL, and pgvector.
 
 #### Configuration Example
 
@@ -400,31 +400,6 @@ runner := runner.NewRunner(
     llmAgent,
     runner.WithMemoryService(memService), // Or redisService, mysqlService, or postgresService.
 )
-```
-
-For a managed remote backend, mem0 uses API credentials instead of a database
-DSN:
-
-```go
-import (
-    "log"
-    "os"
-
-    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
-)
-
-host := os.Getenv("MEM0_HOST")
-if host == "" {
-    host = os.Getenv("MEM0_BASE_URL")
-}
-
-mem0Service, err := memorymem0.NewService(
-    memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
-    memorymem0.WithHost(host),
-)
-if err != nil {
-    // Handle error.
-}
 ```
 
 ### Memory Tool Configuration
@@ -580,11 +555,6 @@ go run main.go -memory postgres -soft-delete
 export PGVECTOR_HOST=localhost
 export PGVECTOR_PASSWORD=password
 go run main.go -memory pgvector -soft-delete
-
-# Use mem0 managed storage
-export MEM0_API_KEY=your-mem0-api-key
-export MEM0_BASE_URL=https://api.mem0.ai
-go run main.go -memory mem0
 
 # Non-streaming mode
 go run main.go -streaming=false
@@ -1130,49 +1100,19 @@ CREATE INDEX ON memories USING hnsw (embedding vector_cosine_ops);
 defer pgvectorService.Close()
 ```
 
-### mem0 Managed Storage
-
-**Use case**: Hosted semantic memory service with remote management via API
-
-```go
-import (
-    "log"
-    "os"
-
-    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
-)
-
-host := os.Getenv("MEM0_HOST")
-if host == "" {
-    host = os.Getenv("MEM0_BASE_URL")
-}
-
-mem0Service, err := memorymem0.NewService(
-    memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
-    memorymem0.WithHost(host),
-)
-if err != nil {
-    log.Fatalf("failed to create mem0 service: %v", err)
-}
-
-defer mem0Service.Close()
-```
-
-**Note**: `MEM0_API_KEY` is required. `MEM0_HOST` and `MEM0_BASE_URL` are treated as interchangeable host/base-URL inputs in the example helpers.
-
 ### Backend Comparison
 
-| Feature           | InMemory  | SQLite            | SQLiteVec        | Redis            | MySQL      | PostgreSQL        | pgvector      | mem0               |
-| ----------------- | --------- | ----------------- | ---------------- | ---------------- | ---------- | ----------------- | ------------- | ------------------ |
-| **Persistence**   | ❌        | ✅                | ✅               | ✅               | ✅         | ✅                | ✅            | ✅                 |
-| **Distributed**   | ❌        | ❌                | ❌               | ✅               | ✅         | ✅                | ✅            | ✅                 |
-| **Transactions**  | ❌        | ✅ ACID           | ✅ ACID          | Partial          | ✅ ACID    | ✅ ACID           | ✅ ACID       | Service-defined    |
-| **Queries**       | Simple    | SQL               | SQL + Vector     | Medium           | SQL        | SQL               | SQL + Vector  | Managed + Semantic |
-| **JSON**          | ❌        | Basic             | Basic            | Basic            | JSON       | JSONB             | JSONB         | Metadata           |
-| **Performance**   | Very High | Med-High          | Med-High         | High             | Med-High   | Med-High          | Med-High      | Managed            |
-| **Configuration** | Zero      | Simple            | Medium           | Simple           | Medium     | Medium            | Medium        | Simple             |
-| **Soft Delete**   | ❌        | ✅                | ✅               | ❌               | ✅         | ✅                | ✅            | ❌                 |
-| **Use Case**      | Dev/Test  | Local Persistence | Local Vector     | High Concurrency | Enterprise | Advanced Features | Vector Search | Hosted Memory SaaS |
+| Feature           | InMemory  | SQLite            | SQLiteVec        | Redis            | MySQL      | PostgreSQL        | pgvector      |
+| ----------------- | --------- | ----------------- | ---------------- | ---------------- | ---------- | ----------------- | ------------- |
+| **Persistence**   | ❌        | ✅                | ✅               | ✅               | ✅         | ✅                | ✅            |
+| **Distributed**   | ❌        | ❌                | ❌               | ✅               | ✅         | ✅                | ✅            |
+| **Transactions**  | ❌        | ✅ ACID           | ✅ ACID          | Partial          | ✅ ACID    | ✅ ACID           | ✅ ACID       |
+| **Queries**       | Simple    | SQL               | SQL + Vector     | Medium           | SQL        | SQL               | SQL + Vector  |
+| **JSON**          | ❌        | Basic             | Basic            | Basic            | JSON       | JSONB             | JSONB         |
+| **Performance**   | Very High | Med-High          | Med-High         | High             | Med-High   | Med-High          | Med-High      |
+| **Configuration** | Zero      | Simple            | Medium           | Simple           | Medium     | Medium            | Medium        |
+| **Soft Delete**   | ❌        | ✅                | ✅               | ❌               | ✅         | ✅                | ✅            |
+| **Use Case**      | Dev/Test  | Local Persistence | Local Vector     | High Concurrency | Enterprise | Advanced Features | Vector Search |
 
 **Selection guide**:
 
@@ -1184,7 +1124,6 @@ High Concurrency → Redis (memory-level performance)
 ACID Requirements → MySQL/PostgreSQL (transaction guarantees)
 Complex JSON → PostgreSQL (JSONB indexing and queries)
 Vector Search → pgvector (similarity search with embeddings)
-Hosted Semantic Memory → mem0 (managed memory service with API access)
 Audit Trail → MySQL/PostgreSQL/pgvector (soft delete support)
 ```
 
@@ -1209,24 +1148,23 @@ postgresService, err := memorypostgres.NewService(
 
 ### Storage Backend Comparison
 
-| Feature                  | In-Memory | SQLite     | SQLiteVec    | Redis      | MySQL          | PostgreSQL     | pgvector      | mem0              |
-| ------------------------ | --------- | ---------- | ----------- | ---------- | -------------- | -------------- | ------------- | ----------------- |
-| Data Persistence         | ❌        | ✅         | ✅          | ✅         | ✅             | ✅             | ✅            | ✅                |
-| Distributed Support      | ❌        | ❌         | ❌          | ✅         | ✅             | ✅             | ✅            | ✅                |
-| Transaction Support      | ❌        | ✅ (ACID)  | ✅ (ACID)   | Partial    | ✅ (ACID)      | ✅ (ACID)      | ✅ (ACID)     | Service-defined   |
-| Query Capability         | Simple    | SQL        | SQL + Vector | Medium     | Powerful (SQL) | Powerful (SQL) | SQL + Vectors | Managed + Semantic |
-| JSON Support             | ❌        | Basic      | Basic       | Partial    | ✅ (JSON)      | ✅ (JSONB)     | ✅ (JSONB)    | Metadata          |
-| Performance              | Very High | Med-High   | Medium-High | High       | Medium-High    | Medium-High    | Medium-High   | Managed           |
-| Configuration Complexity | Low       | Low        | Medium      | Medium     | Medium         | Medium         | Medium        | Low               |
-| Use Case                 | Dev/Test  | Local Dev  | Local Vector | Production | Production     | Production     | Vector Search | Hosted Semantic   |
-| Monitoring Tools         | None      | None       | None        | Rich       | Very Rich      | Very Rich      | Very Rich     | Service-side      |
+| Feature                  | In-Memory | SQLite     | SQLiteVec    | Redis      | MySQL          | PostgreSQL     | pgvector      |
+| ------------------------ | --------- | ---------- | ----------- | ---------- | -------------- | -------------- | ------------- |
+| Data Persistence         | ❌        | ✅         | ✅          | ✅         | ✅             | ✅             | ✅            |
+| Distributed Support      | ❌        | ❌         | ❌          | ✅         | ✅             | ✅             | ✅            |
+| Transaction Support      | ❌        | ✅ (ACID)  | ✅ (ACID)   | Partial    | ✅ (ACID)      | ✅ (ACID)      | ✅ (ACID)     |
+| Query Capability         | Simple    | SQL        | SQL + Vector | Medium     | Powerful (SQL) | Powerful (SQL) | SQL + Vectors |
+| JSON Support             | ❌        | Basic      | Basic       | Partial    | ✅ (JSON)      | ✅ (JSONB)     | ✅ (JSONB)    |
+| Performance              | Very High | Med-High   | Medium-High | High       | Medium-High    | Medium-High    | Medium-High   |
+| Configuration Complexity | Low       | Low        | Medium      | Medium     | Medium         | Medium         | Medium        |
+| Use Case                 | Dev/Test  | Local Dev  | Local Vector | Production | Production     | Production     | Vector Search |
+| Monitoring Tools         | None      | None       | None        | Rich       | Very Rich      | Very Rich      | Very Rich     |
 
 **Selection Guide:**
 
 - **Development/Testing**: Use in-memory storage for fast iteration
 - **Local Development (Persistent)**: Use SQLite when you want persistence without operating an external database
 - **Local Development (Vector Search)**: Use SQLiteVec when you want semantic search in a single-file SQLite DB
-- **Hosted Semantic Memory**: Use mem0 when you want a managed remote memory service via API credentials
 - **Production (High Performance)**: Use Redis storage for high concurrency scenarios
 - **Production (Data Integrity)**: Use MySQL storage when ACID guarantees and complex queries are needed
 - **Production (PostgreSQL)**: Use PostgreSQL storage when JSONB support and advanced PostgreSQL features are needed
@@ -1285,11 +1223,10 @@ memory.AddMemory(ctx, userKey, "User likes programming", []string{"hobby"})
 
 Search behavior depends on the backend:
 
-- Token matching applies to `inmemory` / `sqlite` / `redis` / `mysql` / `postgres`; `SearchMemories` is **not** semantic there.
-- Vector similarity search is used by `sqlitevec` / `pgvector` and requires an embedder.
-- The `mem0` backend uses the managed mem0 semantic retrieval API; when `HybridSearch` is enabled, it also merges local keyword results from `ReadMemories`.
+- For `inmemory` / `redis` / `mysql` / `postgres`: `SearchMemories` uses **token matching** (not semantic search).
+- For `pgvector`: `SearchMemories` uses **vector similarity search** and requires an embedder.
 
-**Token matching details** (token-search backends):
+**Token matching details** (non-pgvector backends):
 
 **English tokenization**: lowercase → filter stopwords (a, the, is, etc.) → split by spaces
 
@@ -1312,7 +1249,7 @@ Search: "编程" ✅ Match (word-level hit)
 Search: "写代码" ❌ No match (different words)
 ```
 
-**Limitations** (token-search backends):
+**Limitations** (non-pgvector backends):
 
 - These backends perform filtering and sorting in **application layer** (\[O(n)\] complexity)
 - Performance affected by data volume
@@ -1323,14 +1260,14 @@ Search: "写代码" ❌ No match (different words)
 **Recommendations**:
 
 - Use explicit keywords and topic tags to improve hit rate
-- If you need semantic similarity search, use `sqlitevec`, `pgvector`, or `mem0`
+- If you need semantic similarity search, use the pgvector backend
 
 ### Soft Delete Considerations
 
 **Support status**:
 
 - ✅ MySQL, PostgreSQL, pgvector: support soft delete
-- ❌ InMemory, Redis, mem0: not supported as a configurable feature (hard delete only)
+- ❌ InMemory, Redis: not supported (hard delete only)
 
 **Soft delete configuration**:
 

@@ -33,10 +33,8 @@ const (
 
 	httpContentTypeJSON = "application/json"
 
-	httpMethodGet    = "GET"
-	httpMethodPost   = "POST"
-	httpMethodPut    = "PUT"
-	httpMethodDelete = "DELETE"
+	httpMethodGet  = "GET"
+	httpMethodPost = "POST"
 
 	maxResponseBodySize = 10 << 20
 
@@ -51,8 +49,7 @@ type apiError struct {
 }
 
 func (e *apiError) Error() string {
-	return fmt.Sprintf("mem0 api request failed: status=%d body=%s",
-		e.StatusCode, e.Body)
+	return fmt.Sprintf("mem0 api request failed: status=%d body=%s", e.StatusCode, e.Body)
 }
 
 type client struct {
@@ -60,9 +57,8 @@ type client struct {
 	apiKey    string
 	orgID     string
 	projectID string
-
-	hc      *http.Client
-	timeout time.Duration
+	hc        *http.Client
+	timeout   time.Duration
 }
 
 func newClient(opts serviceOpts) (*client, error) {
@@ -73,11 +69,8 @@ func newClient(opts serviceOpts) (*client, error) {
 	if hc == nil {
 		hc = &http.Client{}
 	}
-
-	host := strings.TrimRight(opts.host, "/")
-
 	return &client{
-		host:      host,
+		host:      strings.TrimRight(opts.host, "/"),
 		apiKey:    opts.apiKey,
 		orgID:     opts.orgID,
 		projectID: opts.projectID,
@@ -114,11 +107,10 @@ func (c *client) doJSON(
 
 	var payload []byte
 	if in != nil {
-		b, err := json.Marshal(in)
+		payload, err = json.Marshal(in)
 		if err != nil {
 			return fmt.Errorf("mem0: marshal request failed: %w", err)
 		}
-		payload = b
 	}
 
 	attempts := maxRetries + 1
@@ -127,14 +119,10 @@ func (c *client) doJSON(
 		if err == nil {
 			return nil
 		}
-		if !shouldRetry(err) {
+		if !shouldRetry(err) || i == attempts-1 {
 			return err
 		}
-		if i == attempts-1 {
-			return err
-		}
-		sleep := c.retrySleepDuration(i)
-		t := time.NewTimer(sleep)
+		t := time.NewTimer(retrySleep(i, cryptoJitter))
 		select {
 		case <-ctx.Done():
 			t.Stop()
@@ -152,22 +140,20 @@ func (c *client) doJSONOnce(
 	payload []byte,
 	out any,
 ) error {
-	var body io.Reader
-	if payload != nil {
-		body = bytes.NewReader(payload)
-	}
 	if method == "" {
 		return errors.New("mem0: http method is empty")
 	}
 	if urlStr == "" {
 		return errors.New("mem0: url is empty")
 	}
-
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, body)
 	if err != nil {
 		return fmt.Errorf("mem0: build request failed: %w", err)
 	}
-
 	req.Header.Set(httpHeaderAuthorization, "Token "+c.apiKey)
 	req.Header.Set(httpHeaderAccept, httpContentTypeJSON)
 	if payload != nil {
@@ -187,14 +173,10 @@ func (c *client) doJSONOnce(
 	if len(respBody) > maxResponseBodySize {
 		return errors.New("mem0: response body too large")
 	}
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &apiError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
-	if out == nil {
-		return nil
-	}
-	if len(respBody) == 0 {
+	if out == nil || len(respBody) == 0 {
 		return nil
 	}
 	if err := json.Unmarshal(respBody, out); err != nil {
@@ -206,13 +188,7 @@ func (c *client) doJSONOnce(
 func shouldRetry(err error) bool {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
-		if apiErr.StatusCode == http.StatusTooManyRequests {
-			return true
-		}
-		if apiErr.StatusCode >= 500 {
-			return true
-		}
-		return false
+		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -221,19 +197,11 @@ func shouldRetry(err error) bool {
 	return false
 }
 
-// retrySleepDuration returns a jittered backoff duration for the given attempt.
-func (c *client) retrySleepDuration(attempt int) time.Duration {
-	return retrySleep(attempt, cryptoJitter)
-}
-
 func retrySleep(attempt int, jitterFn func(max int64) int64) time.Duration {
-	base := retryBaseBackoff
-	max := retryMaxBackoff
 	if attempt < 0 {
 		attempt = 1
 	}
-	pow := 1 << attempt
-	d := min(time.Duration(pow)*base, max)
+	d := min(time.Duration(1<<attempt)*retryBaseBackoff, retryMaxBackoff)
 	if jitterFn == nil || d <= 1 {
 		return d
 	}

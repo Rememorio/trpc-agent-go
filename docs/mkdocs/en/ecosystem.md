@@ -762,65 +762,47 @@ func (p *PostgreSQLMemoryService) unmarshalTopics(data []byte) []string {
 }
 ```
 
-For external Memory platforms/services such as mem0, `trpc-agent-go` already
-includes a production backend in `memory/mem0/`.
+For externally hosted memory platforms/services such as mem0, prefer an **ingest-first integration** instead of forcing the platform into the full `memory.Service` CRUD contract.
 
-- It implements `memory.Service` and reuses the standard memory tools.
-- It supports agentic mode, extractor-driven auto memory, and optional mem0
-  native ingestion.
-- It persists canonical TRPC memory identity and episodic metadata inside mem0
-  record metadata so add/update/dedup flows stay aligned with other backends.
-- It uses mem0 semantic retrieval by default, and can add local keyword fusion
-  when `memory.SearchOptions.HybridSearch` is enabled.
-- It exposes the same tool controls as the other backends, including
-  `WithToolEnabled`, `WithToolExposed`, and `WithAutoMemoryExposedTools`.
+Recommendations:
 
-Example:
+- Place the package under `memory/mem0/` for better discoverability within the memory domain.
+- Let Runner hand the completed session transcript to the platform after each turn via `runner.WithSessionIngestor(...)`.
+- Expose only the platform capabilities that naturally fit agent usage. For mem0, that typically means read-only tools such as `memory_search` and optional `memory_load`.
+- Keep platform-specific ingestion, polling, authentication and retry logic inside `memory/mem0` rather than spreading it across core memory abstractions.
+
+Example skeleton (simplified):
 
 ```go
-import (
-    "os"
-    "time"
-
-    "trpc.group/trpc-go/trpc-agent-go/memory"
-    "trpc.group/trpc-go/trpc-agent-go/memory/extractor"
-    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
-    "trpc.group/trpc-go/trpc-agent-go/model/openai"
-)
-
-memExtractor := extractor.NewExtractor(openai.New("gpt-4o-mini"))
-host := os.Getenv("MEM0_HOST")
-if host == "" {
-    host = os.Getenv("MEM0_BASE_URL")
-}
-
-memoryService, err := memorymem0.NewService(
+mem0Svc, err := memorymem0.NewService(
     memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
-    memorymem0.WithHost(host),
-    memorymem0.WithOrgProject(
-        os.Getenv("MEM0_ORG_ID"),
-        os.Getenv("MEM0_PROJECT_ID"),
-    ),
-    memorymem0.WithExtractor(memExtractor),
-    memorymem0.WithAsyncMemoryNum(3),
-    memorymem0.WithMemoryQueueSize(100),
-    memorymem0.WithMemoryJobTimeout(30*time.Second),
-    memorymem0.WithToolEnabled(memory.LoadToolName, true),
+    memorymem0.WithLoadToolEnabled(true),
 )
 if err != nil {
-    panic(err)
+    return err
 }
+defer mem0Svc.Close()
+
+ag := llmagent.New(
+    "assistant",
+    llmagent.WithModel(openai.New(modelName)),
+    llmagent.WithTools(mem0Svc.Tools()),
+)
+
+r := runner.NewRunner(
+    appName,
+    ag,
+    runner.WithSessionService(sessionSvc),
+    runner.WithSessionIngestor(mem0Svc),
+)
 ```
 
-Implementation notes:
+Implementation points:
 
-- `MEM0_API_KEY` is required. `MEM0_HOST` and `MEM0_BASE_URL` are accepted as
-  host/base-URL inputs. `MEM0_ORG_ID` and `MEM0_PROJECT_ID` are optional.
-- Omit `WithExtractor(...)` for pure agentic mode.
-- Use `WithUseExtractorForAutoMemory(false)` if you want mem0 native ingestion
-  to process conversation transcripts instead of the framework extractor.
-- Search, load, update, and delete all operate through the mem0-backed service,
-  while TRPC canonical IDs are kept in metadata for idempotent upserts.
+- Preserve the raw transcript for native platform ingest whenever the platform already performs its own extraction.
+- Avoid introducing shadow CRUD state unless the external platform truly requires it.
+- Keep tool declarations aligned with the integration's real guarantees and return shapes.
+- Add README, examples and tests to ensure the integration works cleanly with runner-based flows.
 
 **Open Source Components That Can Be Integrated:**
 

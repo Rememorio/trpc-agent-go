@@ -756,66 +756,47 @@ func (p *PostgreSQLMemoryService) unmarshalTopics(data []byte) []string {
 }
 ```
 
-对于 mem0 这类外部 Memory 平台/服务，`trpc-agent-go` 已经在
-`memory/mem0/` 中提供了可直接使用的后端实现。
+对于 mem0 这类外部托管的记忆平台/服务，更推荐采用 **ingest-first integration**，而不是强行把平台适配成完整的 `memory.Service` CRUD 后端。
 
-- 实现了 `memory.Service`，并复用了标准 memory tools。
-- 同时支持 Agentic Mode、基于 extractor 的 Auto Memory，以及可选的
-  mem0 原生 ingestion。
-- 会把 TRPC 的 canonical memory identity 与 episodic metadata 写入 mem0
-  记录的 metadata 中，使 add/update/dedup 流程尽量与其他后端保持一致。
-- 默认使用 mem0 的语义检索；当启用 `memory.SearchOptions.HybridSearch`
-  时，会再叠加本地关键词融合检索。
-- 暴露与其他后端一致的工具控制能力，包括 `WithToolEnabled`、
-  `WithToolExposed`、`WithAutoMemoryExposedTools` 等。
+建议：
 
-示例：
+- 将包放回 `memory/mem0/`，在 memory 领域下更直观、更易发现。
+- 让 Runner 在每轮对话结束后，通过 `runner.WithSessionIngestor(...)` 把完整 session transcript 交给外部长时记忆平台。
+- 只暴露真正符合平台能力边界的工具。对 mem0 来说，通常是只读的 `memory_search`，以及可选的 `memory_load`。
+- 平台特有的 ingest、轮询、鉴权、重试逻辑，都收敛在 `memory/mem0` 内部，不污染 core memory 抽象。
+
+示例骨架（简化）：
 
 ```go
-import (
-    "log"
-    "os"
-    "time"
-
-    "trpc.group/trpc-go/trpc-agent-go/memory"
-    "trpc.group/trpc-go/trpc-agent-go/memory/extractor"
-    memorymem0 "trpc.group/trpc-go/trpc-agent-go/memory/mem0"
-    "trpc.group/trpc-go/trpc-agent-go/model/openai"
-)
-
-memExtractor := extractor.NewExtractor(openai.New("gpt-4o-mini"))
-host := os.Getenv("MEM0_HOST")
-if host == "" {
-    host = os.Getenv("MEM0_BASE_URL")
-}
-
-memoryService, err := memorymem0.NewService(
+mem0Svc, err := memorymem0.NewService(
     memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
-    memorymem0.WithHost(host),
-    memorymem0.WithOrgProject(
-        os.Getenv("MEM0_ORG_ID"),
-        os.Getenv("MEM0_PROJECT_ID"),
-    ),
-    memorymem0.WithExtractor(memExtractor),
-    memorymem0.WithAsyncMemoryNum(3),
-    memorymem0.WithMemoryQueueSize(100),
-    memorymem0.WithMemoryJobTimeout(30*time.Second),
-    memorymem0.WithToolEnabled(memory.LoadToolName, true),
+    memorymem0.WithLoadToolEnabled(true),
 )
 if err != nil {
-    log.Fatalf("failed to create mem0 service: %v", err)
+    return err
 }
+defer mem0Svc.Close()
+
+ag := llmagent.New(
+    "assistant",
+    llmagent.WithModel(openai.New(modelName)),
+    llmagent.WithTools(mem0Svc.Tools()),
+)
+
+r := runner.NewRunner(
+    appName,
+    ag,
+    runner.WithSessionService(sessionSvc),
+    runner.WithSessionIngestor(mem0Svc),
+)
 ```
 
-实现说明：
+实现要点：
 
-- `MEM0_API_KEY` 为必填；`MEM0_HOST` 与 `MEM0_BASE_URL` 都可作为主机 /
-  Base URL 输入；`MEM0_ORG_ID`、`MEM0_PROJECT_ID` 为可选。
-- 纯 Agentic Mode 可不传 `WithExtractor(...)`。
-- 若希望由 mem0 原生 ingestion 直接处理会话转录，而不是走框架的
-  extractor，可使用 `WithUseExtractorForAutoMemory(false)`。
-- Search、load、update、delete 都通过 mem0 后端服务执行，同时在
-  metadata 中保留 TRPC canonical ID 以支持幂等 upsert。
+- 如果目标平台本身就提供 native ingest / extraction，优先保留原始 transcript，而不是先在框架内做一轮影子抽取。
+- 除非外部平台确实要求，否则不要额外引入 shadow CRUD 状态。
+- 工具声明（Declaration）和返回结构要严格对齐集成真实保证的能力边界。
+- 补充 README、示例与测试，确保与 runner 驱动的流程配合良好。
 
 **可以集成的开源组件示例：**
 

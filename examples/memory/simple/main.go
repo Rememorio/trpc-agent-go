@@ -19,7 +19,6 @@
 //	go run main.go -memory=mysql
 //	go run main.go -memory=postgres
 //	go run main.go -memory=pgvector
-//	go run main.go -memory=mem0
 //
 // Environment variables by memory type (example usage):
 //
@@ -54,13 +53,6 @@
 //		export PGVECTOR_PASSWORD=""
 //		export PGVECTOR_DATABASE="trpc_agent_go"
 //		export PGVECTOR_EMBEDDER_MODEL="text-embedding-3-small"
-//
-//	mem0:
-//		export MEM0_API_KEY="your-mem0-api-key"
-//		export MEM0_BASE_URL="https://api.mem0.ai"
-//		# Or: export MEM0_HOST="https://api.mem0.ai"
-//		export MEM0_ORG_ID=""
-//		export MEM0_PROJECT_ID=""
 package main
 
 import (
@@ -94,7 +86,7 @@ var (
 		"inmemory",
 		"Name of the memory service to use, "+
 			"inmemory / sqlite / sqlitevec / redis / "+
-			"mysql / postgres / pgvector / mem0",
+			"mysql / postgres / pgvector",
 	)
 	streaming = flag.Bool(
 		"streaming",
