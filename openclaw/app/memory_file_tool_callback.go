@@ -118,6 +118,7 @@ func newMemoryFileToolCallback(
 		switch normalizeMemoryToolName(args.ToolName) {
 		case memoryToolReadFileFS:
 			return dispatchMemoryReadFileTool(
+				ctx,
 				store,
 				scope,
 				stateDir,
@@ -178,6 +179,7 @@ func memoryToolScopeFromContext(
 }
 
 func dispatchMemoryReadFileTool(
+	ctx context.Context,
 	store *memoryfile.Store,
 	scope memoryToolScope,
 	baseDir string,
@@ -188,7 +190,7 @@ func dispatchMemoryReadFileTool(
 		return nil, nil
 	}
 	target, handled, err := memoryToolTargetForFile(
-		context.Background(),
+		ctx,
 		store,
 		scope,
 		req.FileName,

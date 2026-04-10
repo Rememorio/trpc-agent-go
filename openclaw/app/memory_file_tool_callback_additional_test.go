@@ -28,7 +28,13 @@ func TestDispatchMemoryTools_ReturnNilForInvalidJSON(t *testing.T) {
 	stateDir, store := newTestMemoryFileStore(t)
 	scope := newSharedMemoryToolScope(t)
 
-	result, err := dispatchMemoryReadFileTool(store, scope, stateDir, []byte(`{`))
+	result, err := dispatchMemoryReadFileTool(
+		context.Background(),
+		store,
+		scope,
+		stateDir,
+		[]byte(`{`),
+	)
 	require.NoError(t, err)
 	require.Nil(t, result)
 
@@ -60,6 +66,7 @@ func TestDispatchMemoryTools_RejectUnavailableScopedAliases(t *testing.T) {
 	scope := newDefaultMemoryToolScope(t)
 
 	result, err := dispatchMemoryReadFileTool(
+		context.Background(),
 		store,
 		scope,
 		stateDir,
@@ -111,6 +118,7 @@ func TestDispatchMemoryTools_ReturnNilForUnrecognizedAliases(t *testing.T) {
 	scope := newSharedMemoryToolScope(t)
 
 	result, err := dispatchMemoryReadFileTool(
+		context.Background(),
 		store,
 		scope,
 		stateDir,
@@ -177,6 +185,7 @@ func TestDispatchMemoryReadFileTool_ReadsLayeredAliases(t *testing.T) {
 		require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o600))
 
 		result, err := dispatchMemoryReadFileTool(
+			context.Background(),
 			store,
 			scope,
 			stateDir,
@@ -203,6 +212,7 @@ func TestDispatchMemoryReadFileTool_AliasRangeValidation(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("line1\nline2\nline3"), 0o600))
 
 	result, err := dispatchMemoryReadFileTool(
+		context.Background(),
 		store,
 		scope,
 		stateDir,
@@ -215,6 +225,26 @@ func TestDispatchMemoryReadFileTool_AliasRangeValidation(t *testing.T) {
 		"Error: start line is out of range, start line: 5, total lines: 3",
 		rsp.Message,
 	)
+}
+
+func TestDispatchMemoryReadFileTool_PropagatesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	stateDir, store := newTestMemoryFileStore(t)
+	scope := newSharedMemoryToolScope(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := dispatchMemoryReadFileTool(
+		ctx,
+		store,
+		scope,
+		stateDir,
+		[]byte(`{"file_name":"MEMORY.user.md"}`),
+	)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, result)
 }
 
 func TestDispatchMemorySaveAndReplaceTool_UseScopedAliases(t *testing.T) {
