@@ -275,8 +275,10 @@ func (c *inProcGatewayClient) ForgetUser(
 		}
 	}
 	if c.memoryFileStore != nil {
-		if err := c.memoryFileStore.DeleteUser(ctx, appName, userID); err != nil {
-			return fmt.Errorf("forget: delete user memory files: %w", err)
+		for _, storageUserID := range storageUserIDs {
+			if err := c.memoryFileStore.DeleteUser(ctx, appName, storageUserID); err != nil {
+				return fmt.Errorf("forget: delete user memory files: %w", err)
+			}
 		}
 	}
 
