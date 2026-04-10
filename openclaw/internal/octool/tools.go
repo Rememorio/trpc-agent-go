@@ -23,8 +23,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 )
 
@@ -65,8 +65,6 @@ const (
 	envLastPDFHostRef = "OPENCLAW_LAST_PDF_HOST_REF"
 	envLastPDFName    = "OPENCLAW_LAST_PDF_NAME"
 	envLastPDFMIME    = "OPENCLAW_LAST_PDF_MIME"
-
-	envMemoryFile = "OPENCLAW_MEMORY_FILE"
 
 	recentUploadsLimit = 6
 
@@ -210,9 +208,11 @@ func execToolDescription(hasMemoryFile bool) string {
 			"OPENCLAW_LAST_UPLOAD_PATH, OPENCLAW_LAST_UPLOAD_HOST_REF, " +
 			"OPENCLAW_LAST_UPLOAD_NAME, OPENCLAW_LAST_UPLOAD_MIME, " +
 			"kind-specific OPENCLAW_LAST_*_PATH vars, " +
-			"OPENCLAW_MEMORY_FILE, OPENCLAW_SESSION_UPLOADS_DIR, and " +
-			"OPENCLAW_RECENT_UPLOADS_JSON point to stable attachment " +
-			"metadata, memory-file paths, host refs, and host paths."
+			"OPENCLAW_MEMORY_FILE, OPENCLAW_USER_MEMORY_FILE, " +
+			"OPENCLAW_CHAT_MEMORY_FILE, OPENCLAW_CHAT_USER_MEMORY_FILE, " +
+			"OPENCLAW_SESSION_UPLOADS_DIR, and OPENCLAW_RECENT_UPLOADS_JSON " +
+			"point to stable attachment metadata, memory-file paths, " +
+			"host refs, and host paths."
 	}
 	parts = append(
 		parts,
@@ -225,11 +225,21 @@ func execToolDescription(hasMemoryFile bool) string {
 				"current scope, not hidden internal state. If the user "+
 				"asks what you remember or asks to inspect that file, "+
 				"read it and quote or summarize the relevant lines.",
+			"The same scopes are also available through MEMORY.user.md, "+
+				"MEMORY.chat.md, and MEMORY.chat_user.md when those "+
+				"files are relevant in the current conversation.",
+			"When present, OPENCLAW_USER_MEMORY_FILE stores this user's "+
+				"cross-chat preferences, OPENCLAW_CHAT_MEMORY_FILE stores "+
+				"rules shared by the current chat, and "+
+				"OPENCLAW_CHAT_USER_MEMORY_FILE stores this user's "+
+				"preferences inside the current shared chat.",
 			"If the user explicitly says 'remember this' or asks you to "+
 				"remember a durable fact, preference, or workflow rule, "+
-				"update OPENCLAW_MEMORY_FILE with a short bullet.",
-			"Use OPENCLAW_MEMORY_FILE only for stable, cross-session "+
-				"facts, preferences, and working style.",
+				"write a short bullet to the smallest fitting memory "+
+				"scope: current shared chat user, current user globally, "+
+				"or the whole chat.",
+			"Use these memory files only for stable, cross-session facts, "+
+				"preferences, and working style.",
 		)
 	}
 	parts = append(
@@ -741,22 +751,27 @@ func memoryFileEnvFromContext(
 
 	appName := strings.TrimSpace(inv.Session.AppName)
 	userID := strings.TrimSpace(inv.Session.UserID)
-	userID = conversationscope.StorageUserIDFromContext(ctx, userID)
-	if appName == "" || userID == "" {
+	resolution := memoryscope.Resolve(ctx, userID)
+	if appName == "" || strings.TrimSpace(resolution.Default.UserID) == "" {
 		return nil
 	}
 
-	path, err := store.EnsureMemory(
-		context.Background(),
-		appName,
-		userID,
-	)
-	if err != nil || strings.TrimSpace(path) == "" {
+	env := make(map[string]string)
+	for _, target := range resolution.EnvTargets() {
+		path, err := store.EnsureMemory(
+			context.Background(),
+			appName,
+			target.UserID,
+		)
+		if err != nil || strings.TrimSpace(path) == "" {
+			continue
+		}
+		env[target.EnvName] = path
+	}
+	if len(env) == 0 {
 		return nil
 	}
-	return map[string]string{
-		envMemoryFile: path,
-	}
+	return env
 }
 
 func addLatestKindUploadEnv(

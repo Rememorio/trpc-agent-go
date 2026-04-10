@@ -29,6 +29,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
@@ -263,8 +264,22 @@ func (c *inProcGatewayClient) ForgetUser(
 		}
 	}
 	if c.memoryFileStore != nil {
-		for _, storageUserID := range storageUserIDs {
-			if err := c.memoryFileStore.DeleteUser(ctx, appName, storageUserID); err != nil {
+		memoryUserIDs := append([]string(nil), storageUserIDs...)
+		for _, storageUserID := range indexedStorageUsers {
+			memoryUserIDs = appendUniqueUserIDs(
+				memoryUserIDs,
+				memoryscope.ChatUserScopedUserID(
+					storageUserID,
+					userID,
+				),
+			)
+		}
+		for _, storageUserID := range memoryUserIDs {
+			if err := c.memoryFileStore.DeleteUser(
+				ctx,
+				appName,
+				storageUserID,
+			); err != nil {
 				return fmt.Errorf("forget: delete user memory files: %w", err)
 			}
 		}

@@ -86,6 +86,11 @@ func TestRunOptionResolversMergeRuntimeState(t *testing.T) {
 		"chat-scope",
 		conversationscope.StorageUserIDFromContext(ctx, ""),
 	)
+	require.Equal(
+		t,
+		conversation.HistoryModeShared,
+		conversationscope.HistoryModeFromContext(ctx),
+	)
 
 	require.Equal(
 		t,
@@ -206,6 +211,11 @@ func TestBuildConversationRunOptionResolverSharedHistory(
 		t,
 		"chat-scope",
 		conversationscope.StorageUserIDFromContext(ctx, ""),
+	)
+	require.Equal(
+		t,
+		conversation.HistoryModeShared,
+		conversationscope.HistoryModeFromContext(ctx),
 	)
 
 	cfg := agent.RunOptions{}

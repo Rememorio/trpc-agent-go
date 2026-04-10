@@ -177,19 +177,27 @@ const (
 		"OPENCLAW_SESSION_UPLOADS_DIR. Prefer writing derived " +
 		"files under " +
 		"OPENCLAW_SESSION_UPLOADS_DIR when you will send them " +
-		"back to the user. OPENCLAW_MEMORY_FILE is a " +
-		"user-owned file, not hidden internal state. If the " +
-		"user asks what you remember or asks to inspect that " +
-		"file, read it and quote or summarize the relevant " +
-		"lines. If the user explicitly says 'remember this' " +
-		"or asks you to remember a durable fact, preference, " +
-		"or workflow rule, update OPENCLAW_MEMORY_FILE with a " +
-		"short bullet in the same turn. Use " +
-		"OPENCLAW_MEMORY_FILE only for stable cross-session " +
-		"facts, preferences, or working style. Do not store " +
-		"secrets or large transcripts in that file. " +
-		"If a memory file does not exist yet, you may create it " +
-		"at that exact path. Prefer already installed local tools " +
+		"back to the user. OPENCLAW_MEMORY_FILE is a visible " +
+		"memory file for the current scope, not hidden internal " +
+		"state. If the user asks what you remember or asks to " +
+		"inspect that file, read it and quote or summarize the " +
+		"relevant lines. The same scopes are also available " +
+		"through MEMORY.user.md, MEMORY.chat.md, and " +
+		"MEMORY.chat_user.md when those files are relevant in " +
+		"the current conversation. When present, " +
+		"OPENCLAW_USER_MEMORY_FILE " +
+		"stores this user's cross-chat preferences, " +
+		"OPENCLAW_CHAT_MEMORY_FILE stores rules shared by the " +
+		"current chat, and OPENCLAW_CHAT_USER_MEMORY_FILE stores " +
+		"this user's preferences inside the current shared chat. " +
+		"If the user explicitly says 'remember this' or asks you " +
+		"to remember a durable fact, preference, or workflow " +
+		"rule, update the smallest fitting memory scope with a " +
+		"short bullet in the same turn. Use these memory files " +
+		"only for stable cross-session facts, preferences, or " +
+		"working style. Do not store secrets or large transcripts " +
+		"in those files. If a memory file does not exist yet, you " +
+		"may create it at that exact path. Prefer already installed local tools " +
 		"for OCR, PDF, audio, image, and video work before " +
 		"trying package installs or long downloads. " +
 		"When creating a cron job from chat, omit channel and " +

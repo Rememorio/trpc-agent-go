@@ -29,6 +29,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
 	sessionpkg "trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -342,15 +343,22 @@ func TestExecTool_UsesStorageScopedMemoryFileEnvFromContext(t *testing.T) {
 		),
 	)
 	ctx := agent.NewInvocationContext(
-		conversationscope.WithStorageUserID(
-			context.Background(),
-			"wecom:chat:room-1",
+		conversationscope.WithHistoryMode(
+			conversationscope.WithStorageUserID(
+				context.Background(),
+				"wecom:chat:room-1",
+			),
+			"shared",
 		),
 		inv,
 	)
 
 	args := mustJSON(t, map[string]any{
-		"command": "printf %s \"$OPENCLAW_MEMORY_FILE\"",
+		"command": "printf '%s\\n%s\\n%s\\n%s' " +
+			"\"$OPENCLAW_MEMORY_FILE\" " +
+			"\"$OPENCLAW_USER_MEMORY_FILE\" " +
+			"\"$OPENCLAW_CHAT_MEMORY_FILE\" " +
+			"\"$OPENCLAW_CHAT_USER_MEMORY_FILE\"",
 		"yieldMs": 0,
 	})
 	out, err := execTool.Call(ctx, args)
@@ -359,10 +367,21 @@ func TestExecTool_UsesStorageScopedMemoryFileEnvFromContext(t *testing.T) {
 	res := out.(execResult)
 	require.Equal(t, "exited", res.Status)
 
-	path, err := store.MemoryPath("app", "wecom:chat:room-1")
+	chatPath, err := store.MemoryPath("app", "wecom:chat:room-1")
 	require.NoError(t, err)
-	require.Contains(t, res.Output, path)
-	require.FileExists(t, path)
+	userPath, err := store.MemoryPath("app", "u1")
+	require.NoError(t, err)
+	chatUserPath, err := store.MemoryPath(
+		"app",
+		"wecom:chat:room-1:chat-user:u1",
+	)
+	require.NoError(t, err)
+	require.Contains(t, res.Output, chatPath)
+	require.Contains(t, res.Output, userPath)
+	require.Contains(t, res.Output, chatUserPath)
+	require.FileExists(t, chatPath)
+	require.FileExists(t, userPath)
+	require.FileExists(t, chatUserPath)
 }
 
 func TestMemoryFileEnvFromContext_EmptyScopeReturnsNil(t *testing.T) {
@@ -835,7 +854,7 @@ func TestExecToolDeclaration_HidesMemoryFileGuidanceWithoutStore(
 
 	decl := newExecCommandTool(NewManager()).Declaration()
 	require.NotNil(t, decl)
-	require.NotContains(t, decl.Description, envMemoryFile)
+	require.NotContains(t, decl.Description, memoryscope.DefaultEnvName)
 }
 
 func TestExecToolDeclaration_ExposesMemoryFileGuidanceWithStore(
@@ -854,7 +873,7 @@ func TestExecToolDeclaration_ExposesMemoryFileGuidanceWithStore(
 		store,
 	).Declaration()
 	require.NotNil(t, decl)
-	require.Contains(t, decl.Description, envMemoryFile)
+	require.Contains(t, decl.Description, memoryscope.DefaultEnvName)
 }
 
 func TestManager_ListIncludesExitedSession(t *testing.T) {

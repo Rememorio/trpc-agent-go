@@ -111,6 +111,74 @@ func TestMemoryFileToolCallback_SaveFileUsesStorageScopedMemory(
 	require.NotContains(t, string(userRaw), "- Shared rule")
 }
 
+func TestMemoryFileToolCallback_SaveFileUsesChatUserAliasInSharedChat(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	stateDir, store := newTestMemoryFileStore(t)
+	ctx := conversationscope.WithHistoryMode(
+		conversationscope.WithStorageUserID(
+			newTestMemoryToolContext(),
+			"wecom:chat:room-1",
+		),
+		"shared",
+	)
+	callback := newMemoryFileToolCallback(store, stateDir)
+
+	result, err := callback(ctx, &tool.BeforeToolArgs{
+		ToolName: memoryToolSaveFileFS,
+		Arguments: []byte(
+			`{"file_name":"MEMORY.chat_user.md","contents":"- Reply with meows\n","overwrite":false}`,
+		),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	chatUserPath, err := store.EnsureMemory(
+		context.Background(),
+		testMemoryAppName,
+		"wecom:chat:room-1:chat-user:wecom:dm:test-user",
+	)
+	require.NoError(t, err)
+	chatUserRaw, err := os.ReadFile(chatUserPath)
+	require.NoError(t, err)
+	require.Contains(t, string(chatUserRaw), "- Reply with meows")
+
+	chatPath, err := store.EnsureMemory(
+		context.Background(),
+		testMemoryAppName,
+		"wecom:chat:room-1",
+	)
+	require.NoError(t, err)
+	chatRaw, err := os.ReadFile(chatPath)
+	require.NoError(t, err)
+	require.NotContains(t, string(chatRaw), "- Reply with meows")
+}
+
+func TestMemoryFileToolCallback_RejectsUnavailableChatAlias(t *testing.T) {
+	t.Parallel()
+
+	stateDir, store := newTestMemoryFileStore(t)
+	ctx := newTestMemoryToolContext()
+	callback := newMemoryFileToolCallback(store, stateDir)
+
+	result, err := callback(ctx, &tool.BeforeToolArgs{
+		ToolName:  memoryToolReadFileFS,
+		Arguments: []byte(`{"file_name":"MEMORY.chat.md"}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	rsp, ok := result.CustomResult.(memoryReadFileResponse)
+	require.True(t, ok)
+	require.Equal(
+		t,
+		"Error: MEMORY.chat.md is not available in the current conversation scope",
+		rsp.Message,
+	)
+}
+
 func TestMemoryFileToolCallback_ReadFilePrefersScopedMemory(t *testing.T) {
 	t.Parallel()
 

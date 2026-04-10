@@ -752,6 +752,20 @@ func TestServerInjectedContextMessages_UsesLayeredMemoryAndStorageScopedUploads(
 		t,
 		os.WriteFile(otherMemoryPath, []byte("## Preferences\n\n- Chat rule."), 0o600),
 	)
+	chatUserMemoryPath, err := memoryStore.EnsureMemory(
+		context.Background(),
+		"demo-app",
+		"chat-scope:chat-user:canonical-user",
+	)
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		os.WriteFile(
+			chatUserMemoryPath,
+			[]byte("## Preferences\n\n- Reply to me with meows."),
+			0o600,
+		),
+	)
 
 	_, err = uploadStore.Save(
 		context.Background(),
@@ -774,20 +788,26 @@ func TestServerInjectedContextMessages_UsesLayeredMemoryAndStorageScopedUploads(
 		context.Background(),
 		"chat-scope",
 	)
+	ctx = conversationscope.WithHistoryMode(
+		ctx,
+		"shared",
+	)
 	msgs := srv.injectedContextMessages(
 		ctx,
 		"canonical-user",
 		"demo:thread:room-1",
 		"",
 	)
-	// Layered memory: chat scope primary + user fallback + uploads.
-	require.Len(t, msgs, 3)
-	require.Contains(t, msgs[0].Content, "Chat rule")
-	require.Contains(t, msgs[0].Content, "the current chat scope")
+	// Layered memory: shared-chat user + user fallback + shared chat + uploads.
+	require.Len(t, msgs, 4)
+	require.Contains(t, msgs[0].Content, "MEMORY.chat_user.md")
+	require.Contains(t, msgs[0].Content, "Reply to me with meows")
 	require.Contains(t, msgs[1].Content, "Remember my name")
-	require.Contains(t, msgs[1].Content, "this user")
-	require.Contains(t, msgs[2].Content, recentUploadContextHeader)
-	require.Contains(t, msgs[2].Content, "clip.mp4 [video]")
+	require.Contains(t, msgs[1].Content, "MEMORY.user.md")
+	require.Contains(t, msgs[2].Content, "Chat rule")
+	require.Contains(t, msgs[2].Content, "the current chat scope")
+	require.Contains(t, msgs[3].Content, recentUploadContextHeader)
+	require.Contains(t, msgs[3].Content, "clip.mp4 [video]")
 }
 
 func TestServerInjectedContextMessages_CanceledContextSkipsMemoryFiles(t *testing.T) {
