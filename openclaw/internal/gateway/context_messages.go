@@ -14,12 +14,17 @@ import (
 	"strings"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 )
 
 const personaContextHeader = "Active preset persona for this chat:"
+
+const (
+	chatMemoryScopeLabel = "the current chat scope"
+	userMemoryScopeLabel = "this user"
+)
 
 func (s *Server) injectedContextMessages(
 	ctx context.Context,
@@ -104,20 +109,36 @@ func (s *Server) memoryFileContextMessages(
 		return nil
 	}
 
-	resolution := memoryscope.Resolve(ctx, userID)
-	targets := resolution.VisibleTargets()
-	messages := make([]model.Message, 0, len(targets))
-	for _, target := range targets {
-		if msg := s.memoryFileContextMessage(
-			ctx,
-			appName,
-			target.UserID,
-			target.ScopeLabel,
-			target.FileAlias,
-			target.FileAlias == memoryscope.DefaultFileAlias,
-		); msg != nil {
-			messages = append(messages, *msg)
-		}
+	primaryUserID := conversationscope.StorageUserIDFromContext(
+		ctx,
+		userID,
+	)
+	messages := make([]model.Message, 0, 2)
+	if msg := s.memoryFileContextMessage(
+		ctx,
+		appName,
+		primaryUserID,
+		func() string {
+			if primaryUserID != userID {
+				return chatMemoryScopeLabel
+			}
+			return userMemoryScopeLabel
+		}(),
+		true,
+	); msg != nil {
+		messages = append(messages, *msg)
+	}
+	if primaryUserID == userID {
+		return messages
+	}
+	if msg := s.memoryFileContextMessage(
+		ctx,
+		appName,
+		userID,
+		userMemoryScopeLabel,
+		false,
+	); msg != nil {
+		messages = append(messages, *msg)
 	}
 	return messages
 }
@@ -127,7 +148,6 @@ func (s *Server) memoryFileContextMessage(
 	appName string,
 	userID string,
 	scopeLabel string,
-	fileName string,
 	ensure bool,
 ) *model.Message {
 	if s == nil || s.memoryFileStore == nil {
@@ -155,11 +175,7 @@ func (s *Server) memoryFileContextMessage(
 	if err != nil || (!ensure && memoryfile.IsDefaultTemplate(text)) {
 		return nil
 	}
-	content := memoryfile.BuildContextTextForNamedFile(
-		fileName,
-		scopeLabel,
-		text,
-	)
+	content := memoryfile.BuildContextTextForScope(scopeLabel, text)
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}

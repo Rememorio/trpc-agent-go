@@ -21,12 +21,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryscope"
 )
 
 const (
-	memoryToolFileName = memoryscope.DefaultFileAlias
+	memoryToolFileName = "MEMORY.md"
 
 	memoryToolReadFileFS       = "fs_read_file"
 	memoryToolSaveFileFS       = "fs_save_file"
@@ -41,11 +41,6 @@ type memoryToolTarget struct {
 	AppName string
 	UserID  string
 	Path    string
-}
-
-type memoryToolScope struct {
-	AppName    string
-	Resolution memoryscope.Resolution
 }
 
 type memoryReadFileRequest struct {
@@ -110,34 +105,32 @@ func newMemoryFileToolCallback(
 		if store == nil || args == nil {
 			return nil, nil
 		}
-		scope, ok, err := memoryToolScopeFromContext(ctx)
+		target, ok, err := memoryToolTargetFromContext(ctx, store)
 		if err != nil || !ok {
 			return nil, err
 		}
 
 		switch normalizeMemoryToolName(args.ToolName) {
 		case memoryToolReadFileFS:
-			return dispatchMemoryReadFileTool(
-				ctx,
-				store,
-				scope,
+			return handleMemoryReadFileTool(
+				target,
 				stateDir,
 				args.Arguments,
 			)
 		case memoryToolSaveFileFS:
-			return dispatchMemorySaveFileTool(
+			return handleMemorySaveFileTool(
 				ctx,
 				store,
-				scope,
 				stateDir,
+				target,
 				args.Arguments,
 			)
 		case memoryToolReplaceContentFS:
-			return dispatchMemoryReplaceContentTool(
+			return handleMemoryReplaceContentTool(
 				ctx,
 				store,
-				scope,
 				stateDir,
+				target,
 				args.Arguments,
 			)
 		default:
@@ -159,88 +152,29 @@ func normalizeMemoryToolName(name string) string {
 	}
 }
 
-func memoryToolScopeFromContext(
+func memoryToolTargetFromContext(
 	ctx context.Context,
-) (memoryToolScope, bool, error) {
+	store *memoryfile.Store,
+) (memoryToolTarget, bool, error) {
 	inv, ok := agent.InvocationFromContext(ctx)
-	if !ok || inv == nil || inv.Session == nil {
-		return memoryToolScope{}, false, nil
+	if !ok || inv == nil || inv.Session == nil || store == nil {
+		return memoryToolTarget{}, false, nil
 	}
 	appName := strings.TrimSpace(inv.Session.AppName)
 	userID := strings.TrimSpace(inv.Session.UserID)
-	resolution := memoryscope.Resolve(ctx, userID)
-	if appName == "" || strings.TrimSpace(resolution.Default.UserID) == "" {
-		return memoryToolScope{}, false, nil
+	userID = conversationscope.StorageUserIDFromContext(ctx, userID)
+	if appName == "" || userID == "" {
+		return memoryToolTarget{}, false, nil
 	}
-	return memoryToolScope{
-		AppName:    appName,
-		Resolution: resolution,
+	path, err := store.EnsureMemory(ctx, appName, userID)
+	if err != nil {
+		return memoryToolTarget{}, false, err
+	}
+	return memoryToolTarget{
+		AppName: appName,
+		UserID:  userID,
+		Path:    path,
 	}, true, nil
-}
-
-func dispatchMemoryReadFileTool(
-	ctx context.Context,
-	store *memoryfile.Store,
-	scope memoryToolScope,
-	baseDir string,
-	args []byte,
-) (*tool.BeforeToolResult, error) {
-	var req memoryReadFileRequest
-	if err := json.Unmarshal(args, &req); err != nil {
-		return nil, nil
-	}
-	target, handled, err := memoryToolTargetForFile(
-		ctx,
-		store,
-		scope,
-		req.FileName,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if !handled {
-		return nil, nil
-	}
-
-	rsp := memoryReadFileResponse{
-		BaseDirectory: baseDir,
-		FileName:      req.FileName,
-	}
-	if strings.TrimSpace(target.Path) == "" {
-		rsp.Message = memoryToolScopeUnavailableMessage(req.FileName)
-		return memoryToolResult(rsp), nil
-	}
-	raw, err := os.ReadFile(target.Path)
-	if err != nil {
-		rsp.Message = fmt.Sprintf("Error: cannot read file: %v", err)
-		return memoryToolResult(rsp), nil
-	}
-
-	chunk, start, end, total, empty, err := sliceMemoryTextByLines(
-		string(raw),
-		req.StartLine,
-		req.NumLines,
-	)
-	if err != nil {
-		rsp.Message = fmt.Sprintf("Error: %v", err)
-		return memoryToolResult(rsp), nil
-	}
-	rsp.Contents = chunk
-	if empty {
-		rsp.Message = fmt.Sprintf(
-			"Successfully read %s, but file is empty",
-			req.FileName,
-		)
-		return memoryToolResult(rsp), nil
-	}
-	rsp.Message = fmt.Sprintf(
-		"Successfully read %s, start line: %d, end line: %d, total lines: %d",
-		req.FileName,
-		start,
-		end,
-		total,
-	)
-	return memoryToolResult(rsp), nil
 }
 
 func handleMemoryReadFileTool(
@@ -252,7 +186,7 @@ func handleMemoryReadFileTool(
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, nil
 	}
-	if !isDefaultMemoryFileAlias(req.FileName) {
+	if !isMemoryFileAlias(req.FileName) {
 		return nil, nil
 	}
 
@@ -290,65 +224,6 @@ func handleMemoryReadFileTool(
 		end,
 		total,
 	)
-	return memoryToolResult(rsp), nil
-}
-
-func dispatchMemorySaveFileTool(
-	ctx context.Context,
-	store *memoryfile.Store,
-	scope memoryToolScope,
-	stateDir string,
-	args []byte,
-) (*tool.BeforeToolResult, error) {
-	var req memorySaveFileRequest
-	if err := json.Unmarshal(args, &req); err != nil {
-		return nil, nil
-	}
-	target, handled, err := memoryToolTargetForFile(
-		ctx,
-		store,
-		scope,
-		req.FileName,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if !handled {
-		return nil, nil
-	}
-
-	rsp := memorySaveFileResponse{
-		BaseDirectory: stateDir,
-		FileName:      req.FileName,
-	}
-	if strings.TrimSpace(target.UserID) == "" {
-		rsp.Message = memoryToolScopeUnavailableMessage(req.FileName)
-		return memoryToolResult(rsp), nil
-	}
-	_, err = store.UpdateMemory(
-		ctx,
-		target.AppName,
-		target.UserID,
-		func(current string) (string, error) {
-			return nextMemorySaveContents(
-				current,
-				req.Contents,
-				req.Overwrite,
-			)
-		},
-	)
-	if errors.Is(err, errMemorySaveFileExists) {
-		rsp.Message = fmt.Sprintf(
-			"Error: file exists and overwrite=false: %s",
-			req.FileName,
-		)
-		return memoryToolResult(rsp), nil
-	}
-	if err != nil {
-		rsp.Message = fmt.Sprintf("Error: %v", err)
-		return memoryToolResult(rsp), nil
-	}
-	rsp.Message = fmt.Sprintf("Successfully saved: %s", req.FileName)
 	return memoryToolResult(rsp), nil
 }
 
@@ -363,7 +238,7 @@ func handleMemorySaveFileTool(
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, nil
 	}
-	if !isDefaultMemoryFileAlias(req.FileName) {
+	if !isMemoryFileAlias(req.FileName) {
 		return nil, nil
 	}
 
@@ -398,94 +273,6 @@ func handleMemorySaveFileTool(
 	return memoryToolResult(rsp), nil
 }
 
-func dispatchMemoryReplaceContentTool(
-	ctx context.Context,
-	store *memoryfile.Store,
-	scope memoryToolScope,
-	stateDir string,
-	args []byte,
-) (*tool.BeforeToolResult, error) {
-	var req memoryReplaceContentRequest
-	if err := json.Unmarshal(args, &req); err != nil {
-		return nil, nil
-	}
-	target, handled, err := memoryToolTargetForFile(
-		ctx,
-		store,
-		scope,
-		req.FileName,
-	)
-	if err != nil {
-		return nil, err
-	}
-	if !handled {
-		return nil, nil
-	}
-
-	rsp := memoryReplaceContentResponse{
-		BaseDirectory: stateDir,
-		FileName:      req.FileName,
-	}
-	if strings.TrimSpace(target.UserID) == "" {
-		rsp.Message = memoryToolScopeUnavailableMessage(req.FileName)
-		return memoryToolResult(rsp), nil
-	}
-	if req.OldString == "" {
-		rsp.Message = "Error: old_string cannot be empty"
-		return memoryToolResult(rsp), nil
-	}
-	if req.OldString == req.NewString {
-		rsp.Message = "old_string equals new_string; no changes made"
-		return memoryToolResult(rsp), nil
-	}
-
-	totalCount := 0
-	numReplacements := 0
-	_, err = store.UpdateMemory(
-		ctx,
-		target.AppName,
-		target.UserID,
-		func(current string) (string, error) {
-			totalCount = strings.Count(current, req.OldString)
-			if totalCount == 0 {
-				return current, nil
-			}
-			numReplacements = req.NumReplacements
-			if numReplacements == 0 {
-				numReplacements = 1
-			}
-			if numReplacements < 0 || numReplacements > totalCount {
-				numReplacements = totalCount
-			}
-			return strings.Replace(
-				current,
-				req.OldString,
-				req.NewString,
-				numReplacements,
-			), nil
-		},
-	)
-	if err != nil {
-		rsp.Message = fmt.Sprintf("Error: %v", err)
-		return memoryToolResult(rsp), nil
-	}
-	if totalCount == 0 {
-		rsp.Message = fmt.Sprintf(
-			"'%s' not found in '%s'",
-			req.OldString,
-			req.FileName,
-		)
-		return memoryToolResult(rsp), nil
-	}
-	rsp.Message = fmt.Sprintf(
-		"Successfully replaced %d of %d in '%s'",
-		numReplacements,
-		totalCount,
-		req.FileName,
-	)
-	return memoryToolResult(rsp), nil
-}
-
 func handleMemoryReplaceContentTool(
 	ctx context.Context,
 	store *memoryfile.Store,
@@ -497,7 +284,7 @@ func handleMemoryReplaceContentTool(
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, nil
 	}
-	if !isDefaultMemoryFileAlias(req.FileName) {
+	if !isMemoryFileAlias(req.FileName) {
 		return nil, nil
 	}
 
@@ -566,74 +353,11 @@ func memoryToolResult(result any) *tool.BeforeToolResult {
 }
 
 func isMemoryFileAlias(fileName string) bool {
-	normalized := normalizeMemoryToolFileName(fileName)
-	switch {
-	case strings.EqualFold(normalized, memoryscope.DefaultFileAlias):
-		return true
-	case strings.EqualFold(normalized, memoryscope.UserFileAlias):
-		return true
-	case strings.EqualFold(normalized, memoryscope.ChatFileAlias):
-		return true
-	case strings.EqualFold(normalized, memoryscope.ChatUserFileAlias):
-		return true
-	default:
-		return false
-	}
-}
-
-func isDefaultMemoryFileAlias(fileName string) bool {
-	return strings.EqualFold(
-		memoryscope.DefaultFileAlias,
-		normalizeMemoryToolFileName(fileName),
-	)
-}
-
-func memoryToolTargetForFile(
-	ctx context.Context,
-	store *memoryfile.Store,
-	scope memoryToolScope,
-	fileName string,
-) (memoryToolTarget, bool, error) {
-	if store == nil {
-		return memoryToolTarget{}, false, nil
-	}
-	target, recognized, available := scope.Resolution.ResolveFileAlias(
-		fileName,
-	)
-	if !recognized {
-		return memoryToolTarget{}, false, nil
-	}
-	if !available {
-		return memoryToolTarget{}, true, nil
-	}
-	path, err := store.EnsureMemory(
-		ctx,
-		scope.AppName,
-		target.UserID,
-	)
-	if err != nil {
-		return memoryToolTarget{}, true, err
-	}
-	return memoryToolTarget{
-		AppName: scope.AppName,
-		UserID:  target.UserID,
-		Path:    path,
-	}, true, nil
-}
-
-func memoryToolScopeUnavailableMessage(fileName string) string {
-	return fmt.Sprintf(
-		"Error: %s is not available in the current conversation scope",
-		strings.TrimSpace(fileName),
-	)
-}
-
-func normalizeMemoryToolFileName(fileName string) string {
 	normalized := filepath.ToSlash(strings.TrimSpace(fileName))
 	for strings.HasPrefix(normalized, "./") {
 		normalized = strings.TrimPrefix(normalized, "./")
 	}
-	return normalized
+	return strings.EqualFold(normalized, memoryToolFileName)
 }
 
 func nextMemorySaveContents(

@@ -14,47 +14,27 @@ import "strings"
 const ReadLimit = 8 * 1024
 
 func BuildContextText(content string) string {
-	return BuildContextTextForNamedFile(
-		memoryFileName,
-		"the current scope",
-		content,
-	)
+	return BuildContextTextForScope("the current scope", content)
 }
 
 func BuildContextTextForScope(scope string, content string) string {
-	return BuildContextTextForNamedFile(
-		memoryFileName,
-		scope,
-		content,
-	)
-}
-
-func BuildContextTextForNamedFile(
-	fileName string,
-	scope string,
-	content string,
-) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ""
-	}
-	fileName = strings.TrimSpace(fileName)
-	if fileName == "" {
-		fileName = memoryFileName
 	}
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
 		scope = "the current scope"
 	}
 	contextHeader := strings.Join([]string{
-		"Current contents of the visible " + fileName + " file for " +
+		"Current contents of the visible MEMORY.md file for " +
 			scope + ":",
 		"- This file is user-visible, not hidden internal state.",
 		"- You are a fresh instance each session; continuity comes " +
 			"from files like this one and injected AGENTS.md " +
 			"instructions.",
 		"- If the user asks what you remember or asks to inspect " +
-			fileName + ", you may quote or summarize the relevant " +
+			"MEMORY.md, you may quote or summarize the relevant " +
 			"parts.",
 	}, "\n")
 	return strings.Join([]string{

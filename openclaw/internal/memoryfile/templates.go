@@ -32,7 +32,7 @@ func DefaultTemplate() string {
 			"or workflow rule, update this file with a short " +
 			"bullet.",
 		"",
-		"This file stores stable, low-volume memory about this scope.",
+		"This file stores stable, low-volume memory about the user.",
 		"",
 		"The agent may update this file only when all conditions hold:",
 		"- The information is likely to matter in future sessions.",
@@ -47,7 +47,7 @@ func DefaultTemplate() string {
 		"",
 		"## Long-term facts",
 		"",
-		"Use for stable facts, names, or roles relevant to this scope.",
+		"Use for stable facts such as the user's name or role.",
 		"",
 		"## Preferences",
 		"",

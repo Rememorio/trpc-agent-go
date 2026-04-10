@@ -639,22 +639,6 @@ func TestBuildContextTextForScope(t *testing.T) {
 	require.Contains(t, text, "prefers concise replies")
 }
 
-func TestBuildContextTextForNamedFile(t *testing.T) {
-	t.Parallel()
-
-	text := BuildContextTextForNamedFile(
-		"MEMORY.chat_user.md",
-		"this user in the current chat",
-		"- reply with meows",
-	)
-	require.Contains(
-		t,
-		text,
-		"visible MEMORY.chat_user.md file for this user in the current chat",
-	)
-	require.Contains(t, text, "reply with meows")
-}
-
 func TestIsDefaultTemplate(t *testing.T) {
 	t.Parallel()
 

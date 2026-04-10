@@ -18,7 +18,6 @@ import (
 )
 
 type storageUserIDContextKey struct{}
-type historyModeContextKey struct{}
 
 // WithStorageUserID records the storage user scope for the current request.
 func WithStorageUserID(ctx context.Context, userID string) context.Context {
@@ -32,19 +31,6 @@ func WithStorageUserID(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, storageUserIDContextKey{}, userID)
 }
 
-// WithHistoryMode records the conversation history mode for the current
-// request.
-func WithHistoryMode(ctx context.Context, mode string) context.Context {
-	mode = strings.TrimSpace(mode)
-	if mode == "" {
-		return ctx
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, historyModeContextKey{}, mode)
-}
-
 // StorageUserIDFromContext resolves the persisted conversation user scope.
 func StorageUserIDFromContext(ctx context.Context, fallback string) string {
 	if ctx != nil {
@@ -56,18 +42,6 @@ func StorageUserIDFromContext(ctx context.Context, fallback string) string {
 		}
 	}
 	return strings.TrimSpace(fallback)
-}
-
-// HistoryModeFromContext resolves the conversation history mode for the
-// current request.
-func HistoryModeFromContext(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if mode, ok := ctx.Value(historyModeContextKey{}).(string); ok {
-		return strings.TrimSpace(mode)
-	}
-	return ""
 }
 
 // ResolveStorageUserID extracts an explicit storage user override from request

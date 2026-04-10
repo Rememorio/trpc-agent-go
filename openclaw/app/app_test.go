@@ -52,7 +52,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/gateway"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryfile"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/memoryscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/outbound"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/persona"
 	tgapi "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/telegram"
@@ -257,7 +256,6 @@ func TestBuildOpenClawTools_ExposesMemoryFileEnvForFileBackend(t *testing.T) {
 	decl := findToolDeclaration(bundle.tools, "exec_command")
 	require.NotNil(t, decl)
 	require.Contains(t, decl.Description, "OPENCLAW_MEMORY_FILE")
-	require.Contains(t, decl.Description, "OPENCLAW_CHAT_USER_MEMORY_FILE")
 }
 
 func TestBuildOpenClawTools_IncludesConversationHistoryTool(
@@ -3542,15 +3540,6 @@ func TestInProcGatewayClient_ForgetUser_DeleteMemoryFilesErrorPreservesStorageSc
 	store, err := memoryfile.NewStore(root)
 	require.NoError(t, err)
 	_, err = store.EnsureMemory(ctx, appName, storageUserID)
-	require.NoError(t, err)
-	_, err = store.EnsureMemory(
-		ctx,
-		appName,
-		memoryscope.ChatUserScopedUserID(
-			storageUserID,
-			canonicalUserID,
-		),
-	)
 	require.NoError(t, err)
 
 	scopedDir, err := store.MemoryDir(appName, storageUserID)

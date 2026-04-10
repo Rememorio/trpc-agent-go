@@ -47,14 +47,6 @@ func buildConversationRunOptionResolver(
 				storageUserID,
 			)
 		}
-		if historyMode := strings.TrimSpace(
-			annotation.HistoryMode,
-		); historyMode != "" {
-			ctx = conversationscope.WithHistoryMode(
-				ctx,
-				historyMode,
-			)
-		}
 
 		runtimeState := conversation.RuntimeState(annotation)
 		runOpts := make([]agent.RunOption, 0, 2)
