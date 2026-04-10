@@ -15,7 +15,7 @@ func DefaultTemplate() string {
 	return strings.Join([]string{
 		"# Memory",
 		"",
-		"This is a user-owned file for durable memory.",
+		"This is a visible file for durable memory in the current scope.",
 		"It is user-visible, not hidden internal state.",
 		"If the user asks what is remembered here or asks to " +
 			"inspect this file, the agent may quote or summarize " +
@@ -53,4 +53,8 @@ func DefaultTemplate() string {
 			"review habits.",
 		"",
 	}, "\n")
+}
+
+func IsDefaultTemplate(content string) bool {
+	return strings.TrimSpace(content) == strings.TrimSpace(DefaultTemplate())
 }

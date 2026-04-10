@@ -616,7 +616,7 @@ func TestBuildContextText(t *testing.T) {
 	t.Parallel()
 
 	text := BuildContextText("- prefers concise replies")
-	require.Contains(t, text, "user-owned file MEMORY.md")
+	require.Contains(t, text, "visible MEMORY.md file for the current scope")
 	require.Contains(t, text, "not hidden internal state")
 	require.Contains(t, text, "prefers concise replies")
 }
@@ -625,6 +625,24 @@ func TestBuildContextText_EmptyReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	require.Empty(t, BuildContextText(" \n "))
+}
+
+func TestBuildContextTextForScope(t *testing.T) {
+	t.Parallel()
+
+	text := BuildContextTextForScope(
+		"this user",
+		"- prefers concise replies",
+	)
+	require.Contains(t, text, "visible MEMORY.md file for this user")
+	require.Contains(t, text, "prefers concise replies")
+}
+
+func TestIsDefaultTemplate(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, IsDefaultTemplate(DefaultTemplate()))
+	require.False(t, IsDefaultTemplate("# Memory\n\n- custom fact"))
 }
 
 func TestContextErr_NilContextReturnsNil(t *testing.T) {
