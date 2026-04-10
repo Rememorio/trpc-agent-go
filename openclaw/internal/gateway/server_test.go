@@ -711,7 +711,7 @@ func TestServerInjectedContextMessages_IncludeMemoryFiles(t *testing.T) {
 	)
 	require.Len(t, msgs, 3)
 	require.Contains(t, msgs[0].Content, personaContextHeader)
-	require.Contains(t, msgs[1].Content, "visible MEMORY.md file for")
+	require.Contains(t, msgs[1].Content, "visible MEMORY.md file for this user")
 	require.Contains(t, msgs[1].Content, "not hidden internal state")
 	require.Contains(t, msgs[1].Content, "Keep replies concise")
 	require.NotContains(t, msgs[1].Content, "Use another app memory")
