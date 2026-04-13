@@ -20,7 +20,7 @@ The integration works in two parts:
 
 ### Architecture
 
-```
+```text
 User message
       │
       ▼
@@ -127,6 +127,7 @@ import (
 mem0Svc, err := memorymem0.NewService(
     memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
 )
+defer mem0Svc.Close()
 
 // 2. Create the agent with read-only memory tools.
 agent := llmagent.New(
