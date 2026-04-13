@@ -41,6 +41,8 @@ const (
 	maxRetries       = 3
 	retryBaseBackoff = 200 * time.Millisecond
 	retryMaxBackoff  = 2 * time.Second
+
+	maxErrorBodyPreview = 512
 )
 
 type apiError struct {
@@ -114,6 +116,9 @@ func (c *client) doJSON(
 	}
 
 	attempts := maxRetries + 1
+	if method != httpMethodGet {
+		attempts = 1 // Do not retry non-idempotent write requests.
+	}
 	for i := 0; i < attempts; i++ {
 		err = c.doJSONOnce(ctx, method, u.String(), payload, out)
 		if err == nil {
@@ -174,7 +179,11 @@ func (c *client) doJSONOnce(
 		return errors.New("mem0: response body too large")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		preview := string(respBody)
+		if len(preview) > maxErrorBodyPreview {
+			preview = preview[:maxErrorBodyPreview] + "...(truncated)"
+		}
+		return &apiError{StatusCode: resp.StatusCode, Body: preview}
 	}
 	if out == nil || len(respBody) == 0 {
 		return nil

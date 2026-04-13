@@ -77,12 +77,10 @@ func addOrgProjectFilter(filters map[string]any, opts serviceOpts) {
 }
 
 func parseMem0Times(rec *memoryRecord) parsedTimes {
-	now := time.Now()
-	createdAt := now
-	updatedAt := now
 	if rec == nil {
-		return parsedTimes{CreatedAt: createdAt, UpdatedAt: updatedAt}
+		return parsedTimes{}
 	}
+	var createdAt, updatedAt time.Time
 	if t, ok := parseMem0Time(rec.CreatedAt); ok {
 		createdAt = t
 	}
@@ -245,6 +243,9 @@ func matchesSearchFilters(entry *memory.Entry, opts memory.SearchOptions) bool {
 	}
 	strictKind := opts.Kind != "" && !opts.KindFallback
 	if strictKind && entry.Memory.Kind != opts.Kind {
+		return false
+	}
+	if (opts.TimeAfter != nil || opts.TimeBefore != nil) && entry.Memory.EventTime == nil {
 		return false
 	}
 	if opts.TimeAfter != nil && entry.Memory.EventTime != nil && entry.Memory.EventTime.Before(*opts.TimeAfter) {

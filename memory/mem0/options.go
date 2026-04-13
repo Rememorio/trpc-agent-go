@@ -145,7 +145,9 @@ func WithMemoryQueueSize(size int) ServiceOpt {
 	}
 }
 
-// WithMemoryJobTimeout sets the timeout used by synchronous ingest fallback jobs.
+// WithMemoryJobTimeout sets the timeout applied to each ingest job. This
+// governs both queued async worker jobs and the synchronous fallback path
+// when the queue is full.
 func WithMemoryJobTimeout(timeout time.Duration) ServiceOpt {
 	return func(opts *serviceOpts) {
 		if timeout > 0 {
