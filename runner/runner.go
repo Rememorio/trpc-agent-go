@@ -82,12 +82,6 @@ type AgentFactory func(
 	ro agent.RunOptions,
 ) (agent.Agent, error)
 
-// SessionIngestor ingests a completed session transcript into an external
-// long-term memory platform.
-type SessionIngestor interface {
-	EnqueueSessionIngest(ctx context.Context, sess *session.Session) error
-}
-
 // WithMemoryService sets the memory service to use.
 func WithMemoryService(service memory.Service) Option {
 	return func(opts *Options) {
@@ -95,10 +89,11 @@ func WithMemoryService(service memory.Service) Option {
 	}
 }
 
-// WithSessionIngestor sets the external session ingestor to use.
-func WithSessionIngestor(ingestor SessionIngestor) Option {
+// WithIngestor sets the session ingestor that receives completed session
+// transcripts for ingestion into an external long-term memory platform.
+func WithIngestor(ingestor session.Ingestor) Option {
 	return func(opts *Options) {
-		opts.sessionIngestor = ingestor
+		opts.ingestor = ingestor
 	}
 }
 
@@ -212,7 +207,7 @@ type runner struct {
 	agentFactories   map[string]AgentFactory
 	sessionService   session.Service
 	memoryService    memory.Service
-	sessionIngestor  SessionIngestor
+	ingestor         session.Ingestor
 	artifactService  artifact.Service
 	pluginManager    agent.PluginManager
 	ralphLoop        *RalphLoopConfig
@@ -237,7 +232,7 @@ type runHandle struct {
 type Options struct {
 	sessionService  session.Service
 	memoryService   memory.Service
-	sessionIngestor SessionIngestor
+	ingestor        session.Ingestor
 	artifactService artifact.Service
 	agents          map[string]agent.Agent
 	agentFactories  map[string]AgentFactory
@@ -288,7 +283,7 @@ func NewRunner(appName string, ag agent.Agent, opts ...Option) Runner {
 		agentFactories:      options.agentFactories,
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
-		sessionIngestor:     options.sessionIngestor,
+		ingestor:            options.ingestor,
 		artifactService:     options.artifactService,
 		pluginManager:       pm,
 		ralphLoop:           options.ralphLoop,
@@ -339,7 +334,7 @@ func NewRunnerWithAgentFactory(
 		agentFactories:      options.agentFactories,
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
-		sessionIngestor:     options.sessionIngestor,
+		ingestor:            options.ingestor,
 		artifactService:     options.artifactService,
 		pluginManager:       pm,
 		ralphLoop:           options.ralphLoop,
@@ -2045,10 +2040,10 @@ func (r *runner) enqueueAutoMemoryJob(ctx context.Context, sess *session.Session
 }
 
 func (r *runner) enqueueSessionIngest(ctx context.Context, sess *session.Session) {
-	if r.sessionIngestor == nil || sess == nil {
+	if r.ingestor == nil || sess == nil {
 		return
 	}
-	if err := r.sessionIngestor.EnqueueSessionIngest(ctx, sess); err != nil {
+	if err := r.ingestor.IngestSession(ctx, sess); err != nil {
 		log.DebugfContext(ctx, "Session ingest skipped or failed: %v", err)
 	}
 }

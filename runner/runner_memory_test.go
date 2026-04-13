@@ -29,13 +29,13 @@ type mockMemoryServiceForAutoMemory struct {
 	sess          *session.Session
 }
 
-type mockSessionIngestor struct {
+type mockIngestor struct {
 	enqueueCalled bool
 	enqueueErr    error
 	sess          *session.Session
 }
 
-func (m *mockSessionIngestor) EnqueueSessionIngest(ctx context.Context, sess *session.Session) error {
+func (m *mockIngestor) IngestSession(ctx context.Context, sess *session.Session) error {
 	m.enqueueCalled = true
 	m.sess = sess
 	return m.enqueueErr
@@ -137,14 +137,14 @@ func TestRunner_WithMemoryService_AutoMemoryIntegration(t *testing.T) {
 	require.Equal(t, "user", mockMemSvc.sess.UserID)
 }
 
-func TestRunner_WithSessionIngestor_Integration(t *testing.T) {
-	mockIngestor := &mockSessionIngestor{}
+func TestRunner_WithIngestor_Integration(t *testing.T) {
+	mockIngestor := &mockIngestor{}
 	sessSvc := sessioninmemory.NewSessionService()
 	mockAgent := &mockAgent{name: "test-agent"}
 
 	r := NewRunner("test-app", mockAgent,
 		WithSessionService(sessSvc),
-		WithSessionIngestor(mockIngestor),
+		WithIngestor(mockIngestor),
 	)
 
 	ctx := context.Background()

@@ -859,6 +859,13 @@ type Service interface {
 	Close() error
 }
 
+// Ingestor ingests a completed session transcript into an external
+// long-term memory platform (e.g. mem0). Implementations enqueue the session
+// for asynchronous ingestion; the runner calls this after each turn completes.
+type Ingestor interface {
+	IngestSession(ctx context.Context, sess *Session) error
+}
+
 // Key is the key for a session.
 type Key struct {
 	AppName   string // app name

@@ -52,8 +52,8 @@ func (s *Service) Tools() []tool.Tool {
 	return append([]tool.Tool(nil), s.precomputedTools...)
 }
 
-// EnqueueSessionIngest enqueues session transcript ingestion into mem0.
-func (s *Service) EnqueueSessionIngest(ctx context.Context, sess *session.Session) error {
+// IngestSession enqueues session transcript ingestion into mem0.
+func (s *Service) IngestSession(ctx context.Context, sess *session.Session) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
