@@ -216,11 +216,11 @@ func (w *ingestWorker) awaitIngestEvent(ctx context.Context, eventID string) (*e
 			return nil, err
 		}
 		switch strings.ToUpper(strings.TrimSpace(out.Status)) {
-		case "", ingestEventStatusSucceeded:
+		case ingestEventStatusSucceeded:
 			return &out, nil
 		case ingestEventStatusFailed:
 			return nil, fmt.Errorf("mem0: ingest event %s failed", eventID)
-		case ingestEventStatusPending, ingestEventStatusRunning:
+		case "", ingestEventStatusPending, ingestEventStatusRunning:
 		default:
 			if len(out.Results) > 0 {
 				return &out, nil
