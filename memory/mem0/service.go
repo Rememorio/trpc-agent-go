@@ -86,7 +86,7 @@ func (s *Service) IngestSession(ctx context.Context, sess *session.Session) erro
 	log.DebugfContext(ctx, "mem0: ingest queue full, processing synchronously for user %s/%s", userKey.AppName, userKey.UserID)
 	timeout := s.opts.memoryJobTimeout
 	if timeout <= 0 {
-		timeout = defaultIngestJobTimeout
+		timeout = defaultMemoryJobTimeout
 	}
 	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()

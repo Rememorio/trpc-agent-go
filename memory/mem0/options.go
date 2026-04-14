@@ -18,9 +18,9 @@ import (
 const (
 	defaultHost             = "https://api.mem0.ai"
 	defaultTimeout          = 10 * time.Second
-	defaultIngestWorkers    = 1
-	defaultIngestQueueSize  = 10
-	defaultIngestJobTimeout = 30 * time.Second
+	defaultAsyncMemoryNum   = 1
+	defaultMemoryQueueSize  = 10
+	defaultMemoryJobTimeout = 30 * time.Second
 )
 
 type serviceOpts struct {
@@ -52,9 +52,9 @@ var defaultOptions = serviceOpts{
 	asyncMode:        true,
 	version:          "v2",
 	timeout:          defaultTimeout,
-	asyncMemoryNum:   defaultIngestWorkers,
-	memoryQueueSize:  defaultIngestQueueSize,
-	memoryJobTimeout: defaultIngestJobTimeout,
+	asyncMemoryNum:   defaultAsyncMemoryNum,
+	memoryQueueSize:  defaultMemoryQueueSize,
+	memoryJobTimeout: defaultMemoryJobTimeout,
 }
 
 // ServiceOpt configures a mem0 service.

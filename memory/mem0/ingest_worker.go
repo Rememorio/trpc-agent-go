@@ -59,11 +59,11 @@ const (
 func newIngestWorker(c *client, opts serviceOpts) *ingestWorker {
 	num := opts.asyncMemoryNum
 	if num <= 0 {
-		num = defaultIngestWorkers
+		num = defaultAsyncMemoryNum
 	}
 	queueSize := opts.memoryQueueSize
 	if queueSize <= 0 {
-		queueSize = defaultIngestQueueSize
+		queueSize = defaultMemoryQueueSize
 	}
 	w := &ingestWorker{
 		c:         c,
