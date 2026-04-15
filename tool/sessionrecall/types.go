@@ -32,6 +32,10 @@ const (
 	// ScopeCurrentHidden searches summarized-away history in the current
 	// session.
 	ScopeCurrentHidden = "current_hidden"
+	// ScopeCurrentSession searches the current session regardless of summary
+	// cutoff. Use this when current-session details may have been compacted
+	// out of the projected request.
+	ScopeCurrentSession = "current_session"
 	// ScopeOtherSessions searches other sessions owned by the same user.
 	ScopeOtherSessions = "other_sessions"
 	// ScopeAllSessions searches both current hidden history and other
@@ -56,10 +60,12 @@ var (
 	errWindowUnavailable         = errors.New("session window loading is not available for this session service")
 )
 
+const summaryLastIncludedTsKey = "summary:last_included_ts"
+
 // SearchSessionRequest is the input for session_search.
 type SearchSessionRequest struct {
 	Query      string             `json:"query" jsonschema:"description=Search query for prior conversation details. Prefer short keyword-style queries."`
-	Scope      string             `json:"scope,omitempty" jsonschema:"description=Search scope: current_hidden, other_sessions, or all_sessions."`
+	Scope      string             `json:"scope,omitempty" jsonschema:"description=Search scope: current_hidden, current_session, other_sessions, or all_sessions."`
 	TopK       int                `json:"top_k,omitempty" jsonschema:"description=Maximum number of results to return. Defaults to 5 and is capped."`
 	MinScore   float64            `json:"min_score,omitempty" jsonschema:"description=Optional minimum relevance score threshold between 0 and 1."`
 	SearchMode session.SearchMode `json:"search_mode,omitempty" jsonschema:"description=Retrieval mode: dense or hybrid. Defaults to hybrid."`
@@ -229,6 +235,8 @@ func currentSessionKey(
 
 func normalizeScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case ScopeCurrentSession:
+		return ScopeCurrentSession
 	case ScopeOtherSessions:
 		return ScopeOtherSessions
 	case ScopeAllSessions:
@@ -294,6 +302,11 @@ func currentSummaryCutoff(
 	if inv == nil || inv.Session == nil {
 		return time.Time{}
 	}
+	if raw, ok := inv.Session.GetState(summaryLastIncludedTsKey); ok && len(raw) > 0 {
+		if parsed, err := time.Parse(time.RFC3339Nano, string(raw)); err == nil {
+			return parsed
+		}
+	}
 
 	filterKey := strings.TrimSpace(inv.GetEventFilterKey())
 	inv.Session.SummariesMu.RLock()
@@ -339,7 +352,7 @@ func extractSessionMessageText(
 	}
 
 	msg := evt.Choices[0].Message
-	if len(msg.ToolCalls) > 0 || msg.ToolID != "" {
+	if len(msg.ToolCalls) > 0 {
 		return "", "", false
 	}
 
@@ -347,7 +360,10 @@ func extractSessionMessageText(
 	if role == "" {
 		role = model.RoleAssistant
 	}
-	if role != model.RoleUser && role != model.RoleAssistant {
+	if msg.ToolID != "" || role == model.RoleTool {
+		role = model.RoleTool
+	}
+	if role != model.RoleUser && role != model.RoleAssistant && role != model.RoleTool {
 		return "", "", false
 	}
 
@@ -368,6 +384,12 @@ func extractSessionMessageText(
 	}
 	if text == "" {
 		return "", "", false
+	}
+	if role == model.RoleTool {
+		toolName := strings.TrimSpace(msg.ToolName)
+		if toolName != "" {
+			text = toolName + ": " + text
+		}
 	}
 	return text, role, true
 }

@@ -165,7 +165,7 @@ func extractWindowEventText(
 	}
 
 	msg := evt.Choices[0].Message
-	if len(msg.ToolCalls) > 0 || msg.ToolID != "" {
+	if len(msg.ToolCalls) > 0 {
 		return "", "", false
 	}
 
@@ -173,7 +173,10 @@ func extractWindowEventText(
 	if role == "" {
 		role = model.RoleAssistant
 	}
-	if role != model.RoleUser && role != model.RoleAssistant {
+	if msg.ToolID != "" || role == model.RoleTool {
+		role = model.RoleTool
+	}
+	if role != model.RoleUser && role != model.RoleAssistant && role != model.RoleTool {
 		return "", "", false
 	}
 
@@ -194,6 +197,12 @@ func extractWindowEventText(
 	}
 	if text == "" {
 		return "", "", false
+	}
+	if role == model.RoleTool {
+		toolName := strings.TrimSpace(msg.ToolName)
+		if toolName != "" {
+			text = toolName + ": " + text
+		}
 	}
 	return text, role, true
 }

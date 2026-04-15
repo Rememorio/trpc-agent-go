@@ -199,6 +199,80 @@ func TestGetEventWindow_AnchorNotFound(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestGetEventWindow_IncludesToolResultsWhenRequested(t *testing.T) {
+	s, mock, db := newTestService(t, nil)
+	defer db.Close()
+
+	makeEventBytes := func(id string, role model.Role, content string) []byte {
+		evt := event.Event{
+			ID: id,
+			Response: &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:    role,
+						Content: content,
+					},
+				}},
+			},
+		}
+		b, err := json.Marshal(evt)
+		require.NoError(t, err)
+		return b
+	}
+
+	makeToolEventBytes := func(id string) []byte {
+		evt := event.Event{
+			ID: id,
+			Response: &model.Response{
+				Choices: []model.Choice{{
+					Message: model.Message{
+						Role:     model.RoleTool,
+						ToolID:   "call-1",
+						ToolName: "db_query",
+						Content:  "row_count=42",
+					},
+				}},
+			},
+		}
+		b, err := json.Marshal(evt)
+		require.NoError(t, err)
+		return b
+	}
+
+	base := time.Date(2025, 4, 7, 9, 0, 0, 0, time.UTC)
+	rows := sqlmock.NewRows([]string{"event", "created_at"}).
+		AddRow(makeEventBytes("evt-1", model.RoleUser, "first"), base).
+		AddRow(makeToolEventBytes("evt-tool"), base.Add(time.Minute)).
+		AddRow(makeEventBytes("evt-2", model.RoleAssistant, "second"), base.Add(2*time.Minute))
+
+	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess").
+		WillReturnRows(rows)
+
+	window, err := s.GetEventWindow(
+		context.Background(),
+		session.EventWindowRequest{
+			Key: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			AnchorEventID: "evt-tool",
+			Before:        1,
+			After:         1,
+			Roles: []model.Role{
+				model.RoleUser,
+				model.RoleAssistant,
+				model.RoleTool,
+			},
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, window.Entries, 3)
+	assert.Equal(t, "evt-tool", window.Entries[1].Event.ID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestGetEventWindow_QueryError(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()

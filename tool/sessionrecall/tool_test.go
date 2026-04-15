@@ -211,9 +211,77 @@ func TestSearchTool_CurrentHidden(t *testing.T) {
 	assert.Equal(t, 2, svc.lastWindowReq.After)
 	assert.ElementsMatch(
 		t,
-		[]model.Role{model.RoleUser, model.RoleAssistant},
+		[]model.Role{model.RoleUser, model.RoleAssistant, model.RoleTool},
 		svc.lastSearchReq.Roles,
 	)
+}
+
+func TestSearchTool_CurrentHiddenUsesLastIncludedTimestamp(
+	t *testing.T,
+) {
+	summaryUpdatedAt := time.Date(2025, 4, 7, 10, 0, 0, 0, time.UTC)
+	lastIncludedAt := summaryUpdatedAt.Add(-3 * time.Minute)
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchResults: []session.EventSearchResult{
+			{
+				SessionKey: session.Key{
+					AppName:   "app",
+					UserID:    "user",
+					SessionID: "sess",
+				},
+				EventCreatedAt: lastIncludedAt.Add(-time.Minute),
+				Event: event.Event{
+					ID: "evt-1",
+					Response: &model.Response{
+						Choices: []model.Choice{{
+							Message: model.Message{
+								Role:    model.RoleAssistant,
+								Content: "remembered detail",
+							},
+						}},
+					},
+				},
+				Role:  model.RoleAssistant,
+				Text:  "remembered detail",
+				Score: 0.91,
+			},
+		},
+	}
+
+	sess := session.NewSession(
+		"app",
+		"user",
+		"sess",
+		session.WithSessionSummaries(map[string]*session.Summary{
+			"": {
+				Summary:   "summary",
+				UpdatedAt: summaryUpdatedAt,
+			},
+		}),
+	)
+	sess.SetState(summaryLastIncludedTsKey, []byte(lastIncludedAt.Format(time.RFC3339Nano)))
+
+	inv := &agent.Invocation{
+		Session:        sess,
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&SearchSessionRequest{
+		Query: "remembered detail",
+		Scope: ScopeCurrentHidden,
+	})
+	require.NoError(t, err)
+
+	result, err := NewSearchTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*SearchSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Results, 1)
+	require.NotNil(t, svc.lastSearchReq.CreatedBefore)
+	assert.Equal(t, lastIncludedAt, *svc.lastSearchReq.CreatedBefore)
 }
 
 func TestSearchTool_FallbackQuery(t *testing.T) {
@@ -441,6 +509,112 @@ func TestSearchTool_BroadensSparsePrimaryResults(t *testing.T) {
 	assert.Equal(t, "evt-a", resp.Results[1].EventID)
 }
 
+func TestSearchTool_CurrentSessionIncludesToolResults(
+	t *testing.T,
+) {
+	createdAt := time.Date(2025, 4, 7, 10, 30, 0, 0, time.UTC)
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchResults: []session.EventSearchResult{
+			{
+				SessionKey: session.Key{
+					AppName:   "app",
+					UserID:    "user",
+					SessionID: "sess",
+				},
+				EventCreatedAt: createdAt,
+				Event: event.Event{
+					ID: "evt-tool",
+					Response: &model.Response{
+						Choices: []model.Choice{{
+							Message: model.Message{
+								Role:     model.RoleTool,
+								ToolID:   "call-1",
+								ToolName: "web_fetch",
+								Content:  "HTTP 200 with product details",
+							},
+						}},
+					},
+				},
+				Role:  model.RoleTool,
+				Text:  "web_fetch: HTTP 200 with product details",
+				Score: 0.88,
+			},
+		},
+		window: &session.EventWindow{
+			SessionKey: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			AnchorEventID: "evt-tool",
+			Entries: []session.EventWindowEntry{
+				{
+					Event: event.Event{
+						ID: "evt-user",
+						Response: &model.Response{
+							Choices: []model.Choice{{
+								Message: model.Message{
+									Role:    model.RoleUser,
+									Content: "fetch the product page",
+								},
+							}},
+						},
+					},
+					CreatedAt: createdAt.Add(-time.Minute),
+				},
+				{
+					Event: event.Event{
+						ID: "evt-tool",
+						Response: &model.Response{
+							Choices: []model.Choice{{
+								Message: model.Message{
+									Role:     model.RoleTool,
+									ToolID:   "call-1",
+									ToolName: "web_fetch",
+									Content:  "HTTP 200 with product details",
+								},
+							}},
+						},
+					},
+					CreatedAt: createdAt,
+				},
+			},
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session:        session.NewSession("app", "user", "sess"),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&SearchSessionRequest{
+		Query: "product details",
+		Scope: ScopeCurrentSession,
+	})
+	require.NoError(t, err)
+
+	result, err := NewSearchTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*SearchSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Results, 1)
+	assert.Equal(t, ScopeCurrentSession, resp.Results[0].Scope)
+	assert.Equal(t, model.RoleTool, resp.Results[0].Role)
+	assert.Contains(t, resp.Results[0].Snippet, "tool: web_fetch: HTTP 200 with product details")
+	require.Len(t, resp.Results[0].Context, 2)
+	assert.Equal(t, model.RoleTool, resp.Results[0].Context[1].Role)
+	assert.Equal(t, "web_fetch: HTTP 200 with product details", resp.Results[0].Context[1].Content)
+	assert.Nil(t, svc.lastSearchReq.CreatedBefore)
+	assert.ElementsMatch(
+		t,
+		[]model.Role{model.RoleUser, model.RoleAssistant, model.RoleTool},
+		svc.lastSearchReq.Roles,
+	)
+}
+
 func TestLoadTool(t *testing.T) {
 	createdAt := time.Date(2025, 4, 7, 11, 0, 0, 0, time.UTC)
 	svc := &mockSessionService{
@@ -520,9 +694,78 @@ func TestLoadTool(t *testing.T) {
 	assert.Equal(t, "evt-2", svc.lastWindowReq.AnchorEventID)
 	assert.ElementsMatch(
 		t,
-		[]model.Role{model.RoleUser, model.RoleAssistant},
+		[]model.Role{model.RoleUser, model.RoleAssistant, model.RoleTool},
 		svc.lastWindowReq.Roles,
 	)
+}
+
+func TestLoadTool_IncludesToolResults(t *testing.T) {
+	createdAt := time.Date(2025, 4, 7, 11, 0, 0, 0, time.UTC)
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		window: &session.EventWindow{
+			SessionKey: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			AnchorEventID: "evt-tool",
+			Entries: []session.EventWindowEntry{
+				{
+					Event: event.Event{
+						ID: "evt-user",
+						Response: &model.Response{
+							Choices: []model.Choice{{
+								Message: model.Message{
+									Role:    model.RoleUser,
+									Content: "run the lookup",
+								},
+							}},
+						},
+					},
+					CreatedAt: createdAt,
+				},
+				{
+					Event: event.Event{
+						ID: "evt-tool",
+						Response: &model.Response{
+							Choices: []model.Choice{{
+								Message: model.Message{
+									Role:     model.RoleTool,
+									ToolID:   "call-1",
+									ToolName: "db_query",
+									Content:  "row_count=42",
+								},
+							}},
+						},
+					},
+					CreatedAt: createdAt.Add(time.Minute),
+				},
+			},
+		},
+	}
+
+	inv := &agent.Invocation{
+		Session:        session.NewSession("app", "user", "sess"),
+		SessionService: svc,
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	args, err := json.Marshal(&LoadSessionRequest{
+		EventID: "evt-tool",
+		Before:  1,
+		After:   0,
+	})
+	require.NoError(t, err)
+
+	result, err := NewLoadTool().Call(ctx, args)
+	require.NoError(t, err)
+
+	resp, ok := result.(*LoadSessionResponse)
+	require.True(t, ok)
+	require.Len(t, resp.Messages, 2)
+	assert.Equal(t, model.RoleTool, resp.Messages[1].Role)
+	assert.Equal(t, "db_query: row_count=42", resp.Messages[1].Content)
 }
 
 func TestNormalizeWindowSize_PreservesExplicitZeroSide(t *testing.T) {

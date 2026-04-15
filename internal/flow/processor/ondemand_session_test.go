@@ -54,7 +54,7 @@ func TestOnDemandSessionRequestProcessor_ProcessRequest(t *testing.T) {
 
 	p.ProcessRequest(context.Background(), inv, req, nil)
 	require.Len(t, req.Messages, 2)
-	assert.Contains(t, req.Messages[0].Content, "On-demand session recall is available.")
+	assert.Contains(t, req.Messages[0].Content, "Progressive disclosure for session history is available.")
 	assert.Contains(t, req.Messages[0].Content, "base instruction")
 
 	first := req.Messages[0].Content

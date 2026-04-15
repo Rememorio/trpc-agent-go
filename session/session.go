@@ -782,8 +782,9 @@ type SearchableService interface {
 	// the given request. Results are ordered by
 	// descending relevance score.
 	// Only events with meaningful text content
-	// (user/assistant messages) are searchable; tool
-	// calls and partial events are excluded.
+	// (user/assistant messages and tool results) are
+	// searchable; tool calls and partial events are
+	// excluded.
 	SearchEvents(
 		ctx context.Context,
 		req EventSearchRequest,
