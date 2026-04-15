@@ -10,6 +10,7 @@
 package admin
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/debugrecorder"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/octool"
 	ocskills "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/skills"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/uploads"
@@ -32,6 +34,11 @@ const (
 	routeIndex      = "/"
 	routeOverview   = "/overview"
 	routeSkillsPage = "/skills"
+	routePrompts    = "/prompts"
+	routeIdentity   = "/identity"
+	routePersonas   = "/personas"
+	routeChats      = "/chats"
+	routeMemory     = "/memory"
 	routeAutomation = "/automation"
 	routeSessions   = "/sessions"
 	routeDebug      = "/debug"
@@ -41,6 +48,8 @@ const (
 	routeSkillsJSON        = "/api/skills/status"
 	routeSkillsRefresh     = "/api/skills/refresh"
 	routeSkillToggle       = "/api/skills/toggle"
+	routeMemoryFilesJSON   = "/api/memory/files"
+	routeMemoryFile        = "/memory/file"
 	routeJobsJSON          = "/api/cron/jobs"
 	routeJobRun            = "/api/cron/jobs/run"
 	routeJobRemove         = "/api/cron/jobs/remove"
@@ -52,9 +61,11 @@ const (
 	routeDebugSessionsJSON = "/api/debug/sessions"
 	routeDebugTracesJSON   = "/api/debug/traces"
 	routeDebugFile         = "/debug/file"
+	routePageStateJSON     = "/api/page/state"
 
 	queryNotice    = "notice"
 	queryError     = "error"
+	queryChatID    = "chat_id"
 	querySessionID = "session_id"
 	queryChannel   = "channel"
 	queryUserID    = "user_id"
@@ -65,6 +76,8 @@ const (
 	queryName      = "name"
 	queryPath      = "path"
 	queryDownload  = "download"
+	queryCursor    = "cursor"
+	queryView      = "view"
 	formJobID      = "job_id"
 	formSkillKey   = "skill_key"
 	formSkillName  = "skill_name"
@@ -78,6 +91,7 @@ const (
 	debugMetaFileName   = "meta.json"
 	debugEventsFileName = "events.jsonl"
 	debugResultFileName = "result.json"
+	debugEventsMIMEType = "application/x-ndjson; charset=utf-8"
 
 	maxDebugSessionRows = 12
 	maxDebugTraceRows   = 18
@@ -89,6 +103,19 @@ const (
 	adminBrandName     = "TRPC-CLAW"
 	adminBrandTitle    = "TRPC-CLAW admin"
 	adminRuntimePrefix = "trpc-claw"
+
+	pageSummaryPrompts = "" +
+		"Edit the main prompt blocks, inspect the assembled " +
+		"prompt previews, and keep file-level edits in one place."
+	pageSummaryIdentity = "" +
+		"Set the default name, keep current-chat names readable, " +
+		"and leave the runtime product as a separate read-only fact."
+	pageSummaryPersonas = "" +
+		"Manage the default persona and any file-backed " +
+		"persona definitions exposed by this runtime."
+	pageSummaryChats = "" +
+		"Inspect each chat's current state, recent transcript, " +
+		"and the safest next step for names and persona."
 )
 
 type adminView string
@@ -96,6 +123,11 @@ type adminView string
 const (
 	viewOverview   adminView = "overview"
 	viewSkills     adminView = "skills"
+	viewPrompts    adminView = "prompts"
+	viewIdentity   adminView = "identity"
+	viewPersonas   adminView = "personas"
+	viewChats      adminView = "chats"
+	viewMemory     adminView = "memory"
 	viewAutomation adminView = "automation"
 	viewSessions   adminView = "sessions"
 	viewDebug      adminView = "debug"
@@ -136,6 +168,11 @@ type Config struct {
 	Channels      []string
 	GatewayRoutes Routes
 	Skills        SkillsStatusProvider
+	Prompts       PromptsProvider
+	Identity      IdentityProvider
+	Personas      PersonasProvider
+	Chats         ChatsProvider
+	MemoryFiles   MemoryFileStore
 	Browser       BrowserConfig
 
 	Cron *cron.Service
@@ -258,6 +295,26 @@ func (s *Service) Handler() http.Handler {
 		wrapRelativeLinksFunc(s.handleSkillsPage),
 	)
 	mux.HandleFunc(
+		routePrompts,
+		wrapRelativeLinksFunc(s.handlePromptsPage),
+	)
+	mux.HandleFunc(
+		routeIdentity,
+		wrapRelativeLinksFunc(s.handleIdentityPage),
+	)
+	mux.HandleFunc(
+		routePersonas,
+		wrapRelativeLinksFunc(s.handlePersonasPage),
+	)
+	mux.HandleFunc(
+		routeChats,
+		wrapRelativeLinksFunc(s.handleChatsPage),
+	)
+	mux.HandleFunc(
+		routeMemory,
+		wrapRelativeLinksFunc(s.handleMemoryPage),
+	)
+	mux.HandleFunc(
 		routeAutomation,
 		wrapRelativeLinksFunc(s.handleAutomationPage),
 	)
@@ -274,7 +331,51 @@ func (s *Service) Handler() http.Handler {
 		wrapRelativeLinksFunc(s.handleBrowserPage),
 	)
 	mux.HandleFunc(routeStatusJSON, s.handleStatusJSON)
+	mux.HandleFunc(routePageStateJSON, s.handlePageStateJSON)
 	mux.HandleFunc(routeSkillsJSON, s.handleSkillsJSON)
+	mux.HandleFunc(routePromptsJSON, s.handlePromptsJSON)
+	mux.HandleFunc(routeIdentityJSON, s.handleIdentityJSON)
+	mux.HandleFunc(routePersonasJSON, s.handlePersonasJSON)
+	mux.HandleFunc(routeChatsJSON, s.handleChatsJSON)
+	mux.HandleFunc(routeChatHistoryJSON, s.handleChatHistoryJSON)
+	mux.HandleFunc(routeMemoryFilesJSON, s.handleMemoryFilesJSON)
+	mux.HandleFunc(routeMemoryFile, s.handleMemoryFile)
+	mux.HandleFunc(
+		routePromptInlineSave,
+		wrapRelativeLinksFunc(s.handleSavePromptInline),
+	)
+	mux.HandleFunc(
+		routePromptRuntimeSave,
+		wrapRelativeLinksFunc(s.handleSavePromptRuntime),
+	)
+	mux.HandleFunc(
+		routePromptFileSave,
+		wrapRelativeLinksFunc(s.handleSavePromptFile),
+	)
+	mux.HandleFunc(
+		routePromptFileCreate,
+		wrapRelativeLinksFunc(s.handleCreatePromptFile),
+	)
+	mux.HandleFunc(
+		routePromptFileDelete,
+		wrapRelativeLinksFunc(s.handleDeletePromptFile),
+	)
+	mux.HandleFunc(
+		routeIdentitySave,
+		wrapRelativeLinksFunc(s.handleSaveIdentity),
+	)
+	mux.HandleFunc(
+		routePersonaSave,
+		wrapRelativeLinksFunc(s.handleSavePersona),
+	)
+	mux.HandleFunc(
+		routePersonaDelete,
+		wrapRelativeLinksFunc(s.handleDeletePersona),
+	)
+	mux.HandleFunc(
+		routePersonaDefaultSave,
+		wrapRelativeLinksFunc(s.handleSaveDefaultPersona),
+	)
 	mux.HandleFunc(
 		routeSkillsRefresh,
 		wrapRelativeLinksFunc(s.handleRefreshSkills),
@@ -335,6 +436,7 @@ type snapshot struct {
 	Routes   Routes        `json:"routes,omitempty"`
 	Browser  browserStatus `json:"browser"`
 	Skills   skillsStatus  `json:"skills"`
+	Memory   memoryStatus  `json:"memory"`
 	Exec     execStatus    `json:"exec"`
 	Uploads  uploadsStatus `json:"uploads"`
 	Cron     cronStatus    `json:"cron"`
@@ -481,14 +583,45 @@ type skillInstallView struct {
 }
 
 type pageData struct {
-	Snapshot       snapshot
-	Notice         string
-	Error          string
-	RefreshSeconds int
-	View           adminView
-	PageTitle      string
-	PageSummary    string
-	NavSections    []adminNavSection
+	Snapshot          snapshot
+	Prompts           PromptsStatus
+	Identity          IdentityStatus
+	Personas          PersonasStatus
+	Chats             ChatsStatus
+	ChatHistoryPath   string
+	SelectedChat      *ChatView
+	SelectedChatError string
+	Notice            string
+	Error             string
+	PageRefresh       pageRefreshData
+	View              adminView
+	PageTitle         string
+	PageSummary       string
+	NavSections       []adminNavSection
+}
+
+type pageRefreshData struct {
+	CurrentPath     string
+	StatePath       string
+	Token           string
+	UpdatedAt       time.Time
+	IntervalSeconds int
+	Watch           bool
+}
+
+type pageStateStatus struct {
+	Token     string    `json:"token,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type pageRefreshInput struct {
+	Snapshot          snapshot
+	Prompts           PromptsStatus
+	Identity          IdentityStatus
+	Personas          PersonasStatus
+	Chats             ChatsStatus
+	SelectedChat      *ChatView
+	SelectedChatError string
 }
 
 type adminNavSection struct {
@@ -505,6 +638,7 @@ type adminNavItem struct {
 func (s *Service) Snapshot() snapshot {
 	out := s.baseSnapshot()
 	out.Skills = s.skillsStatus()
+	out.Memory = s.memoryStatusSummary()
 	out.Browser = s.browserStatus()
 	out.Exec = s.execStatus()
 	out.Uploads = s.uploadsStatus()
@@ -557,8 +691,12 @@ func (s *Service) snapshotForView(view adminView) snapshot {
 	switch view {
 	case viewSkills:
 		out.Skills = s.skillsStatus()
+	case viewMemory:
+		out.Memory = s.memoryStatus()
 	case viewAutomation:
 		out.Cron = s.cronStatus()
+	case viewChats:
+		out.Exec = s.execStatus()
 	case viewSessions:
 		out.Exec = s.execStatus()
 		out.Uploads = s.uploadsStatus()
@@ -881,6 +1019,41 @@ func (s *Service) handleSkillsPage(
 	s.renderPage(w, r, viewSkills)
 }
 
+func (s *Service) handlePromptsPage(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	s.renderPage(w, r, viewPrompts)
+}
+
+func (s *Service) handleIdentityPage(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	s.renderPage(w, r, viewIdentity)
+}
+
+func (s *Service) handlePersonasPage(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	s.renderPage(w, r, viewPersonas)
+}
+
+func (s *Service) handleChatsPage(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	s.renderPage(w, r, viewChats)
+}
+
+func (s *Service) handleMemoryPage(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	s.renderPage(w, r, viewMemory)
+}
+
 func (s *Service) handleAutomationPage(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -919,16 +1092,45 @@ func (s *Service) renderPage(
 		return
 	}
 
+	snapshot := s.snapshotForView(view)
+	prompts := s.promptsStatus()
+	identity := s.identityStatus()
+	personas := s.personasStatus()
+	chats := s.chatsStatus()
 	data := pageData{
-		Snapshot:       s.snapshotForView(view),
-		Notice:         strings.TrimSpace(r.URL.Query().Get(queryNotice)),
-		Error:          strings.TrimSpace(r.URL.Query().Get(queryError)),
-		RefreshSeconds: refreshSeconds,
-		View:           view,
-		PageTitle:      pageTitle(view),
-		PageSummary:    pageSummary(view),
-		NavSections:    adminNavSections(view),
+		Snapshot:        snapshot,
+		Prompts:         prompts,
+		Identity:        identity,
+		Personas:        personas,
+		Chats:           chats,
+		ChatHistoryPath: routeChatHistoryJSON,
+		Notice:          strings.TrimSpace(r.URL.Query().Get(queryNotice)),
+		Error:           strings.TrimSpace(r.URL.Query().Get(queryError)),
+		View:            view,
+		PageTitle:       pageTitle(view),
+		PageSummary:     pageSummary(view),
+		NavSections:     adminNavSections(view),
 	}
+	if view == viewChats {
+		data.SelectedChat, data.SelectedChatError = resolveSelectedChat(
+			chats,
+			s.cfg.Chats,
+			selectedChatID(r),
+		)
+	}
+	data.PageRefresh = buildPageRefreshData(
+		r,
+		view,
+		pageRefreshInput{
+			Snapshot:          snapshot,
+			Prompts:           prompts,
+			Identity:          identity,
+			Personas:          personas,
+			Chats:             chats,
+			SelectedChat:      data.SelectedChat,
+			SelectedChatError: data.SelectedChatError,
+		},
+	)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := adminPage.Execute(w, data); err != nil {
@@ -940,6 +1142,126 @@ func (s *Service) renderPage(
 	}
 }
 
+func resolveSelectedChat(
+	status ChatsStatus,
+	provider ChatsProvider,
+	selectedID string,
+) (*ChatView, string) {
+	selected := selectChatView(status, selectedID)
+	if selected == nil {
+		return nil, ""
+	}
+	detailProvider, ok := provider.(ChatDetailProvider)
+	if !ok {
+		return selected, ""
+	}
+	detail, err := detailProvider.ChatDetail(
+		strings.TrimSpace(selected.BaseSessionID),
+	)
+	if err != nil {
+		return selected, strings.TrimSpace(err.Error())
+	}
+	if err := validateChatDetail(*selected, detail); err != nil {
+		return selected, strings.TrimSpace(err.Error())
+	}
+	merged := mergeChatView(*selected, detail)
+	return &merged, ""
+}
+
+func validateChatDetail(base ChatView, detail ChatView) error {
+	baseSessionID := strings.TrimSpace(base.BaseSessionID)
+	detailSessionID := strings.TrimSpace(detail.BaseSessionID)
+	if detailSessionID == "" || baseSessionID == "" {
+		return nil
+	}
+	if detailSessionID == baseSessionID {
+		return nil
+	}
+	return fmt.Errorf(
+		"chat detail mismatch: expected %q, got %q",
+		baseSessionID,
+		detailSessionID,
+	)
+}
+
+func mergeChatView(
+	base ChatView,
+	detail ChatView,
+) ChatView {
+	merged := base
+	if strings.TrimSpace(merged.DisplayLabel) == "" {
+		merged.DisplayLabel = strings.TrimSpace(detail.DisplayLabel)
+	}
+	if strings.TrimSpace(merged.Kind) == "" {
+		merged.Kind = strings.TrimSpace(detail.Kind)
+	}
+	if strings.TrimSpace(merged.KindLabel) == "" {
+		merged.KindLabel = strings.TrimSpace(detail.KindLabel)
+	}
+	if strings.TrimSpace(merged.CurrentSessionID) == "" {
+		merged.CurrentSessionID = strings.TrimSpace(
+			detail.CurrentSessionID,
+		)
+	}
+	if strings.TrimSpace(merged.RecallSessionID) == "" {
+		merged.RecallSessionID = strings.TrimSpace(
+			detail.RecallSessionID,
+		)
+	}
+	if !detail.LastActivity.IsZero() {
+		merged.LastActivity = detail.LastActivity
+	}
+	if detail.Epoch != 0 {
+		merged.Epoch = detail.Epoch
+	}
+	if value := strings.TrimSpace(detail.EffectiveAssistant); value != "" {
+		merged.EffectiveAssistant = value
+	}
+	if value := strings.TrimSpace(detail.ChatAssistantOverride); value != "" {
+		merged.ChatAssistantOverride = value
+	}
+	if value := strings.TrimSpace(detail.NameSource); value != "" {
+		merged.NameSource = value
+	}
+	if detail.OverridesGlobal {
+		merged.OverridesGlobal = true
+	}
+	if value := strings.TrimSpace(detail.PersonaID); value != "" {
+		merged.PersonaID = value
+	}
+	if value := strings.TrimSpace(detail.PersonaLabel); value != "" {
+		merged.PersonaLabel = value
+	}
+	if detail.PersonaPinned {
+		merged.PersonaPinned = true
+	}
+	if value := strings.TrimSpace(detail.WorkspacePath); value != "" {
+		merged.WorkspacePath = value
+	}
+	if len(detail.KnownUserIDs) != 0 {
+		merged.KnownUserIDs = detail.KnownUserIDs
+	}
+	if len(detail.KnownUsers) != 0 {
+		merged.KnownUsers = detail.KnownUsers
+	}
+	if len(detail.History) != 0 {
+		merged.History = detail.History
+	}
+	if detail.HistoryTotalCount != 0 {
+		merged.HistoryTotalCount = detail.HistoryTotalCount
+	}
+	if detail.HistoryTruncated {
+		merged.HistoryTruncated = true
+	}
+	if len(detail.Transcript) != 0 {
+		merged.Transcript = detail.Transcript
+	}
+	if detail.TranscriptTruncated {
+		merged.TranscriptTruncated = true
+	}
+	return merged
+}
+
 func adminNavSections(active adminView) []adminNavSection {
 	sections := []adminNavSection{
 		{
@@ -947,13 +1269,18 @@ func adminNavSections(active adminView) []adminNavSection {
 			Items: []adminNavItem{
 				{Label: "Overview", Path: routeOverview},
 				{Label: "Skills", Path: routeSkillsPage},
+				{Label: "Prompts", Path: routePrompts},
+				{Label: "Identity", Path: routeIdentity},
+				{Label: "Personas", Path: routePersonas},
+				{Label: "Chats", Path: routeChats},
+				{Label: "Memory", Path: routeMemory},
 				{Label: "Automation", Path: routeAutomation},
-				{Label: "Sessions", Path: routeSessions},
 			},
 		},
 		{
 			Label: "Diagnostics",
 			Items: []adminNavItem{
+				{Label: "Runtime Sessions", Path: routeSessions},
 				{Label: "Debug", Path: routeDebug},
 				{Label: "Browser", Path: routeBrowser},
 			},
@@ -972,10 +1299,20 @@ func pageTitle(view adminView) string {
 	switch view {
 	case viewSkills:
 		return "Skills"
+	case viewPrompts:
+		return "Prompts"
+	case viewIdentity:
+		return "Identity"
+	case viewPersonas:
+		return "Personas"
+	case viewChats:
+		return "Chats"
+	case viewMemory:
+		return "Memory"
 	case viewAutomation:
 		return "Automation"
 	case viewSessions:
-		return "Sessions"
+		return "Runtime Sessions"
 	case viewDebug:
 		return "Debug"
 	case viewBrowser:
@@ -989,6 +1326,16 @@ func pageSummary(view adminView) string {
 	switch view {
 	case viewSkills:
 		return "Discover installed skills, refresh folders from disk, and manage config-backed enablement."
+	case viewPrompts:
+		return pageSummaryPrompts
+	case viewIdentity:
+		return pageSummaryIdentity
+	case viewPersonas:
+		return pageSummaryPersonas
+	case viewChats:
+		return pageSummaryChats
+	case viewMemory:
+		return "Inspect durable memory storage, file-backed MEMORY.md scopes, and memory inventory."
 	case viewAutomation:
 		return "Inspect scheduled jobs, trigger one-off runs, and clear automation state."
 	case viewSessions:
@@ -1002,6 +1349,136 @@ func pageSummary(view adminView) string {
 	}
 }
 
+func pageRefreshWatch(view adminView) bool {
+	switch view {
+	case viewOverview,
+		viewSkills,
+		viewChats,
+		viewMemory,
+		viewAutomation,
+		viewSessions,
+		viewDebug,
+		viewBrowser:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildPageRefreshData(
+	r *http.Request,
+	view adminView,
+	input pageRefreshInput,
+) pageRefreshData {
+	return pageRefreshData{
+		CurrentPath:     pageRefreshCurrentPath(r),
+		StatePath:       pageRefreshStatePath(r, view),
+		Token:           pageRefreshToken(view, input),
+		UpdatedAt:       input.Snapshot.GeneratedAt,
+		IntervalSeconds: refreshSeconds,
+		Watch:           pageRefreshWatch(view),
+	}
+}
+
+func pageRefreshCurrentPath(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return routeOverview
+	}
+	values := r.URL.Query()
+	values.Del(queryNotice)
+	values.Del(queryError)
+	path := strings.TrimSpace(r.URL.Path)
+	if path == "" {
+		path = routeOverview
+	}
+	if encoded := values.Encode(); encoded != "" {
+		return path + "?" + encoded
+	}
+	return path
+}
+
+func pageRefreshStatePath(
+	r *http.Request,
+	view adminView,
+) string {
+	values := url.Values{}
+	values.Set(queryView, string(view))
+	if view == viewChats {
+		if chatID := selectedChatID(r); chatID != "" {
+			values.Set(queryChatID, chatID)
+		}
+	}
+	return routePageStateJSON + "?" + values.Encode()
+}
+
+func pageRefreshToken(
+	view adminView,
+	input pageRefreshInput,
+) string {
+	switch view {
+	case viewPrompts:
+		return refreshTokenForValue(input.Prompts)
+	case viewIdentity:
+		return refreshTokenForValue(input.Identity)
+	case viewPersonas:
+		return refreshTokenForValue(input.Personas)
+	case viewChats:
+		return refreshTokenForValue(struct {
+			Chats             ChatsStatus `json:"chats"`
+			SelectedChat      *ChatView   `json:"selected_chat,omitempty"`
+			SelectedChatError string      `json:"selected_chat_error,omitempty"`
+		}{
+			Chats:             input.Chats,
+			SelectedChat:      compactChatView(input.SelectedChat),
+			SelectedChatError: input.SelectedChatError,
+		})
+	default:
+		snapshot := input.Snapshot
+		snapshot.GeneratedAt = time.Time{}
+		return refreshTokenForValue(snapshot)
+	}
+}
+
+func compactChatView(chat *ChatView) *ChatView {
+	if chat == nil {
+		return nil
+	}
+	copy := *chat
+	copy.History = nil
+	copy.Transcript = nil
+	return &copy
+}
+
+func refreshTokenForValue(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func (s *Service) pageRefreshInput(
+	r *http.Request,
+	view adminView,
+) pageRefreshInput {
+	input := pageRefreshInput{
+		Snapshot: s.snapshotForView(view),
+		Prompts:  s.promptsStatus(),
+		Identity: s.identityStatus(),
+		Personas: s.personasStatus(),
+		Chats:    s.chatsStatus(),
+	}
+	if view == viewChats {
+		input.SelectedChat, input.SelectedChatError = resolveSelectedChat(
+			input.Chats,
+			s.cfg.Chats,
+			selectedChatID(r),
+		)
+	}
+	return input
+}
+
 func (s *Service) handleStatusJSON(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -1013,6 +1490,25 @@ func (s *Service) handleStatusJSON(
 	writeJSON(w, http.StatusOK, s.Snapshot())
 }
 
+func (s *Service) handlePageStateJSON(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	view := adminView(strings.TrimSpace(r.URL.Query().Get(queryView)))
+	if view == "" {
+		view = viewOverview
+	}
+	input := s.pageRefreshInput(r, view)
+	writeJSON(w, http.StatusOK, pageStateStatus{
+		Token:     pageRefreshToken(view, input),
+		UpdatedAt: input.Snapshot.GeneratedAt,
+	})
+}
+
 func (s *Service) handleSkillsJSON(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -1022,6 +1518,45 @@ func (s *Service) handleSkillsJSON(
 		return
 	}
 	writeJSON(w, http.StatusOK, s.skillsStatus())
+}
+
+func (s *Service) handleMemoryFilesJSON(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.memoryStatus())
+}
+
+func (s *Service) handleMemoryFile(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	root, configured, err := configuredMemoryRoot(s.cfg.MemoryFiles)
+	if err != nil || !configured {
+		http.Error(
+			w,
+			"memory file store is not configured",
+			http.StatusNotFound,
+		)
+		return
+	}
+	filePath, err := resolveMemoryFile(
+		root,
+		strings.TrimSpace(r.URL.Query().Get(queryPath)),
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.ServeFile(w, r, filePath)
 }
 
 func (s *Service) handleRefreshSkills(
@@ -1144,6 +1679,16 @@ func navPath(raw string) string {
 		return routeOverview
 	case routeSkillsPage:
 		return routeSkillsPage
+	case routePrompts:
+		return routePrompts
+	case routeIdentity:
+		return routeIdentity
+	case routePersonas:
+		return routePersonas
+	case routeChats:
+		return routeChats
+	case routeMemory:
+		return routeMemory
 	case routeAutomation:
 		return routeAutomation
 	case routeSessions:
@@ -1163,6 +1708,16 @@ func navViewForPath(path string) adminView {
 		return viewOverview
 	case routeSkillsPage:
 		return viewSkills
+	case routePrompts:
+		return viewPrompts
+	case routeIdentity:
+		return viewIdentity
+	case routePersonas:
+		return viewPersonas
+	case routeChats:
+		return viewChats
+	case routeMemory:
+		return viewMemory
 	case routeAutomation:
 		return viewAutomation
 	case routeSessions:
@@ -1314,6 +1869,22 @@ func (s *Service) handleDebugFile(
 	tracePath := strings.TrimSpace(r.URL.Query().Get(queryTrace))
 	name := strings.TrimSpace(r.URL.Query().Get(queryName))
 	relPath := strings.TrimSpace(r.URL.Query().Get(queryPath))
+	if relPath == "" && name == debugEventsFileName {
+		traceDir, err := s.resolveDebugTraceDir(tracePath)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data, err := debugrecorder.ReadEventsFile(traceDir)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set(headerContentType, debugEventsMIMEType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+		return
+	}
 	filePath, err := s.resolveDebugFile(tracePath, name, relPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1719,17 +2290,39 @@ func (s *Service) resolveDebugFile(
 	if strings.TrimSpace(relPath) != "" {
 		return resolveDebugRootFile(root, relPath)
 	}
-	if strings.TrimSpace(tracePath) == "" {
-		return "", fmt.Errorf("trace path is required")
-	}
 	if !isAllowedDebugFile(name) {
 		return "", fmt.Errorf("unsupported debug file: %s", name)
+	}
+	traceDir, err := s.resolveDebugTraceDir(tracePath)
+	if err != nil {
+		return "", err
+	}
+
+	candidate := filepath.Join(traceDir, name)
+	if name == debugEventsFileName {
+		resolved, _, err := debugrecorder.ResolveEventsFilePath(traceDir)
+		if err == nil {
+			return resolved, nil
+		}
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		return "", fmt.Errorf("debug file not found")
+	}
+	return candidate, nil
+}
+
+func (s *Service) resolveDebugTraceDir(tracePath string) (string, error) {
+	root := strings.TrimSpace(s.cfg.DebugDir)
+	if root == "" {
+		return "", fmt.Errorf("debug recorder is not configured")
+	}
+	if strings.TrimSpace(tracePath) == "" {
+		return "", fmt.Errorf("trace path is required")
 	}
 
 	candidate := filepath.Clean(filepath.Join(
 		root,
 		filepath.FromSlash(tracePath),
-		name,
 	))
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -1744,10 +2337,14 @@ func (s *Service) resolveDebugFile(
 			absCandidate,
 			absRoot+string(os.PathSeparator),
 		) {
-		return "", fmt.Errorf("debug file escapes debug root")
+		return "", fmt.Errorf("debug trace escapes debug root")
 	}
-	if _, err := os.Stat(absCandidate); err != nil {
-		return "", fmt.Errorf("debug file not found")
+	info, err := os.Stat(absCandidate)
+	if err != nil {
+		return "", fmt.Errorf("debug trace not found")
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("debug trace path is not a directory")
 	}
 	return absCandidate, nil
 }
@@ -1799,17 +2396,56 @@ func isAllowedDebugFile(name string) bool {
 
 var adminPage = template.Must(
 	template.New("admin").Funcs(template.FuncMap{
-		"formatTime":             formatTime,
-		"browserEndpointSummary": browserEndpointSummary,
-		"displayAdminAppName":    displayAdminAppName,
-	}).Parse(adminPageHTML),
+		"formatTime":                 formatTime,
+		"browserEndpointSummary":     browserEndpointSummary,
+		"displayAdminAppName":        displayAdminAppName,
+		"promptSections":             promptSections,
+		"promptBlockCount":           promptBlockCount,
+		"hasPromptValue":             hasPromptValue,
+		"promptValuesDiffer":         promptValuesDiffer,
+		"promptCollapsedSummary":     promptCollapsedSummary,
+		"promptInlineEditorTitle":    promptInlineEditorTitle,
+		"promptInlineEditorSummary":  promptInlineEditorSummary,
+		"promptRuntimeEditorSummary": promptRuntimeEditorSummary,
+		"personaStoreTitle":          personaStoreTitle,
+		"personaStoreUsageLabels":    personaStoreUsageLabels,
+		"personaCustomPersonas":      personaCustomPersonas,
+		"personaBuiltInPersonas":     personaBuiltInPersonas,
+		"personaStoreBuiltInCount":   personaStoreBuiltInCount,
+		"personaStoreCustomCount":    personaStoreCustomCount,
+		"personaDisplayName":         personaDisplayName,
+		"personaKindLabel":           personaKindLabel,
+		"personaSummaryText":         personaSummaryText,
+		"chatDisplayLabel":           chatDisplayLabel,
+		"chatHistoryAPIPath":         chatHistoryAPIPath,
+		"chatHiddenHistory":          chatHiddenHistory,
+		"chatHiddenTranscript":       chatHiddenTranscript,
+		"chatHiddenTurns":            chatHiddenTurns,
+		"chatKnownUsers":             chatKnownUsers,
+		"chatHasTranscript":          chatHasTranscript,
+		"chatHistorySummary":         chatHistorySummary,
+		"chatNameSourceLabel":        chatNameSourceLabel,
+		"chatTranscriptLabel":        chatTranscriptLabel,
+		"chatTranscriptSummary":      chatTranscriptSummary,
+		"chatTurnSpeaker":            chatTurnSpeaker,
+		"chatOverrideSample":         chatOverrideSample,
+		"chatVisibleHistory":         chatVisibleHistory,
+		"chatVisibleTranscript":      chatVisibleTranscript,
+		"chatVisibleTurns":           chatVisibleTurns,
+		"hasTime":                    hasTime,
+	}).Parse(
+		adminPageHTML +
+			promptsPageTemplateHTML +
+			chatsPageTemplateHTML +
+			identityPageTemplateHTML +
+			personasPageTemplateHTML,
+	),
 )
 
 const adminPageHTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="{{.RefreshSeconds}}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TRPC-CLAW admin</title>
   <style>
@@ -1935,6 +2571,51 @@ const adminPageHTML = `<!doctype html>
     .page-header {
       margin-bottom: 18px;
     }
+    .page-toolbar {
+      margin-top: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px 16px;
+    }
+    .page-toolbar-copy {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .page-toolbar-updated {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .page-toolbar-note {
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 720px;
+    }
+    .page-refresh-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 253, 248, 0.92);
+      color: var(--ink);
+      text-decoration: none;
+      font-weight: 700;
+      box-shadow: var(--shadow);
+    }
+    .page-refresh-link:hover {
+      border-color: rgba(15, 111, 97, 0.28);
+      color: var(--accent);
+    }
+    .page-refresh-alert {
+      margin-top: 16px;
+    }
     .page-kicker {
       margin: 0 0 10px;
       color: var(--muted);
@@ -2000,14 +2681,37 @@ const adminPageHTML = `<!doctype html>
     .meta dt {
       color: var(--muted);
       font-weight: 700;
+      min-width: 0;
     }
-    .meta dd { margin: 0; }
+    .meta dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     a { color: var(--accent); }
     code {
       background: rgba(15, 111, 97, 0.08);
       padding: 2px 6px;
       border-radius: 8px;
       word-break: break-all;
+    }
+    input[type="text"],
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px 14px;
+      font: inherit;
+      background: var(--panel-strong);
+      color: var(--ink);
+    }
+    textarea {
+      min-height: 160px;
+      resize: vertical;
+      white-space: pre-wrap;
+      font-family: "SFMono-Regular", "SFMono-Regular", monospace;
+      line-height: 1.45;
     }
     table {
       width: 100%;
@@ -2017,8 +2721,11 @@ const adminPageHTML = `<!doctype html>
     th, td {
       text-align: left;
       vertical-align: top;
+      min-width: 0;
       padding: 12px 10px;
       border-top: 1px solid var(--line);
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     th {
       color: var(--muted);
@@ -2407,6 +3114,316 @@ const adminPageHTML = `<!doctype html>
       margin: 8px 0 0;
       padding-left: 18px;
     }
+    .memory-preview {
+      max-width: 540px;
+      color: #3f3932;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+    }
+    .prompt-detail {
+      overflow: hidden;
+    }
+    .prompt-detail[open] {
+      border-color: rgba(15, 111, 97, 0.28);
+      box-shadow: 0 14px 28px rgba(35, 29, 22, 0.08);
+    }
+    .prompt-detail summary {
+      list-style: none;
+      cursor: pointer;
+    }
+    .prompt-detail summary::-webkit-details-marker {
+      display: none;
+    }
+    .prompt-detail-copy,
+    .prompt-detail-hint {
+      margin: 8px 0 0;
+    }
+    .prompt-detail-body {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+    .memory-scope {
+      display: grid;
+      gap: 4px;
+    }
+    .memory-controls {
+      margin: 18px 0 12px;
+    }
+    .memory-filter-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .memory-filter-head label {
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 700;
+    }
+    .memory-filter-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      min-width: 0;
+    }
+    .memory-filter-field {
+      min-width: 0;
+    }
+    .memory-filter-field label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 700;
+    }
+    .memory-filter-field input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 12px 16px;
+      font: inherit;
+      background: var(--panel-strong);
+      color: var(--ink);
+    }
+    .memory-shown {
+      color: var(--muted);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .chat-list {
+      display: grid;
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .chat-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px 18px;
+      background: rgba(255, 253, 248, 0.72);
+    }
+    .chat-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .chat-card-copy {
+      min-width: 0;
+      flex: 1 1 280px;
+    }
+    .chat-card-title {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .chat-card-kind {
+      margin-top: 6px;
+      color: var(--muted);
+    }
+    .chat-card-link {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    .chat-card-grid {
+      display: grid;
+      gap: 10px 18px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      margin-top: 14px;
+    }
+    .chat-card-meta {
+      min-width: 0;
+    }
+    .chat-card-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .chat-card-value {
+      margin-top: 6px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .chat-detail-section + .chat-detail-section {
+      margin-top: 24px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+    .chat-detail-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .chat-detail-head h3,
+    .chat-action-card h4,
+    .chat-transcript-title {
+      margin: 0;
+    }
+    .chat-disclosure,
+    .chat-disclosure-more {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 253, 248, 0.72);
+      overflow: hidden;
+    }
+    .chat-disclosure[open],
+    .chat-disclosure-more[open] {
+      border-color: rgba(15, 111, 97, 0.28);
+      box-shadow: 0 14px 28px rgba(35, 29, 22, 0.08);
+    }
+    .chat-disclosure summary,
+    .chat-disclosure-more summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 14px 16px;
+    }
+    .chat-disclosure summary::-webkit-details-marker,
+    .chat-disclosure-more summary::-webkit-details-marker {
+      display: none;
+    }
+    .chat-disclosure-meta {
+      margin: 8px 0 0;
+    }
+    .chat-disclosure-body {
+      margin-top: 0;
+      padding: 0 16px 16px;
+      border-top: 1px solid var(--line);
+    }
+    .chat-disclosure-body > :first-child {
+      margin-top: 14px;
+    }
+    .chat-disclosure-body > :last-child {
+      margin-bottom: 0;
+    }
+    .chat-disclosure-more {
+      margin-top: 12px;
+    }
+    .chat-history-shell {
+      margin-top: 14px;
+    }
+    .chat-history-status {
+      margin: 0;
+    }
+    .chat-history-toolbar {
+      margin: 14px 0 0;
+    }
+    .chat-history-more {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 12px 14px;
+      background: rgba(255, 253, 248, 0.82);
+      color: var(--ink);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .chat-history-more:hover,
+    .chat-history-more:focus {
+      border-color: rgba(15, 111, 97, 0.38);
+      box-shadow: 0 12px 24px rgba(35, 29, 22, 0.08);
+      outline: none;
+    }
+    .chat-history-bounded {
+      margin: 12px 0 0;
+    }
+    .chat-timeline {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .chat-timeline-session {
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .chat-timeline-session:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+    .chat-timeline-session-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .chat-timeline-session-label {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .chat-timeline-session-meta {
+      margin-top: 6px;
+    }
+    .chat-transcript-list {
+      display: grid;
+      gap: 14px;
+      margin-top: 12px;
+    }
+    .chat-transcript-card,
+    .chat-action-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: rgba(255, 253, 248, 0.72);
+      min-width: 0;
+    }
+    .chat-transcript-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .chat-turn-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .chat-turn {
+      border-left: 3px solid rgba(15, 111, 97, 0.2);
+      padding-left: 12px;
+      min-width: 0;
+    }
+    .chat-turn-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .chat-turn-speaker {
+      font-weight: 700;
+    }
+    .chat-turn-quote {
+      margin: 8px 0 0;
+      padding-left: 12px;
+      border-left: 2px solid var(--line);
+      color: var(--muted);
+    }
+    .chat-turn-text {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .chat-action-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      margin-top: 12px;
+    }
     @media (max-width: 760px) {
       .app-shell {
         grid-template-columns: 1fr;
@@ -2425,8 +3442,15 @@ const adminPageHTML = `<!doctype html>
       .skills-controls {
         grid-template-columns: 1fr;
       }
+      .memory-filter-grid {
+        grid-template-columns: 1fr;
+      }
       .skills-toolbar-side {
         justify-content: space-between;
+      }
+      .memory-filter-head {
+        align-items: flex-start;
+        flex-direction: column;
       }
       .skills-header {
         align-items: flex-start;
@@ -2486,7 +3510,36 @@ const adminPageHTML = `<!doctype html>
           <p class="page-kicker">TRPC-CLAW admin</p>
           <h1>{{.PageTitle}}</h1>
           <p class="subtle">{{.PageSummary}}</p>
+          <div class="page-toolbar">
+            <div class="page-toolbar-copy">
+              <div class="page-toolbar-updated">
+                Updated {{formatTime .PageRefresh.UpdatedAt}}
+              </div>
+              {{if .PageRefresh.Watch}}
+              <div class="page-toolbar-note">
+                This page watches for newer runtime state without
+                interrupting your reading or editing.
+              </div>
+              {{end}}
+            </div>
+            <a class="page-refresh-link" href="{{.PageRefresh.CurrentPath}}">
+              Refresh page
+            </a>
+          </div>
         </header>
+        {{if .PageRefresh.Watch}}
+        <div
+          class="notice page-refresh-alert"
+          hidden
+          data-page-stale-root
+          data-page-state-path="{{.PageRefresh.StatePath}}"
+          data-page-state-token="{{.PageRefresh.Token}}"
+          data-page-refresh-interval="{{.PageRefresh.IntervalSeconds}}"
+        >
+          New runtime state is available for this page.
+          <a href="{{.PageRefresh.CurrentPath}}">Refresh page</a>
+        </div>
+        {{end}}
         {{if .Notice}}<div class="notice ok">{{.Notice}}</div>{{end}}
         {{if .Error}}<div class="notice err">{{.Error}}</div>{{end}}
 
@@ -2507,6 +3560,10 @@ const adminPageHTML = `<!doctype html>
       <article class="card">
         <span class="stat-label">Skills</span>
         <span class="stat-value">{{.Snapshot.Skills.TotalCount}}</span>
+      </article>
+      <article class="card">
+        <span class="stat-label">Memory Files</span>
+        <span class="stat-value">{{.Snapshot.Memory.FileCount}}</span>
       </article>
       <article class="card">
         <span class="stat-label">Exec Sessions</span>
@@ -2632,6 +3689,7 @@ const adminPageHTML = `<!doctype html>
           <dd>
             <a href="/api/status">status</a> ·
             <a href="/api/skills/status">skills</a> ·
+            <a href="/api/memory/files">memory</a> ·
             <a href="/api/cron/jobs">jobs</a> ·
             <a href="/api/exec/sessions">exec</a> ·
             <a href="/api/uploads">uploads</a> ·
@@ -2711,6 +3769,29 @@ const adminPageHTML = `<!doctype html>
           <dd>{{len .Snapshot.Uploads.Sessions}}</dd>
           <dt>Open</dt>
           <dd><a href="/sessions">Sessions</a></dd>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Memory Surface</h2>
+        <p class="subtle">
+          Durable memory can use structured backends or file-backed
+          <code>MEMORY.md</code> scopes. The Memory page inventories the
+          file-backed scopes when this runtime uses the file backend.
+        </p>
+        <dl class="meta">
+          <dt>Backend</dt>
+          <dd>{{if .Snapshot.Memory.Backend}}{{.Snapshot.Memory.Backend}}{{else}}-{{end}}</dd>
+          <dt>File Memory</dt>
+          <dd>{{.Snapshot.Memory.FileEnabled}}</dd>
+          <dt>Files</dt>
+          <dd>{{.Snapshot.Memory.FileCount}}</dd>
+          <dt>Total Bytes</dt>
+          <dd>{{.Snapshot.Memory.TotalBytes}}</dd>
+          <dt>JSON</dt>
+          <dd><a href="/api/memory/files">/api/memory/files</a></dd>
+          <dt>Open</dt>
+          <dd><a href="/memory">Memory</a></dd>
         </dl>
       </article>
 
@@ -3071,6 +4152,183 @@ const adminPageHTML = `<!doctype html>
       {{end}}
       {{else if not .Snapshot.Skills.Error}}
       <p class="empty">No skills discovered.</p>
+      {{end}}
+    </section>
+    {{end}}
+
+    {{if eq .View "prompts"}}
+    {{template "promptsPage" .}}
+    {{end}}
+
+    {{if eq .View "identity"}}
+    {{template "identityPage" .}}
+    {{end}}
+
+    {{if eq .View "personas"}}
+    {{template "personasPage" .}}
+    {{end}}
+
+    {{if eq .View "chats"}}
+    {{template "chatsPage" .}}
+    {{end}}
+
+    {{if eq .View "memory"}}
+    <section class="panels">
+      <article class="card">
+        <h2>Memory Backend</h2>
+        <dl class="meta">
+          <dt>Backend</dt>
+          <dd>{{if .Snapshot.Memory.Backend}}{{.Snapshot.Memory.Backend}}{{else}}-{{end}}</dd>
+          <dt>Storage Mode</dt>
+          <dd>
+            {{if eq .Snapshot.Memory.Backend "file"}}
+              {{if .Snapshot.Memory.FileEnabled}}
+                File-backed <code>MEMORY.md</code>
+              {{else}}
+                file backend not configured
+              {{end}}
+            {{else if .Snapshot.Memory.FileEnabled}}
+              File-backed <code>MEMORY.md</code>
+            {{else if .Snapshot.Memory.Enabled}}
+              Structured memory service
+            {{else}}
+              unavailable
+            {{end}}
+          </dd>
+          <dt>Structured Memory</dt>
+          <dd>
+            {{if eq .Snapshot.Memory.Backend "file"}}
+              not used by file backend
+            {{else if and .Snapshot.Memory.Enabled (not .Snapshot.Memory.FileEnabled)}}
+              enabled
+            {{else}}
+              unavailable
+            {{end}}
+          </dd>
+          <dt>File Inventory</dt>
+          <dd>
+            {{if eq .Snapshot.Memory.Backend "file"}}
+              {{if .Snapshot.Memory.FileEnabled}}available{{else}}not configured{{end}}
+            {{else}}
+              not available
+            {{end}}
+          </dd>
+          <dt>JSON</dt>
+          <dd><a href="/api/memory/files">/api/memory/files</a></dd>
+        </dl>
+      </article>
+      <article class="card">
+        <h2>File Inventory</h2>
+        <dl class="meta">
+          <dt>Root</dt>
+          <dd>
+            {{if .Snapshot.Memory.Root}}
+              <code>{{.Snapshot.Memory.Root}}</code>
+            {{else}}
+              -
+            {{end}}
+          </dd>
+          <dt>Files</dt>
+          <dd>{{.Snapshot.Memory.FileCount}}</dd>
+          <dt>Total Bytes</dt>
+          <dd>{{.Snapshot.Memory.TotalBytes}}</dd>
+          <dt>Last Modified</dt>
+          <dd>{{formatTime .Snapshot.Memory.LastModified}}</dd>
+        </dl>
+      </article>
+    </section>
+
+    <section class="card" style="margin-top: 24px;">
+      <h2>Memory Files</h2>
+      <p class="subtle">
+        File-backed memory stores one visible <code>MEMORY.md</code> per
+        app/user scope. Use this inventory to inspect what durable memory the
+        runtime can inject into future turns.
+      </p>
+      {{if .Snapshot.Memory.Error}}
+      <div class="notice err" style="margin-top: 12px;">
+        {{.Snapshot.Memory.Error}}
+      </div>
+      {{end}}
+      {{if .Snapshot.Memory.Files}}
+      <div class="memory-controls" data-memory-root>
+        <div class="memory-filter-head">
+          <label for="memory-search">Search memory</label>
+          <span class="memory-shown">
+            <span data-memory-shown>{{.Snapshot.Memory.FileCount}}</span> shown
+          </span>
+        </div>
+        <div class="memory-filter-grid">
+          <div class="memory-filter-field">
+            <input
+              id="memory-search"
+              type="search"
+              placeholder="Search users or memory content"
+              data-memory-search
+            >
+          </div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Scope</th>
+            <th>Preview</th>
+            <th>File</th>
+            <th>Size</th>
+            <th>Modified</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Snapshot.Memory.Files}}
+          <tr
+            data-memory-row
+            data-memory-app="{{.AppName}}"
+            data-memory-user="{{.UserID}}"
+            data-memory-search="{{.UserID}} {{.Preview}}"
+          >
+            <td>
+              <div class="memory-scope">
+                <span>app <code>{{.AppName}}</code></span>
+                <span>user <code>{{.UserID}}</code></span>
+              </div>
+            </td>
+            <td>
+              {{if .Preview}}
+              <div class="memory-preview">{{.Preview}}</div>
+              {{else}}
+              <span class="subtle">empty</span>
+              {{end}}
+            </td>
+            <td>
+              <a href="{{.OpenURL}}" target="_blank" rel="noopener noreferrer">
+                open
+              </a>
+              <br>
+              <code>{{.RelativePath}}</code>
+            </td>
+            <td>{{.SizeBytes}}</td>
+            <td>{{formatTime .ModifiedAt}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="empty" data-memory-empty hidden>No matching memory files.</p>
+      {{else if not .Snapshot.Memory.Error}}
+      <p class="empty">
+        {{if eq .Snapshot.Memory.Backend "file"}}
+          {{if .Snapshot.Memory.FileEnabled}}
+            No file-backed memory files discovered yet.
+          {{else}}
+            File-backed memory store is not configured for this runtime.
+          {{end}}
+        {{else if .Snapshot.Memory.FileEnabled}}
+          No file-backed memory files discovered yet.
+        {{else}}
+          File-backed memory inventory is only available when the runtime uses
+          the <code>file</code> memory backend.
+        {{end}}
+      </p>
       {{end}}
     </section>
     {{end}}
@@ -3714,6 +4972,66 @@ const adminPageHTML = `<!doctype html>
     </section>
     {{end}}
   <script>
+    const resolveRequestURL = (reference) => {
+      const trimmed = typeof reference === "string"
+        ? reference.trim()
+        : "";
+      if (!trimmed) {
+        return null;
+      }
+      try {
+        return new URL(trimmed, window.location.href);
+      } catch (_) {
+        return null;
+      }
+    };
+
+    (function () {
+      const root = document.querySelector("[data-page-stale-root]");
+      if (!root) return;
+
+      const stateURL = resolveRequestURL(
+        root.getAttribute("data-page-state-path") || ""
+      );
+      const initialToken =
+        root.getAttribute("data-page-state-token") || "";
+      const intervalValue = Number(
+        root.getAttribute("data-page-refresh-interval") || "0"
+      );
+      if (!stateURL || !initialToken || intervalValue <= 0) {
+        return;
+      }
+
+      let currentToken = initialToken;
+      let stopped = false;
+
+      const poll = async () => {
+        if (stopped || document.hidden) {
+          return;
+        }
+        try {
+          const response = await fetch(stateURL.toString(), {
+            headers: { Accept: "application/json" },
+          });
+          if (!response.ok) {
+            return;
+          }
+          const payload = await response.json();
+          const nextToken =
+            payload && typeof payload.token === "string"
+              ? payload.token
+              : "";
+          if (!nextToken || nextToken === currentToken) {
+            return;
+          }
+          root.hidden = false;
+          stopped = true;
+        } catch (_) {}
+      };
+
+      window.setInterval(poll, intervalValue * 1000);
+    })();
+
     (function () {
       const root = document.querySelector("[data-skills-root]");
       if (!root) return;
@@ -3876,6 +5194,388 @@ const adminPageHTML = `<!doctype html>
       });
       refresh();
       restoreScrollPosition();
+    })();
+
+    (function () {
+      const roots = Array.from(
+        document.querySelectorAll("[data-chat-history-root]")
+      );
+      if (!roots.length) return;
+
+      const itemKindSession = "session";
+      const itemKindTurn = "turn";
+      const fallbackHistoryError = "Unable to load chat history right now.";
+      const fallbackHistoryEmpty =
+        "No recent chat transcript is available in this runtime " +
+        "for this chat right now.";
+      const historyLoadingText = "Loading recent messages...";
+      const historyMoreText = "Load older messages";
+      const historyBoundedText =
+        "This admin view only loads the most recent tracked " +
+        "session lines for this chat.";
+
+      const formatDateTime = (value) => {
+        if (!value) return "";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return value;
+        return parsed.toLocaleString(undefined, {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+          timeZoneName: "short",
+        });
+      };
+
+      const speakerLabel = (item) => {
+        if (item && typeof item.speaker === "string" && item.speaker.trim()) {
+          return item.speaker.trim();
+        }
+        const role = item && typeof item.role === "string"
+          ? item.role.trim()
+          : "";
+        switch (role) {
+          case "user":
+            return "User";
+          case "assistant":
+            return "Assistant";
+          case "system":
+            return "System";
+          default:
+            return "Turn";
+        }
+      };
+
+      const setText = (node, text) => {
+        if (!node) return;
+        node.textContent = text;
+      };
+
+      const createDiv = (className, text) => {
+        const node = document.createElement("div");
+        if (className) {
+          node.className = className;
+        }
+        if (typeof text === "string") {
+          node.textContent = text;
+        }
+        return node;
+      };
+
+      const updateMeta = (root, page) => {
+        const meta = root.querySelector("[data-chat-history-meta]");
+        if (!meta || !page) return;
+        const loaded = Number(root.getAttribute("data-chat-history-loaded") || "0");
+        const total = Number(page.turn_count || 0);
+        const sessions = Number(page.session_line_count || 0);
+        if (total <= 0) {
+          meta.textContent = fallbackHistoryEmpty;
+          return;
+        }
+        const parts = [];
+        parts.push(
+          "Showing " + String(loaded) + " of " + String(total) +
+          " messages"
+        );
+        if (sessions > 0) {
+          parts.push("from " + String(sessions) + " recent session lines");
+        }
+        meta.textContent = parts.join(" ");
+      };
+
+      const updateBoundedNote = (root, bounded) => {
+        const note = root.querySelector("[data-chat-history-bounded]");
+        if (!note) return;
+        note.hidden = !bounded;
+        if (bounded) {
+          note.textContent = historyBoundedText;
+        }
+      };
+
+      const updateMoreButton = (root, nextCursor) => {
+        const toolbar = root.querySelector("[data-chat-history-toolbar]");
+        const button = root.querySelector("[data-chat-history-more]");
+        if (!toolbar || !button) return;
+        const hasMore = typeof nextCursor === "string" && nextCursor !== "";
+        toolbar.hidden = !hasMore;
+        button.hidden = !hasMore;
+        button.disabled = false;
+        button.textContent = historyMoreText;
+        if (hasMore) {
+          button.setAttribute("data-chat-history-next", nextCursor);
+        } else {
+          button.removeAttribute("data-chat-history-next");
+        }
+      };
+
+      const clearMessages = (root) => {
+        const error = root.querySelector("[data-chat-history-error]");
+        const empty = root.querySelector("[data-chat-history-empty]");
+        if (error) {
+          error.hidden = true;
+          error.textContent = "";
+        }
+        if (empty) {
+          empty.hidden = true;
+          empty.textContent = "";
+        }
+      };
+
+      const showError = (root, message) => {
+        const error = root.querySelector("[data-chat-history-error]");
+        const empty = root.querySelector("[data-chat-history-empty]");
+        if (empty) {
+          empty.hidden = true;
+          empty.textContent = "";
+        }
+        if (!error) return;
+        error.hidden = false;
+        error.textContent = message || fallbackHistoryError;
+      };
+
+      const showEmpty = (root, message) => {
+        const empty = root.querySelector("[data-chat-history-empty]");
+        const error = root.querySelector("[data-chat-history-error]");
+        if (error) {
+          error.hidden = true;
+          error.textContent = "";
+        }
+        if (!empty) return;
+        empty.hidden = false;
+        empty.textContent = message || fallbackHistoryEmpty;
+      };
+
+      const renderSessionItem = (item) => {
+        const wrapper = createDiv("chat-timeline-session");
+        const head = createDiv("chat-timeline-session-head");
+        const copy = document.createElement("div");
+        const title = createDiv(
+          "chat-timeline-session-label",
+          item.session_label || "Recent session"
+        );
+        const meta = createDiv("subtle chat-timeline-session-meta");
+        const code = document.createElement("code");
+        code.textContent = item.session_id || "";
+        meta.appendChild(code);
+        copy.appendChild(title);
+        copy.appendChild(meta);
+        head.appendChild(copy);
+        if (item.last_activity) {
+          head.appendChild(
+            createDiv("subtle", formatDateTime(item.last_activity))
+          );
+        }
+        wrapper.appendChild(head);
+        return wrapper;
+      };
+
+      const renderTurnItem = (item) => {
+        const article = document.createElement("article");
+        article.className = "chat-turn";
+        const head = createDiv("chat-turn-head");
+        head.appendChild(
+          createDiv("chat-turn-speaker", speakerLabel(item))
+        );
+        if (item.timestamp) {
+          head.appendChild(
+            createDiv("subtle", formatDateTime(item.timestamp))
+          );
+        }
+        article.appendChild(head);
+        if (typeof item.quote_text === "string" && item.quote_text.trim()) {
+          article.appendChild(
+            createDiv("chat-turn-quote", item.quote_text)
+          );
+        }
+        article.appendChild(
+          createDiv("chat-turn-text", item.text || "")
+        );
+        return article;
+      };
+
+      const renderHistoryItem = (item) => {
+        if (!item || typeof item.kind !== "string") {
+          return null;
+        }
+        if (item.kind === itemKindSession) {
+          return renderSessionItem(item);
+        }
+        if (item.kind === itemKindTurn) {
+          return renderTurnItem(item);
+        }
+        return null;
+      };
+
+      const updateLoading = (root, loading) => {
+        root.setAttribute(
+          "data-chat-history-loading",
+          loading ? "true" : "false"
+        );
+        const button = root.querySelector("[data-chat-history-more]");
+        if (!button) return;
+        button.disabled = loading;
+        if (loading) {
+          button.textContent = historyLoadingText;
+        } else if (button.hidden !== true) {
+          button.textContent = historyMoreText;
+        }
+      };
+
+      const fetchHistory = async (root, cursor) => {
+        const chatID = root.getAttribute("data-chat-id") || "";
+        const url = resolveRequestURL(
+          root.getAttribute("data-chat-history-path") || ""
+        );
+        if (!url) {
+          throw new Error(fallbackHistoryError);
+        }
+        url.searchParams.set("chat_id", chatID);
+        if (cursor) {
+          url.searchParams.set("cursor", cursor);
+        }
+        const response = await fetch(url.toString(), {
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok) {
+          const text = (await response.text()).trim();
+          throw new Error(text || fallbackHistoryError);
+        }
+        return response.json();
+      };
+
+      const loadHistory = async (root, cursor) => {
+        const items = root.querySelector("[data-chat-history-items]");
+        if (!items) return;
+        if (root.getAttribute("data-chat-history-loading") === "true") {
+          return;
+        }
+        const prepend = typeof cursor === "string" && cursor !== "";
+        const anchor = prepend ? items.firstElementChild : null;
+        const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+        updateLoading(root, true);
+        clearMessages(root);
+        try {
+          const page = await fetchHistory(root, cursor);
+          const fragment = document.createDocumentFragment();
+          const pageItems = Array.isArray(page.items) ? page.items : [];
+          pageItems.forEach((item) => {
+            const node = renderHistoryItem(item);
+            if (node) {
+              fragment.appendChild(node);
+            }
+          });
+          if (!prepend) {
+            items.innerHTML = "";
+          }
+          if (prepend) {
+            items.prepend(fragment);
+          } else {
+            items.appendChild(fragment);
+          }
+
+          const loaded = Number(
+            root.getAttribute("data-chat-history-loaded") || "0"
+          ) + Number(page.returned_turn_count || 0);
+          root.setAttribute(
+            "data-chat-history-loaded",
+            String(loaded)
+          );
+          updateMeta(root, page);
+          updateBoundedNote(root, Boolean(page.bounded));
+          updateMoreButton(root, page.next_cursor || "");
+
+          if (!pageItems.length && Number(page.turn_count || 0) === 0) {
+            showEmpty(root, fallbackHistoryEmpty);
+          }
+          if (prepend && anchor) {
+            window.scrollBy(
+              0,
+              anchor.getBoundingClientRect().top - anchorTop
+            );
+          }
+          root.setAttribute("data-chat-history-loaded-once", "true");
+        } catch (err) {
+          showError(
+            root,
+            err && typeof err.message === "string"
+              ? err.message
+              : fallbackHistoryError
+          );
+        } finally {
+          updateLoading(root, false);
+        }
+      };
+
+      roots.forEach((root) => {
+        const disclosure = root.closest("details");
+        const button = root.querySelector("[data-chat-history-more]");
+        if (button) {
+          button.addEventListener("click", () => {
+            const nextCursor =
+              button.getAttribute("data-chat-history-next") || "";
+            if (!nextCursor) return;
+            loadHistory(root, nextCursor);
+          });
+        }
+        const ensureLoaded = () => {
+          if (
+            root.getAttribute("data-chat-history-loaded-once") ===
+            "true"
+          ) {
+            return;
+          }
+          loadHistory(root, "");
+        };
+        if (disclosure) {
+          disclosure.addEventListener("toggle", () => {
+            if (disclosure.open) {
+              ensureLoaded();
+            }
+          });
+          if (disclosure.open) {
+            ensureLoaded();
+          }
+          return;
+        }
+        ensureLoaded();
+      });
+    })();
+
+    (function () {
+      const root = document.querySelector("[data-memory-root]");
+      if (!root) return;
+
+      const search = root.querySelector("[data-memory-search]");
+      const shown = root.querySelector("[data-memory-shown]");
+      const empty = document.querySelector("[data-memory-empty]");
+      const rows = Array.from(document.querySelectorAll("[data-memory-row]"));
+
+      const matches = (row) => {
+        const needle = (search && search.value ? search.value : "").trim().toLowerCase();
+        if (!needle) return true;
+        const haystack = (row.getAttribute("data-memory-search") || "").toLowerCase();
+        if (haystack.indexOf(needle) === -1) return false;
+        return true;
+      };
+
+      const refresh = () => {
+        let visibleCount = 0;
+        rows.forEach((row) => {
+          const visible = matches(row);
+          row.hidden = !visible;
+          if (visible) visibleCount += 1;
+        });
+        if (shown) shown.textContent = String(visibleCount);
+        if (empty) empty.hidden = visibleCount !== 0;
+      };
+
+      if (search) {
+        search.addEventListener("input", refresh);
+      }
+      refresh();
     })();
   </script>
       </div>

@@ -11,7 +11,10 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -19,6 +22,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +33,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/claudecode"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	meminmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
@@ -39,6 +45,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/admin"
 	occhannel "trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwclient"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
@@ -57,6 +64,79 @@ import (
 
 type captureRequestModel struct {
 	got *model.Request
+}
+
+type stubRuntimeAgent struct{}
+
+type stubAdminPromptsProvider struct{}
+
+func (stubRuntimeAgent) Run(
+	context.Context,
+	*agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event)
+	close(ch)
+	return ch, nil
+}
+
+func (stubRuntimeAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (stubAdminPromptsProvider) PromptsStatus() (
+	admin.PromptsStatus,
+	error,
+) {
+	return admin.PromptsStatus{}, nil
+}
+
+func (stubAdminPromptsProvider) SavePromptInline(
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) SavePromptRuntime(
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) SavePromptFile(
+	string,
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) CreatePromptFile(
+	string,
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) DeletePromptFile(
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubRuntimeAgent) Info() agent.Info {
+	return agent.Info{Name: "stub"}
+}
+
+func (stubRuntimeAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (stubRuntimeAgent) FindSubAgent(string) agent.Agent {
+	return nil
 }
 
 func (m *captureRequestModel) GenerateContent(
@@ -139,6 +219,156 @@ func joinSystemMessages(req *model.Request) string {
 		parts = append(parts, msg.Content)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func TestRuntimePromptControllerUpdatesAgentPrompts(
+	t *testing.T,
+) {
+	mdl := &captureRequestModel{}
+	agt := llmagent.New(
+		"test",
+		llmagent.WithModel(mdl),
+		llmagent.WithInstruction("old instruction"),
+		llmagent.WithGlobalInstruction("old system"),
+	)
+	ctrl := newRuntimePromptController(
+		agt,
+		"old instruction",
+		"old system",
+	)
+	require.NotNil(t, ctrl)
+
+	ctrl.SetPrompts("new instruction", "new system")
+	snapshot := ctrl.Snapshot()
+	require.Equal(t, "new instruction", snapshot.Instruction)
+	require.Equal(t, "new system", snapshot.SystemPrompt)
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		session.NewSession("app", "user", "sess"),
+	)
+	system := joinSystemMessages(req)
+	require.Contains(t, system, "new instruction")
+	require.Contains(t, system, "new system")
+	require.NotContains(t, system, "old instruction")
+	require.NotContains(t, system, "old system")
+}
+
+func TestRuntimePromptControllerCompatibilityGuards(t *testing.T) {
+	t.Parallel()
+
+	require.Nil(
+		t,
+		newRuntimePromptController(nil, "instruction", "system"),
+	)
+	require.Nil(
+		t,
+		newRuntimePromptController(
+			stubRuntimeAgent{},
+			"instruction",
+			"system",
+		),
+	)
+
+	var nilCtrl *RuntimePromptController
+	nilCtrl.SetInstruction("instruction")
+	nilCtrl.SetSystemPrompt("system")
+	nilCtrl.SetPrompts("instruction", "system")
+	require.Equal(t, PromptSnapshot{}, nilCtrl.Snapshot())
+
+	ctrl := &RuntimePromptController{agent: stubRuntimeAgent{}}
+	ctrl.SetInstruction("instruction")
+	ctrl.SetSystemPrompt("system")
+	ctrl.SetPrompts("instruction", "system")
+	require.Equal(t, PromptSnapshot{}, ctrl.Snapshot())
+}
+
+func TestRuntimePromptControllerIndividualSetters(t *testing.T) {
+	t.Parallel()
+
+	mdl := &captureRequestModel{}
+	agt := llmagent.New(
+		"test",
+		llmagent.WithModel(mdl),
+		llmagent.WithInstruction("old instruction"),
+		llmagent.WithGlobalInstruction("old system"),
+	)
+	ctrl := newRuntimePromptController(
+		agt,
+		"old instruction",
+		"old system",
+	)
+	require.NotNil(t, ctrl)
+
+	ctrl.SetInstruction("new instruction")
+	ctrl.SetSystemPrompt("new system")
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		session.NewSession("app", "user", "sess"),
+	)
+	system := joinSystemMessages(req)
+	require.Contains(t, system, "new instruction")
+	require.Contains(t, system, "new system")
+}
+
+func TestRuntimePromptControllerMethod(t *testing.T) {
+	t.Parallel()
+
+	ctrl := &RuntimePromptController{}
+	sessSvc := sessioninmemory.NewSessionService()
+	rt := &Runtime{
+		prompts: ctrl,
+		appName: "openclaw",
+		session: sessSvc,
+	}
+	require.Same(t, ctrl, rt.PromptController())
+	require.Equal(t, "openclaw", rt.AppName())
+	require.Same(t, sessSvc, rt.SessionService())
+
+	var nilRuntime *Runtime
+	require.Nil(t, nilRuntime.PromptController())
+	require.Empty(t, nilRuntime.AppName())
+	require.Nil(t, nilRuntime.SessionService())
+}
+
+func TestRuntimeConfigureAdmin(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		adminCfg: &admin.Config{
+			AdminAddr: "127.0.0.1:8081",
+			AdminURL:  "http://127.0.0.1:8081",
+		},
+	}
+
+	rt.ConfigureAdmin(func(cfg *admin.Config) {
+		cfg.Prompts = stubAdminPromptsProvider{}
+	})
+
+	require.NotNil(t, rt.adminCfg)
+	require.NotNil(t, rt.Admin.Handler)
+	require.Equal(t, "127.0.0.1:8081", rt.Admin.Addr)
+	require.Equal(t, "http://127.0.0.1:8081", rt.Admin.URL)
+	require.NotNil(t, rt.adminCfg.Prompts)
+}
+
+func TestRuntimeConfigureAdminNoAdminConfig(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{}
+	rt.ConfigureAdmin(func(cfg *admin.Config) {
+		cfg.AppName = "ignored"
+	})
+	require.Nil(t, rt.adminCfg)
+	require.Empty(t, rt.Admin)
+
+	var nilRuntime *Runtime
+	nilRuntime.applyAdminConfig(admin.Config{})
 }
 
 func findToolDeclaration(
@@ -1917,6 +2147,161 @@ func TestNewModel_OpenAI(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "gpt-5", mdl.Info().Name)
+	require.False(t, hasOpenAIRequestJSONCallback(t, mdl))
+}
+
+func TestNewModel_OpenAI_DebugRecorderWiresRequestCapture(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	mdl, err := modelFromOptions(runOptions{
+		ModelMode:            modeOpenAI,
+		OpenAIModel:          "gpt-5",
+		OpenAIVariant:        openAIVariantAuto,
+		DebugRecorderEnabled: true,
+	})
+	require.NoError(t, err)
+	require.True(t, hasOpenAIRequestJSONCallback(t, mdl))
+}
+
+func TestRecordDebugOpenAIChatRequestJSON_WritesTraceEvent(t *testing.T) {
+	t.Parallel()
+
+	const (
+		modelName = "gpt-4o"
+		userRole  = "user"
+		userText  = "hello"
+	)
+
+	rec, err := debugrecorder.New(t.TempDir(), "")
+	require.NoError(t, err)
+
+	trace, err := rec.Start(debugrecorder.TraceStart{
+		Channel: "gateway",
+	})
+	require.NoError(t, err)
+
+	ctx := debugrecorder.WithTrace(context.Background(), trace)
+	recordDebugOpenAIChatRequestJSON(
+		ctx,
+		[]byte(
+			`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`,
+		),
+		nil,
+	)
+	require.NoError(
+		t,
+		trace.Close(debugrecorder.TraceEnd{Status: "ok"}),
+	)
+
+	raw, err := debugrecorder.ReadEventsFile(trace.Dir())
+	require.NoError(t, err)
+
+	ev := findModelRequestEventForTest(t, raw)
+	require.Equal(
+		t,
+		debugrecorder.ProviderOpenAIChatCompletions,
+		ev.Payload.Provider,
+	)
+	require.Equal(t, modelName, ev.Payload.Request.Model)
+	require.Len(t, ev.Payload.Request.Messages, 1)
+	require.Equal(t, userRole, ev.Payload.Request.Messages[0].Role)
+	require.Equal(t, userText, ev.Payload.Request.Messages[0].Content)
+}
+
+func TestRecordDebugOpenAIChatRequestJSON_NoTraceIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	recordDebugOpenAIChatRequestJSON(
+		context.Background(),
+		[]byte(`{"model":"gpt-4o"}`),
+		nil,
+	)
+}
+
+func TestRecordDebugOpenAIChatRequestJSON_InvalidJSONSkipsEvent(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	rec, err := debugrecorder.New(t.TempDir(), "")
+	require.NoError(t, err)
+
+	trace, err := rec.Start(debugrecorder.TraceStart{
+		Channel: "gateway",
+	})
+	require.NoError(t, err)
+
+	recordDebugOpenAIChatRequestJSON(
+		debugrecorder.WithTrace(context.Background(), trace),
+		[]byte("{"),
+		nil,
+	)
+	require.NoError(
+		t,
+		trace.Close(debugrecorder.TraceEnd{Status: "ok"}),
+	)
+
+	raw, err := debugrecorder.ReadEventsFile(trace.Dir())
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), debugrecorder.KindModelReq)
+}
+
+func hasOpenAIRequestJSONCallback(
+	t *testing.T,
+	mdl model.Model,
+) bool {
+	t.Helper()
+
+	openAIModel, ok := mdl.(*openai.Model)
+	require.True(t, ok)
+
+	field := reflect.ValueOf(openAIModel).
+		Elem().
+		FieldByName("chatRequestJSONCallback")
+	require.True(t, field.IsValid())
+	return !field.IsNil()
+}
+
+type modelRequestEventForTest struct {
+	Kind    string                     `json:"kind"`
+	Payload modelRequestPayloadForTest `json:"payload"`
+}
+
+type modelRequestPayloadForTest struct {
+	Provider string                  `json:"provider"`
+	Request  modelRequestBodyForTest `json:"request"`
+}
+
+type modelRequestBodyForTest struct {
+	Model    string                       `json:"model"`
+	Messages []modelRequestMessageForTest `json:"messages"`
+}
+
+type modelRequestMessageForTest struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func findModelRequestEventForTest(
+	t *testing.T,
+	raw []byte,
+) modelRequestEventForTest {
+	t.Helper()
+
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		var got modelRequestEventForTest
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &got))
+		if got.Kind != debugrecorder.KindModelReq {
+			continue
+		}
+		return got
+	}
+	require.NoError(t, scanner.Err())
+	t.Fatalf("model request event not found")
+	return modelRequestEventForTest{}
 }
 
 func TestNewModel_UnsupportedMode(t *testing.T) {
@@ -3345,6 +3730,71 @@ func TestInProcGatewayClient_ForgetUser_DeleteMemoryFilesError(t *testing.T) {
 	err = c.ForgetUser(ctx, "telegram", "u1")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "forget: delete user memory files")
+}
+
+func TestInProcGatewayClient_ForgetUser_DeleteMemoryFilesErrorPreservesStorageScopeIndex(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based delete failure is unreliable on windows")
+	}
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	const (
+		canonicalUserID = "u1"
+		storageUserID   = "chat-scope"
+	)
+
+	sessSvc := sessioninmemory.NewSessionService()
+	require.NoError(
+		t,
+		conversationscope.RememberIndexedStorageUser(
+			ctx,
+			sessSvc,
+			appName,
+			canonicalUserID,
+			storageUserID,
+		),
+	)
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+	_, err = store.EnsureMemory(ctx, appName, storageUserID)
+	require.NoError(t, err)
+
+	scopedDir, err := store.MemoryDir(appName, storageUserID)
+	require.NoError(t, err)
+	scopedParent := filepath.Dir(scopedDir)
+	parentInfo, err := os.Stat(scopedParent)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(scopedParent, 0o500))
+	defer func() {
+		require.NoError(t, os.Chmod(scopedParent, parentInfo.Mode().Perm()))
+	}()
+
+	c := newInProcGatewayClient(srv, appName, sessSvc, nil, "")
+	c.SetMemoryFileStore(store)
+
+	err = c.ForgetUser(ctx, "telegram", canonicalUserID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: delete user memory files")
+
+	indexedStorageUsers, err := conversationscope.ListIndexedStorageUsers(
+		ctx,
+		sessSvc,
+		appName,
+		canonicalUserID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{storageUserID}, indexedStorageUsers)
+
+	_, err = os.Stat(scopedDir)
+	require.NoError(t, err)
 }
 
 func TestInProcGatewayClient_ScheduledJobs(t *testing.T) {

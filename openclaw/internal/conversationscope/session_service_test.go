@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -39,9 +40,12 @@ type recordingSessionService struct {
 	deleteKey           session.Key
 	updateAppName       string
 	updateAppState      session.StateMap
+	updateAppStateErr   error
 	deleteAppName       string
 	deleteAppKey        string
 	listAppName         string
+	listAppStates       session.StateMap
+	listAppStatesErr    error
 	updateUserKey       session.UserKey
 	updateUserState     session.StateMap
 	updateUserStateErr  error
@@ -55,12 +59,15 @@ type recordingSessionService struct {
 	updateSessionState  session.StateMap
 	appendSession       *session.Session
 	appendEvent         *event.Event
+	appendFunc          func(*session.Session, *event.Event)
 	createSummarySess   *session.Session
 	createSummaryKey    string
 	createSummaryForce  bool
+	createSummaryFunc   func(*session.Session, string, bool)
 	enqueueSummarySess  *session.Session
 	enqueueSummaryKey   string
 	enqueueSummaryForce bool
+	enqueueSummaryFunc  func(*session.Session, string, bool)
 	getSummarySess      *session.Session
 	getSummaryText      string
 	getSummaryOK        bool
@@ -135,7 +142,7 @@ func (r *recordingSessionService) UpdateAppState(
 ) error {
 	r.updateAppName = appName
 	r.updateAppState = state
-	return nil
+	return r.updateAppStateErr
 }
 
 func (r *recordingSessionService) DeleteAppState(
@@ -153,6 +160,12 @@ func (r *recordingSessionService) ListAppStates(
 	appName string,
 ) (session.StateMap, error) {
 	r.listAppName = appName
+	if r.listAppStatesErr != nil {
+		return nil, r.listAppStatesErr
+	}
+	if r.listAppStates != nil {
+		return r.listAppStates, nil
+	}
 	return session.StateMap{"a": []byte("b")}, nil
 }
 
@@ -208,6 +221,9 @@ func (r *recordingSessionService) AppendEvent(
 ) error {
 	r.appendSession = sess
 	r.appendEvent = evt
+	if r.appendFunc != nil {
+		r.appendFunc(sess, evt)
+	}
 	return nil
 }
 
@@ -220,6 +236,9 @@ func (r *recordingSessionService) CreateSessionSummary(
 	r.createSummarySess = sess
 	r.createSummaryKey = filterKey
 	r.createSummaryForce = force
+	if r.createSummaryFunc != nil {
+		r.createSummaryFunc(sess, filterKey, force)
+	}
 	return nil
 }
 
@@ -232,6 +251,9 @@ func (r *recordingSessionService) EnqueueSummaryJob(
 	r.enqueueSummarySess = sess
 	r.enqueueSummaryKey = filterKey
 	r.enqueueSummaryForce = force
+	if r.enqueueSummaryFunc != nil {
+		r.enqueueSummaryFunc(sess, filterKey, force)
+	}
 	return nil
 }
 
@@ -360,6 +382,13 @@ func TestWrapSessionService_UsesContextStorageScopeForStorage(t *testing.T) {
 			),
 		),
 	)
+	require.Equal(t, "canonical-user", sess.UserID)
+	require.Len(t, sess.Events, 2)
+	require.True(
+		t,
+		sess.Events[1].Response.Choices[0].Message.Role ==
+			model.RoleAssistant,
+	)
 
 	updated, err := base.GetSession(context.Background(), storageKey)
 	require.NoError(t, err)
@@ -369,6 +398,61 @@ func TestWrapSessionService_UsesContextStorageScopeForStorage(t *testing.T) {
 	raw, ok := updated.GetState("migrated")
 	require.True(t, ok)
 	require.Equal(t, []byte("yes"), raw)
+}
+
+func TestWrapSessionService_SyncsSummaryRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	const filterKey = "branch"
+
+	updatedAt := time.Date(
+		2026,
+		time.April,
+		8,
+		20,
+		11,
+		0,
+		0,
+		time.UTC,
+	)
+	rec := &recordingSessionService{
+		createSummaryFunc: func(
+			sess *session.Session,
+			filterKey string,
+			force bool,
+		) {
+			sess.SummariesMu.Lock()
+			sess.Summaries = map[string]*session.Summary{
+				filterKey: {
+					Summary:   "group summary",
+					UpdatedAt: updatedAt,
+				},
+			}
+			sess.SummariesMu.Unlock()
+			sess.UpdatedAt = updatedAt
+		},
+	}
+	wrapped := WrapSessionService(rec)
+	ctx := WithStorageUserID(context.Background(), "chat-scope")
+	sess := session.NewSession(
+		"demo-app",
+		"canonical-user",
+		"sess-1",
+	)
+
+	err := wrapped.CreateSessionSummary(ctx, sess, filterKey, true)
+	require.NoError(t, err)
+	require.Equal(t, "canonical-user", sess.UserID)
+	require.Equal(t, updatedAt, sess.UpdatedAt)
+
+	sess.SummariesMu.RLock()
+	sum := sess.Summaries[filterKey]
+	sess.SummariesMu.RUnlock()
+
+	require.NotNil(t, sum)
+	require.Equal(t, "group summary", sum.Summary)
+	require.Equal(t, updatedAt, sum.UpdatedAt)
+	require.Equal(t, "chat-scope", rec.createSummarySess.UserID)
 }
 
 func TestWrapSessionService_WithoutStorageOverrideKeepsCanonicalUser(t *testing.T) {
@@ -444,6 +528,32 @@ func TestIndexedStorageUsersLifecycle(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, []string{"chat-scope-2"}, storageUsers)
+
+	require.NoError(
+		t,
+		RememberIndexedStorageScope(
+			context.Background(),
+			svc,
+			"demo-app",
+			"chat-scope",
+		),
+	)
+	require.NoError(
+		t,
+		RememberIndexedStorageScope(
+			context.Background(),
+			svc,
+			"demo-app",
+			"chat-scope-2",
+		),
+	)
+	scopes, err := ListIndexedStorageScopes(
+		context.Background(),
+		svc,
+		"demo-app",
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"chat-scope", "chat-scope-2"}, scopes)
 }
 
 func TestIndexedStorageUsersHelpers_EdgeCases(t *testing.T) {
@@ -522,6 +632,7 @@ func TestIndexedStorageUsersHelpers_EdgeCases(t *testing.T) {
 	require.Contains(t, err.Error(), "delete boom")
 
 	require.Nil(t, indexedStorageUsersFromState(nil))
+	require.Nil(t, indexedStorageScopesFromState(nil))
 	require.Equal(
 		t,
 		[]string{"a", "z"},
@@ -533,7 +644,53 @@ func TestIndexedStorageUsersHelpers_EdgeCases(t *testing.T) {
 			"other":                        []byte("1"),
 		}),
 	)
+	require.Equal(
+		t,
+		[]string{"a", "z"},
+		indexedStorageScopesFromState(session.StateMap{
+			storageScopeStatePrefix + " z ": []byte("1"),
+			storageScopeStatePrefix + "a":   []byte("1"),
+			storageScopeStatePrefix + " a ": []byte("1"),
+			storageScopeStatePrefix + "b":   nil,
+			"other":                         []byte("1"),
+		}),
+	)
 	require.Equal(t, "", storageUserStateKey("   "))
+	require.Equal(t, "", storageScopeStateKey("   "))
+
+	require.NoError(
+		t,
+		RememberIndexedStorageScope(
+			context.Background(),
+			nil,
+			"demo-app",
+			"chat-scope",
+		),
+	)
+	scopes, err := ListIndexedStorageScopes(
+		context.Background(),
+		nil,
+		"demo-app",
+	)
+	require.NoError(t, err)
+	require.Nil(t, scopes)
+
+	scopes, err = ListIndexedStorageScopes(
+		context.Background(),
+		sessioninmemory.NewSessionService(),
+		" ",
+	)
+	require.NoError(t, err)
+	require.Nil(t, scopes)
+
+	rec.listAppStatesErr = errors.New("app list boom")
+	_, err = ListIndexedStorageScopes(
+		context.Background(),
+		rec,
+		"demo-app",
+	)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "app list boom")
 }
 
 func TestWrapSessionService_DelegatesAdministrativeMethods(t *testing.T) {
@@ -790,6 +947,31 @@ func TestWrapSessionService_CreateSession_PropagatesIndexingError(t *testing.T) 
 	require.Contains(t, err.Error(), "index boom")
 }
 
+func TestWrapSessionService_CreateSession_IgnoresScopeIndexError(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	rec := &recordingSessionService{
+		updateAppStateErr: errors.New("scope boom"),
+	}
+	wrapped := WrapSessionService(rec)
+
+	sess, err := wrapped.CreateSession(
+		WithStorageUserID(context.Background(), "chat-scope"),
+		session.Key{
+			AppName:   "demo-app",
+			UserID:    "canonical-user",
+			SessionID: "sess-1",
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, "demo-app", rec.updateAppName)
+	require.Equal(t, "canonical-user", sess.UserID)
+}
+
 func TestWrapSessionService_GetSession_PropagatesIndexingError(t *testing.T) {
 	t.Parallel()
 
@@ -819,4 +1001,28 @@ func TestWrapSessionService_GetSession_PropagatesIndexingError(t *testing.T) {
 		"remember indexed storage user for get session",
 	)
 	require.Contains(t, err.Error(), "index boom")
+}
+
+func TestWrapSessionService_GetSession_IgnoresScopeIndexError(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	rec := &recordingSessionService{
+		updateAppStateErr: errors.New("scope boom"),
+	}
+	wrapped := WrapSessionService(rec)
+
+	sess, err := wrapped.GetSession(
+		WithStorageUserID(context.Background(), "chat-scope"),
+		session.Key{
+			AppName:   "demo-app",
+			UserID:    "canonical-user",
+			SessionID: "sess-1",
+		},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, "demo-app", rec.updateAppName)
+	require.Equal(t, "canonical-user", sess.UserID)
 }

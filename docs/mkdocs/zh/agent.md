@@ -54,6 +54,12 @@ genConfig := model.GenerationConfig{
 }
 ```
 
+如果没有显式传入 `llmagent.WithGenerationConfig(...)`，`LLMAgent`
+默认会透传零值 `model.GenerationConfig{}`，因此默认是非流式
+（`Stream=false`）。如果你需要流式输出，请显式设置
+`Stream: true`，或在单次请求上使用 `agent.WithStream(true)`。
+某些上层封装可能会自行设置不同的默认值，例如 OpenClaw 会显式开启流式。
+
 ### 创建 LLMAgent
 
 使用模型实例和配置创建 LLMAgent，同时设置 Agent 的 Description 与 Instruction。
@@ -426,6 +432,38 @@ agent := llmagent.New(
 - 在生产环境中，建议设置合理的限制以防止意外情况。
 - 根据任务的复杂度和预期行为设置限制值。
 - 可以在 [examples/max_limits](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/max_limits) 查看完整示例。
+
+### Tool 调用重试
+
+如果你希望 LLMAgent 在工具调用失败后自动补一次或多次重试，可以配置 `llmagent.WithToolCallRetryPolicy(...)`。
+
+```go
+policy := &tool.RetryPolicy{
+    MaxAttempts:     2,
+    InitialInterval: 200 * time.Millisecond,
+    BackoffFactor:   2.0,
+    MaxInterval:     time.Second,
+}
+
+agent := llmagent.New(
+    "assistant",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithTools([]tool.Tool{myTool}),
+    llmagent.WithToolCallRetryPolicy(policy),
+)
+```
+
+说明：
+
+- 默认关闭；未配置时行为与历史版本保持一致。
+- 当前仅对 `CallableTool` 生效；`StreamableTool` 暂不支持。
+- 重试只作用于当前这次工具调用，不会重跑整个 Agent。
+- 默认判定只重试常见瞬时 raw error，如 `io.EOF`、`io.ErrUnexpectedEOF`、网络超时。
+- 如果需要把结果级失败也纳入重试，可通过 `tool.RetryPolicy.RetryOn` 自定义。
+
+可运行示例：
+
+- [examples/llmagent_tool_call_retry](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/llmagent_tool_call_retry)
 
 ### 处理事件流
 

@@ -18,6 +18,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,11 +46,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/admin"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/admin"
 	ocbrowser "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/browser"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationtool"
@@ -176,10 +179,11 @@ const (
 		"OPENCLAW_SESSION_UPLOADS_DIR. Prefer writing derived " +
 		"files under " +
 		"OPENCLAW_SESSION_UPLOADS_DIR when you will send them " +
-		"back to the user. OPENCLAW_MEMORY_FILE is a " +
-		"user-owned file, not hidden internal state. If the " +
-		"user asks what you remember or asks to inspect that " +
-		"file, read it and quote or summarize the relevant " +
+		"back to the user. OPENCLAW_MEMORY_FILE is a visible " +
+		"MEMORY.md file for the current scope, not hidden " +
+		"internal state. If the user asks what you remember or " +
+		"asks to inspect that file, read it and quote or " +
+		"summarize the relevant " +
 		"lines. If the user explicitly says 'remember this' " +
 		"or asks you to remember a durable fact, preference, " +
 		"or workflow rule, update OPENCLAW_MEMORY_FILE with a " +
@@ -465,12 +469,17 @@ type Runtime struct {
 	A2A      A2ASurface
 	Admin    AdminSurface
 	Channels []channel.Channel
+	prompts  *RuntimePromptController
+	adminCfg *admin.Config
+	appName  string
+	session  session.Service
 
 	runner            runner.Runner
 	cronRunner        closeFunc
 	sessionSvc        closeFunc
 	memorySvc         closeFunc
 	cronSvc           closeFunc
+	skillsWatch       closeFunc
 	toolSets          []tool.ToolSet
 	telemetryShutdown func(context.Context) error
 }
@@ -488,6 +497,143 @@ type AdminSurface struct {
 	Handler http.Handler
 	Addr    string
 	URL     string
+}
+
+type PromptSnapshot struct {
+	Instruction  string
+	SystemPrompt string
+}
+
+type RuntimePromptController struct {
+	agent agent.Agent
+
+	mu       sync.RWMutex
+	snapshot PromptSnapshot
+}
+
+func newRuntimePromptController(
+	agt agent.Agent,
+	instruction string,
+	systemPrompt string,
+) *RuntimePromptController {
+	if agt == nil {
+		return nil
+	}
+	if _, ok := agt.(*llmagent.LLMAgent); !ok {
+		return nil
+	}
+	return &RuntimePromptController{
+		agent: agt,
+		snapshot: PromptSnapshot{
+			Instruction:  instruction,
+			SystemPrompt: systemPrompt,
+		},
+	}
+}
+
+// PromptController exposes runtime prompt updates without changing
+// Runtime's exported struct layout.
+func (r *Runtime) PromptController() *RuntimePromptController {
+	if r == nil {
+		return nil
+	}
+	return r.prompts
+}
+
+func (r *Runtime) AppName() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.appName)
+}
+
+func (r *Runtime) SessionService() session.Service {
+	if r == nil {
+		return nil
+	}
+	return r.session
+}
+
+func (r *Runtime) ConfigureAdmin(
+	configure func(*admin.Config),
+) {
+	if r == nil || r.adminCfg == nil || configure == nil {
+		return
+	}
+	cfg := *r.adminCfg
+	configure(&cfg)
+	r.applyAdminConfig(cfg)
+}
+
+func (r *Runtime) applyAdminConfig(cfg admin.Config) {
+	if r == nil {
+		return
+	}
+	r.adminCfg = &cfg
+	r.Admin.Handler = admin.New(cfg).Handler()
+	r.Admin.Addr = strings.TrimSpace(cfg.AdminAddr)
+	r.Admin.URL = strings.TrimSpace(cfg.AdminURL)
+}
+
+func (c *RuntimePromptController) Snapshot() PromptSnapshot {
+	if c == nil {
+		return PromptSnapshot{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshot
+}
+
+func (c *RuntimePromptController) SetInstruction(
+	instruction string,
+) {
+	if c == nil {
+		return
+	}
+	llm, ok := c.agent.(*llmagent.LLMAgent)
+	if !ok {
+		return
+	}
+	llm.SetInstruction(instruction)
+	c.mu.Lock()
+	c.snapshot.Instruction = instruction
+	c.mu.Unlock()
+}
+
+func (c *RuntimePromptController) SetSystemPrompt(
+	systemPrompt string,
+) {
+	if c == nil {
+		return
+	}
+	llm, ok := c.agent.(*llmagent.LLMAgent)
+	if !ok {
+		return
+	}
+	llm.SetGlobalInstruction(systemPrompt)
+	c.mu.Lock()
+	c.snapshot.SystemPrompt = systemPrompt
+	c.mu.Unlock()
+}
+
+func (c *RuntimePromptController) SetPrompts(
+	instruction string,
+	systemPrompt string,
+) {
+	if c == nil {
+		return
+	}
+	llm, ok := c.agent.(*llmagent.LLMAgent)
+	if !ok {
+		return
+	}
+	llm.SetPrompts(instruction, systemPrompt)
+	c.mu.Lock()
+	c.snapshot = PromptSnapshot{
+		Instruction:  instruction,
+		SystemPrompt: systemPrompt,
+	}
+	c.mu.Unlock()
 }
 
 // NewRuntime constructs an OpenClaw runtime based on CLI args / config file,
@@ -578,6 +724,7 @@ func NewRuntime(
 		resolvedStateDir,
 	)
 	log.Infof("Instance: %s", instanceID)
+	rt.appName = opts.AppName
 
 	sessionSvc, err := newSessionService(mdl, opts)
 	if err != nil {
@@ -627,9 +774,10 @@ func NewRuntime(
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets   []tool.ToolSet
-		ag         agent.Agent
-		skillsRepo *ocskills.Repository
+		toolSets    []tool.ToolSet
+		ag          agent.Agent
+		skillsRepo  *ocskills.Repository
+		skillsWatch *ocskills.WatchService
 	)
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -646,7 +794,7 @@ func NewRuntime(
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, skillsRepo, err = newAgent(mdl, agentConfig{
+		agentCfg := agentConfig{
 			AppName:                 opts.AppName,
 			AddSessionSummary:       opts.AddSessionSummary,
 			EnableContextCompaction: opts.EnableContextCompaction,
@@ -663,16 +811,19 @@ func NewRuntime(
 			SkillsAllowBundled: splitCSV(
 				opts.SkillsAllowBundled,
 			),
-			SkillConfigs:       opts.SkillConfigs,
-			SkillConfigKeys:    resolveSkillConfigKeys(opts),
-			SkillsLoadMode:     opts.SkillsLoadMode,
-			SkillsMaxLoaded:    opts.SkillsMaxLoaded,
-			SkillsToolResults:  opts.SkillsToolResults,
-			SkillsSkipFallback: opts.SkillsSkipFallback,
-			SkillsToolingGuide: opts.SkillsToolingGuide,
-			KnowledgesConfig:   opts.KnowledgesConfig,
-			StateDir:           resolvedStateDir,
-			MemoryFileStore:    fileMemoryStore,
+			SkillConfigs:        opts.SkillConfigs,
+			SkillConfigKeys:     resolveSkillConfigKeys(opts),
+			SkillsWatch:         opts.SkillsWatch,
+			SkillsWatchBundled:  opts.SkillsWatchBundled,
+			SkillsWatchDebounce: opts.SkillsWatchDebounce,
+			SkillsLoadMode:      opts.SkillsLoadMode,
+			SkillsMaxLoaded:     opts.SkillsMaxLoaded,
+			SkillsToolResults:   opts.SkillsToolResults,
+			SkillsSkipFallback:  opts.SkillsSkipFallback,
+			SkillsToolingGuide:  opts.SkillsToolingGuide,
+			KnowledgesConfig:    opts.KnowledgesConfig,
+			StateDir:            resolvedStateDir,
+			MemoryFileStore:     fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -682,7 +833,21 @@ func NewRuntime(
 			ToolSets:      opts.ToolSets,
 
 			RefreshToolSetsOnRun: opts.RefreshToolSetsOnRun,
-		}, extraTools, toolSets)
+		}
+		ag, skillsRepo, err = newAgent(
+			mdl,
+			agentCfg,
+			extraTools,
+			toolSets,
+		)
+		if err == nil {
+			cwd, _ := os.Getwd()
+			skillsWatch = newSkillsWatchService(
+				cwd,
+				agentCfg,
+				skillsRepo,
+			)
+		}
 	}
 	if err != nil {
 		closeToolSets(toolSets)
@@ -691,9 +856,16 @@ func NewRuntime(
 			Err:  fmt.Errorf("create agent failed: %w", err),
 		}
 	}
+	rt.prompts = newRuntimePromptController(
+		ag,
+		prompts.Instruction,
+		prompts.SystemPrompt,
+	)
 	rt.toolSets = toolSets
+	rt.skillsWatch = skillsWatch
 
 	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
+	rt.session = bridgedSessionSvc
 	runnerOpts := []runner.Option{
 		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
@@ -849,7 +1021,7 @@ func NewRuntime(
 
 	if opts.AdminEnabled {
 		adminURL := listenURL(opts.AdminAddr)
-		adminSvc := admin.New(buildAdminConfig(
+		adminCfg := buildAdminConfig(
 			opts,
 			agentType,
 			instanceID,
@@ -866,16 +1038,16 @@ func NewRuntime(
 			},
 			cronSvc,
 			openClawTools.execMgr,
+			rt.prompts,
 			nil,
 			opts.AdminAddr,
 			adminURL,
 			skillsRepo,
-		))
-		rt.Admin = AdminSurface{
-			Handler: adminSvc.Handler(),
-			Addr:    opts.AdminAddr,
-			URL:     adminURL,
-		}
+			skillsWatch,
+			fileMemoryStore,
+			rt.SessionService(),
+		)
+		rt.applyAdminConfig(adminCfg)
 	}
 
 	return rt, nil
@@ -893,6 +1065,11 @@ func (r *Runtime) Close() error {
 	}
 	if r.cronRunner != nil {
 		_ = r.cronRunner.Close()
+	}
+	if r.skillsWatch != nil {
+		if err := r.skillsWatch.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	closeToolSets(r.toolSets)
 	closeMemoryService(r.memorySvc)
@@ -1055,12 +1232,21 @@ func run(ctx context.Context, args []string) error {
 	extraTools = append(extraTools, openClawTools.tools...)
 
 	var (
-		toolSets   []tool.ToolSet
-		ag         agent.Agent
-		skillsRepo *ocskills.Repository
+		toolSets    []tool.ToolSet
+		ag          agent.Agent
+		skillsRepo  *ocskills.Repository
+		skillsWatch *ocskills.WatchService
 	)
 	defer func() {
 		closeToolSets(toolSets)
+	}()
+	defer func() {
+		if skillsWatch == nil {
+			return
+		}
+		if err := skillsWatch.Close(); err != nil {
+			log.Warnf("close skills watch failed: %v", err)
+		}
 	}()
 	if agentType == agentTypeClaudeCode {
 		ag, err = newClaudeCodeAgent(opts)
@@ -1077,7 +1263,7 @@ func run(ctx context.Context, args []string) error {
 				Err:  fmt.Errorf("create toolsets failed: %w", err),
 			}
 		}
-		ag, skillsRepo, err = newAgent(mdl, agentConfig{
+		agentCfg := agentConfig{
 			AppName:                 opts.AppName,
 			AddSessionSummary:       opts.AddSessionSummary,
 			EnableContextCompaction: opts.EnableContextCompaction,
@@ -1094,16 +1280,19 @@ func run(ctx context.Context, args []string) error {
 			SkillsAllowBundled: splitCSV(
 				opts.SkillsAllowBundled,
 			),
-			SkillConfigs:       opts.SkillConfigs,
-			SkillConfigKeys:    resolveSkillConfigKeys(opts),
-			SkillsLoadMode:     opts.SkillsLoadMode,
-			SkillsMaxLoaded:    opts.SkillsMaxLoaded,
-			SkillsToolResults:  opts.SkillsToolResults,
-			SkillsSkipFallback: opts.SkillsSkipFallback,
-			SkillsToolingGuide: opts.SkillsToolingGuide,
-			KnowledgesConfig:   opts.KnowledgesConfig,
-			StateDir:           resolvedStateDir,
-			MemoryFileStore:    fileMemoryStore,
+			SkillConfigs:        opts.SkillConfigs,
+			SkillConfigKeys:     resolveSkillConfigKeys(opts),
+			SkillsWatch:         opts.SkillsWatch,
+			SkillsWatchBundled:  opts.SkillsWatchBundled,
+			SkillsWatchDebounce: opts.SkillsWatchDebounce,
+			SkillsLoadMode:      opts.SkillsLoadMode,
+			SkillsMaxLoaded:     opts.SkillsMaxLoaded,
+			SkillsToolResults:   opts.SkillsToolResults,
+			SkillsSkipFallback:  opts.SkillsSkipFallback,
+			SkillsToolingGuide:  opts.SkillsToolingGuide,
+			KnowledgesConfig:    opts.KnowledgesConfig,
+			StateDir:            resolvedStateDir,
+			MemoryFileStore:     fileMemoryStore,
 
 			EnableLocalExec:     opts.EnableLocalExec,
 			EnableOpenClawTools: opts.EnableOpenClawTools,
@@ -1113,7 +1302,21 @@ func run(ctx context.Context, args []string) error {
 			ToolSets:      opts.ToolSets,
 
 			RefreshToolSetsOnRun: opts.RefreshToolSetsOnRun,
-		}, extraTools, toolSets)
+		}
+		ag, skillsRepo, err = newAgent(
+			mdl,
+			agentCfg,
+			extraTools,
+			toolSets,
+		)
+		if err == nil {
+			cwd, _ := os.Getwd()
+			skillsWatch = newSkillsWatchService(
+				cwd,
+				agentCfg,
+				skillsRepo,
+			)
+		}
 	}
 	if err != nil {
 		return &exitError{
@@ -1121,6 +1324,11 @@ func run(ctx context.Context, args []string) error {
 			Err:  fmt.Errorf("create agent failed: %w", err),
 		}
 	}
+	promptController := newRuntimePromptController(
+		ag,
+		prompts.Instruction,
+		prompts.SystemPrompt,
+	)
 
 	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
@@ -1315,10 +1523,14 @@ func run(ctx context.Context, args []string) error {
 			},
 			cronSvc,
 			openClawTools.execMgr,
+			promptController,
 			browserServerSup,
 			adminBinding.addr,
 			adminBinding.url,
 			skillsRepo,
+			skillsWatch,
+			fileMemoryStore,
+			bridgedSessionSvc,
 		))
 		adminSrv = &http.Server{
 			Handler:           adminSvc.Handler(),
@@ -1887,10 +2099,16 @@ func newAgent(
 		)
 	}
 
+	genConfig := model.GenerationConfig{Stream: true}
+	if cfg.GenerationConfig != nil {
+		genConfig = *cfg.GenerationConfig
+	}
+
 	opts := []llmagent.Option{
 		llmagent.WithModel(mdl),
 		llmagent.WithInstruction(instruction),
 		llmagent.WithGlobalInstruction(strings.TrimSpace(cfg.SystemPrompt)),
+		llmagent.WithGenerationConfig(genConfig),
 		llmagent.WithAddSessionSummary(cfg.AddSessionSummary),
 		llmagent.WithEnableContextCompaction(cfg.EnableContextCompaction),
 		llmagent.WithContextCompactionOversizedToolResultMaxTokens(cfg.ContextCompactionOversizedToolResultMaxTokens),
@@ -1900,12 +2118,6 @@ func newAgent(
 			conversation.ProjectEventMessage,
 		),
 		llmagent.WithEnableParallelTools(cfg.EnableParallelTools),
-	}
-	if cfg.GenerationConfig != nil {
-		opts = append(
-			opts,
-			llmagent.WithGenerationConfig(*cfg.GenerationConfig),
-		)
 	}
 	opts = append(opts, llmagent.WithSkills(repo))
 	opts = append(
@@ -2135,18 +2347,21 @@ type agentConfig struct {
 	Instruction                                   string
 	SystemPrompt                                  string
 
-	SkillsRoot         string
-	SkillsExtraDirs    []string
-	SkillsDebug        bool
-	SkillsAllowBundled []string
-	SkillConfigs       map[string]ocskills.SkillConfig
-	SkillConfigKeys    []string
-	SkillsLoadMode     string
-	SkillsMaxLoaded    int
-	SkillsToolResults  bool
-	SkillsSkipFallback bool
-	SkillsToolingGuide *string
-	KnowledgesConfig   map[string]*yaml.Node
+	SkillsRoot          string
+	SkillsExtraDirs     []string
+	SkillsDebug         bool
+	SkillsAllowBundled  []string
+	SkillConfigs        map[string]ocskills.SkillConfig
+	SkillConfigKeys     []string
+	SkillsWatch         bool
+	SkillsWatchBundled  bool
+	SkillsWatchDebounce time.Duration
+	SkillsLoadMode      string
+	SkillsMaxLoaded     int
+	SkillsToolResults   bool
+	SkillsSkipFallback  bool
+	SkillsToolingGuide  *string
+	KnowledgesConfig    map[string]*yaml.Node
 
 	StateDir string
 
@@ -2233,6 +2448,9 @@ func buildOpenClawTools(
 		octool.WithCommandPolicy(
 			octool.NewChatCommandSafetyPolicy(),
 		),
+		octool.WithOutputRedactor(
+			octool.NewChatCommandOutputRedactor(),
+		),
 	)
 	router := outbound.NewRouter()
 	cronTool := cron.NewTool(nil)
@@ -2299,6 +2517,30 @@ func resolveSkillRoots(cwd string, cfg agentConfig) []string {
 	}
 	roots = append(roots, cfg.SkillsExtraDirs...)
 	return roots
+}
+
+func newSkillsWatchService(
+	cwd string,
+	cfg agentConfig,
+	repo *ocskills.Repository,
+) *ocskills.WatchService {
+	if repo == nil {
+		return nil
+	}
+
+	return ocskills.NewWatchService(
+		repo,
+		resolveSkillRoots(cwd, cfg),
+		ocskills.WatchConfig{
+			Enabled:      cfg.SkillsWatch,
+			Debounce:     cfg.SkillsWatchDebounce,
+			WatchBundled: cfg.SkillsWatchBundled,
+			BundledRoot: resolveBundledSkillsRoot(
+				cwd,
+				cfg.StateDir,
+			),
+		},
+	)
 }
 
 func resolveWorkspaceSkillsRoot(cwd, raw string) string {
@@ -2401,6 +2643,35 @@ func newMockModel(_ registry.ModelSpec) (model.Model, error) {
 	return &echoModel{name: "mock-echo"}, nil
 }
 
+func recordDebugOpenAIChatRequestJSON(
+	ctx context.Context,
+	raw []byte,
+	marshalErr error,
+) {
+	if debugrecorder.TraceFromContext(ctx) == nil {
+		return
+	}
+
+	err := marshalErr
+	if err == nil && len(raw) > 0 {
+		var payload any
+		err = json.Unmarshal(raw, &payload)
+		if err == nil {
+			err = debugrecorder.RecordModelRequest(
+				ctx,
+				debugrecorder.ProviderOpenAIChatCompletions,
+				payload,
+			)
+		}
+	}
+	if err != nil {
+		log.Warnf(
+			"debug recorder failed to capture chat request: %v",
+			err,
+		)
+	}
+}
+
 func newOpenAIModel(spec registry.ModelSpec) (model.Model, error) {
 	name := strings.TrimSpace(spec.Name)
 	if name == "" {
@@ -2416,6 +2687,14 @@ func newOpenAIModel(spec registry.ModelSpec) (model.Model, error) {
 	opts := []openai.Option{
 		openai.WithVariant(variant),
 		openai.WithOmitFileContentParts(true),
+	}
+	if spec.DebugRecorderEnabled {
+		opts = append(
+			opts,
+			openai.WithChatRequestJSONCallback(
+				recordDebugOpenAIChatRequestJSON,
+			),
+		)
 	}
 	if baseURL != "" {
 		opts = append(opts, openai.WithBaseURL(baseURL))
@@ -2440,11 +2719,12 @@ func modelFromOptions(opts runOptions) (model.Model, error) {
 	}
 
 	spec := registry.ModelSpec{
-		Type:          mode,
-		Name:          opts.OpenAIModel,
-		BaseURL:       baseURL,
-		OpenAIVariant: opts.OpenAIVariant,
-		Config:        opts.ModelConfig,
+		Type:                 mode,
+		Name:                 opts.OpenAIModel,
+		BaseURL:              baseURL,
+		OpenAIVariant:        opts.OpenAIVariant,
+		DebugRecorderEnabled: opts.DebugRecorderEnabled,
+		Config:               opts.ModelConfig,
 	}
 	return f(spec)
 }

@@ -417,6 +417,44 @@ If you want the implementation-level mapping, this happens after one
 
 Runnable example: `examples/steer/`
 
+#### Per-Request App Name Override (multi-tenant isolation)
+
+By default, Runner uses the `appName` supplied at construction for session keys
+and event filter keys. If a single Runner instance serves multiple projects or
+tenants, you can override the app name on each `Run` call with
+`agent.WithAppName`:
+
+```go
+// One runner, two projects.
+r := runner.NewRunner("default-app", myAgent)
+
+// Project A — sessions are stored under "project-a".
+evA, _ := r.Run(ctx, userID, sessionID, msg,
+    agent.WithAppName("project-a"),
+)
+
+// Project B — sessions are stored under "project-b", fully isolated from A.
+evB, _ := r.Run(ctx, userID, sessionID, msg,
+    agent.WithAppName("project-b"),
+)
+```
+
+When `WithAppName` is **not** provided (or the value is empty), the runner
+falls back to the constructor-supplied default app name. The override affects:
+
+| Dimension | Default (no override) | With `WithAppName("X")` |
+|---|---|---|
+| `session.Key.AppName` | constructor `appName` | `"X"` |
+| Default `EventFilterKey` | constructor `appName` | `"X"` |
+
+Other runner-level registrations (observability `appid`, agent registry) remain
+bound to the original constructor `appName`.
+
+!!! note
+    `appName` must not be empty. If neither the constructor nor `WithAppName`
+    provides a non-empty value, the session service returns
+    `session.ErrAppNameRequired`.
+
 #### Detached Cancellation (background execution)
 
 In Go, `context.Context` (often named `ctx`) carries both cancellation and a
@@ -539,6 +577,30 @@ Prefer obtaining a stable `nodeID` from `structure.Export(...)` and then pass
 it to `WithSurfacePatchForNode(...)`. If you need to patch multiple nodes in
 the same run, pass multiple `WithSurfacePatchForNode(...)` options. For full
 details and more examples, see [Agent: Override Runtime Surfaces by `nodeID`](./agent.md#override-runtime-surfaces-by-nodeid).
+
+### Override `code executor` Per Run
+
+If you need to specify a different execution environment for a particular
+request on an agent that resolves its executor from `RunOptions.CodeExecutor`,
+such as `LLMAgent`, pass `agent.WithCodeExecutor(exec)` to `runner.Run(...)`.
+
+```go
+events, err := r.Run(
+    ctx,
+    userID,
+    sessionID,
+    model.NewUserMessage("Run the release checklist skill."),
+    agent.WithCodeExecutor(containerExec),
+)
+```
+
+Notes:
+
+- This option applies only to the current `runner.Run(...)` call and does not change the agent's default configuration.
+- This option only applies to agents that read `RunOptions.CodeExecutor`. If you use a custom agent, make sure its implementation handles this run option.
+- If the agent was created with `llmagent.WithCodeExecutor(...)`, the executor passed here temporarily overrides that default for this run.
+- All capabilities that depend on a code executor use the executor passed here for this run, including `workspace_exec`, `skill_run`, and interactive skill session tools.
+- If you only need to provide an execution environment for `skill_run` and do not want Markdown fenced code blocks in model replies to auto-execute, set `llmagent.WithEnableCodeExecutionResponseProcessor(false)` when creating the agent. See [Skill](./skill.md) for more details.
 
 ### ✅ Detecting End-of-Run and Reading Final Output (Graph-friendly)
 

@@ -78,7 +78,21 @@ const (
 	// SkillLoadModeSession keeps loaded skill content available across
 	// invocations until cleared or the session expires.
 	SkillLoadModeSession = processor.SkillLoadModeSession
+
+	// SessionSummaryInjectionSystem injects the session summary as a system
+	// message (default behavior).
+	SessionSummaryInjectionSystem = processor.SessionSummaryInjectionSystem
+	// SessionSummaryInjectionUser injects the session summary as a user
+	// message that participates in token-budget trimming for sliding-window
+	// behavior. The processor prefers merging it into the first user
+	// history/current message and only falls back to a trailing prefix user
+	// message when needed.
+	SessionSummaryInjectionUser = processor.SessionSummaryInjectionUser
 )
+
+// SessionSummaryInjectionMode controls how the session summary is injected
+// into the model request.
+type SessionSummaryInjectionMode = processor.SessionSummaryInjectionMode
 
 // MessageFilterMode is the mode for filtering messages.
 type MessageFilterMode int
@@ -185,9 +199,6 @@ type Options struct {
 	ModelGlobalInstructions map[string]string
 	// GenerationConfig contains the generation configuration.
 	GenerationConfig model.GenerationConfig
-	// generationConfigConfigured records whether callers explicitly set
-	// generation configuration through WithGenerationConfig.
-	generationConfigConfigured bool
 	// ChannelBufferSize is the buffer size for event channels (default: 256).
 	ChannelBufferSize int
 	codeExecutor      codeexecutor.CodeExecutor
@@ -210,6 +221,8 @@ type Options struct {
 	ModelCallbacks *model.Callbacks
 	// ToolCallbacks contains callbacks for tool operations.
 	ToolCallbacks *tool.Callbacks
+	// ToolCallRetryPolicy configures retry behavior for callable tool calls.
+	ToolCallRetryPolicy *tool.RetryPolicy
 	// Knowledge is the knowledge base for the agent.
 	// If provided, the knowledge search tool will be automatically added.
 	Knowledge knowledge.Knowledge
@@ -249,6 +262,11 @@ type Options struct {
 	// AddSessionSummary controls whether to prepend the current branch summary
 	// as a system message when available (default: false).
 	AddSessionSummary bool
+	// SessionSummaryInjectionMode controls how the session summary is injected
+	// into the model request. Default is "system" (SessionSummaryInjectionSystem).
+	// Set to "user" (SessionSummaryInjectionUser) to inject as a user message
+	// that participates in token-budget trimming for sliding-window behavior.
+	SessionSummaryInjectionMode processor.SessionSummaryInjectionMode
 	// SyncSummaryIntraRun controls whether to refresh session summary
 	// synchronously between LLM loop iterations inside the same run.
 	// When false (default), summary refresh happens asynchronously and
@@ -550,7 +568,6 @@ func WithModelGlobalInstructions(prompts map[string]string) Option {
 func WithGenerationConfig(config model.GenerationConfig) Option {
 	return func(opts *Options) {
 		opts.GenerationConfig = config
-		opts.generationConfigConfigured = true
 	}
 }
 
@@ -829,6 +846,13 @@ func WithToolCallbacks(callbacks *tool.Callbacks) Option {
 	}
 }
 
+// WithToolCallRetryPolicy sets the retry policy for callable tool calls.
+func WithToolCallRetryPolicy(policy *tool.RetryPolicy) Option {
+	return func(opts *Options) {
+		opts.ToolCallRetryPolicy = policy
+	}
+}
+
 // WithKnowledge sets the knowledge base for the agent.
 // If provided, the knowledge search tool will be automatically added to the agent's tools.
 func WithKnowledge(kb knowledge.Knowledge) Option {
@@ -988,6 +1012,20 @@ func WithAddContextPrefix(addPrefix bool) Option {
 func WithAddSessionSummary(addSummary bool) Option {
 	return func(opts *Options) {
 		opts.AddSessionSummary = addSummary
+	}
+}
+
+// WithSessionSummaryInjectionMode sets the injection mode for session summaries.
+//
+// Available modes:
+//   - processor.SessionSummaryInjectionSystem (default): injects as system message.
+//   - processor.SessionSummaryInjectionUser: injects as a user message that
+//     participates in token-budget trimming for sliding-window behavior.
+//     If the first history message is also a user message, the summary is
+//     merged into it to avoid consecutive user messages.
+func WithSessionSummaryInjectionMode(mode processor.SessionSummaryInjectionMode) Option {
+	return func(opts *Options) {
+		opts.SessionSummaryInjectionMode = mode
 	}
 }
 
