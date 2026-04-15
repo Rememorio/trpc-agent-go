@@ -55,16 +55,17 @@ func TestBuildRequestProcessors_OnDemandSessionWiring(t *testing.T) {
 
 func TestLLMAgent_OnDemandSessionTools_StaticAndInvocationAware(t *testing.T) {
 	a := New("tester", WithEnableOnDemandSession(true))
-	require.NotNil(t, findTool(a.Tools(), "session_search"))
-	require.NotNil(t, findTool(a.Tools(), "session_load"))
+	require.Nil(t, findTool(a.Tools(), "session_search"))
+	require.Nil(t, findTool(a.Tools(), "session_load"))
 
 	unsupportedInv := &agent.Invocation{
 		Session:        session.NewSession("app", "user", "sess"),
 		SessionService: sessioninmemory.NewSessionService(),
 	}
-	tools, _ := a.InvocationToolSurface(context.Background(), unsupportedInv)
+	tools, userToolNames := a.InvocationToolSurface(context.Background(), unsupportedInv)
 	require.Nil(t, findTool(tools, "session_search"))
 	require.Nil(t, findTool(tools, "session_load"))
+	require.NotNil(t, userToolNames)
 
 	supportedInv := &agent.Invocation{
 		Session: session.NewSession("app", "user", "sess"),
@@ -72,7 +73,8 @@ func TestLLMAgent_OnDemandSessionTools_StaticAndInvocationAware(t *testing.T) {
 			Service: sessioninmemory.NewSessionService(),
 		},
 	}
-	tools, _ = a.InvocationToolSurface(context.Background(), supportedInv)
+	tools, userToolNames = a.InvocationToolSurface(context.Background(), supportedInv)
 	require.NotNil(t, findTool(tools, "session_search"))
 	require.NotNil(t, findTool(tools, "session_load"))
+	require.NotNil(t, userToolNames)
 }

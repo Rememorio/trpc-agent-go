@@ -912,10 +912,3 @@ func compactSnippetText(
 	}
 	return string(runes[:limit-3]) + "..."
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

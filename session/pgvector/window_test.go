@@ -64,7 +64,7 @@ func TestGetEventWindow_InvalidRequest(t *testing.T) {
 }
 
 func TestGetEventWindow_Success(t *testing.T) {
-	s, mock, db := newTestService(t, nil)
+	s, mock, db := newTestServiceWithSliceSupport(t, nil)
 	defer db.Close()
 
 	makeEventBytes := func(
@@ -90,37 +90,36 @@ func TestGetEventWindow_Success(t *testing.T) {
 		return b
 	}
 
-	makeToolEventBytes := func(id string) []byte {
-		evt := event.Event{
-			ID: id,
-			Response: &model.Response{
-				Choices: []model.Choice{
-					{
-						Message: model.Message{
-							Role:    model.RoleTool,
-							Content: "tool output",
-						},
-					},
-				},
-			},
-		}
-		b, err := json.Marshal(evt)
-		require.NoError(t, err)
-		return b
-	}
-
 	base := time.Date(2025, 4, 7, 9, 0, 0, 0, time.UTC)
-	rows := sqlmock.NewRows(
+	anchorRows := sqlmock.NewRows(
+		[]string{"id", "event", "created_at"},
+	).AddRow(
+		int64(22),
+		makeEventBytes("evt-2", model.RoleAssistant, "second"),
+		base.Add(2*time.Minute),
+	)
+	beforeRows := sqlmock.NewRows(
 		[]string{"event", "created_at"},
-	).
-		AddRow(makeEventBytes("evt-1", model.RoleUser, "first"), base).
-		AddRow(makeToolEventBytes("evt-tool"), base.Add(time.Minute)).
-		AddRow(makeEventBytes("evt-2", model.RoleAssistant, "second"), base.Add(2*time.Minute)).
-		AddRow(makeEventBytes("evt-3", model.RoleUser, "third"), base.Add(3*time.Minute))
+	).AddRow(
+		makeEventBytes("evt-1", model.RoleUser, "first"),
+		base,
+	)
+	afterRows := sqlmock.NewRows(
+		[]string{"event", "created_at"},
+	).AddRow(
+		makeEventBytes("evt-3", model.RoleUser, "third"),
+		base.Add(3*time.Minute),
+	)
 
+	mock.ExpectQuery(`SELECT se\.id, se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", "evt-2", []string{"user", "assistant"}).
+		WillReturnRows(anchorRows)
 	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
-		WithArgs("app", "user", "sess").
-		WillReturnRows(rows)
+		WithArgs("app", "user", "sess", base.Add(2*time.Minute), int64(22), []string{"user", "assistant"}).
+		WillReturnRows(beforeRows)
+	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", base.Add(2*time.Minute), int64(22), []string{"user", "assistant"}).
+		WillReturnRows(afterRows)
 
 	window, err := s.GetEventWindow(
 		context.Background(),
@@ -150,34 +149,18 @@ func TestGetEventWindow_Success(t *testing.T) {
 }
 
 func TestGetEventWindow_AnchorNotFound(t *testing.T) {
-	s, mock, db := newTestService(t, nil)
+	s, mock, db := newTestServiceWithSliceSupport(t, nil)
 	defer db.Close()
 
-	evt := event.Event{
-		ID: "evt-tool",
-		Response: &model.Response{
-			Choices: []model.Choice{
-				{
-					Message: model.Message{
-						Role:    model.RoleTool,
-						Content: "tool output",
-					},
-				},
-			},
-		},
-	}
-	evtBytes, err := json.Marshal(evt)
-	require.NoError(t, err)
-
 	rows := sqlmock.NewRows(
-		[]string{"event", "created_at"},
-	).AddRow(evtBytes, time.Date(2025, 4, 7, 9, 0, 0, 0, time.UTC))
+		[]string{"id", "event", "created_at"},
+	)
 
-	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
-		WithArgs("app", "user", "sess").
+	mock.ExpectQuery(`SELECT se\.id, se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", "evt-tool", []string{"user", "assistant"}).
 		WillReturnRows(rows)
 
-	_, err = s.GetEventWindow(
+	_, err := s.GetEventWindow(
 		context.Background(),
 		session.EventWindowRequest{
 			Key: session.Key{
@@ -200,7 +183,7 @@ func TestGetEventWindow_AnchorNotFound(t *testing.T) {
 }
 
 func TestGetEventWindow_IncludesToolResultsWhenRequested(t *testing.T) {
-	s, mock, db := newTestService(t, nil)
+	s, mock, db := newTestServiceWithSliceSupport(t, nil)
 	defer db.Close()
 
 	makeEventBytes := func(id string, role model.Role, content string) []byte {
@@ -240,14 +223,35 @@ func TestGetEventWindow_IncludesToolResultsWhenRequested(t *testing.T) {
 	}
 
 	base := time.Date(2025, 4, 7, 9, 0, 0, 0, time.UTC)
-	rows := sqlmock.NewRows([]string{"event", "created_at"}).
-		AddRow(makeEventBytes("evt-1", model.RoleUser, "first"), base).
-		AddRow(makeToolEventBytes("evt-tool"), base.Add(time.Minute)).
-		AddRow(makeEventBytes("evt-2", model.RoleAssistant, "second"), base.Add(2*time.Minute))
+	anchorRows := sqlmock.NewRows(
+		[]string{"id", "event", "created_at"},
+	).AddRow(
+		int64(11),
+		makeToolEventBytes("evt-tool"),
+		base.Add(time.Minute),
+	)
+	beforeRows := sqlmock.NewRows(
+		[]string{"event", "created_at"},
+	).AddRow(
+		makeEventBytes("evt-1", model.RoleUser, "first"),
+		base,
+	)
+	afterRows := sqlmock.NewRows(
+		[]string{"event", "created_at"},
+	).AddRow(
+		makeEventBytes("evt-2", model.RoleAssistant, "second"),
+		base.Add(2*time.Minute),
+	)
 
+	mock.ExpectQuery(`SELECT se\.id, se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", "evt-tool", []string{"user", "assistant", "tool"}).
+		WillReturnRows(anchorRows)
 	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
-		WithArgs("app", "user", "sess").
-		WillReturnRows(rows)
+		WithArgs("app", "user", "sess", base.Add(time.Minute), int64(11), []string{"user", "assistant", "tool"}).
+		WillReturnRows(beforeRows)
+	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", base.Add(time.Minute), int64(11), []string{"user", "assistant", "tool"}).
+		WillReturnRows(afterRows)
 
 	window, err := s.GetEventWindow(
 		context.Background(),
@@ -277,8 +281,8 @@ func TestGetEventWindow_QueryError(t *testing.T) {
 	s, mock, db := newTestService(t, nil)
 	defer db.Close()
 
-	mock.ExpectQuery(`SELECT se\.event, se\.created_at`).
-		WithArgs("app", "user", "sess").
+	mock.ExpectQuery(`SELECT se\.id, se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", "evt-1").
 		WillReturnError(assert.AnError)
 
 	_, err := s.GetEventWindow(
@@ -295,4 +299,40 @@ func TestGetEventWindow_QueryError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "load event window")
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestExtractWindowEventText_UsesContentParts(t *testing.T) {
+	text1 := "first"
+	text2 := "second"
+	text, role, ok := extractWindowEventText(&event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role: model.RoleAssistant,
+					ContentParts: []model.ContentPart{
+						{Text: &text1},
+						{Text: &text2},
+					},
+				},
+			}},
+		},
+	})
+	require.True(t, ok)
+	assert.Equal(t, model.RoleAssistant, role)
+	assert.Equal(t, "first\nsecond", text)
+}
+
+func TestExtractWindowEventText_RejectsPartialResponses(t *testing.T) {
+	_, _, ok := extractWindowEventText(&event.Event{
+		Response: &model.Response{
+			IsPartial: true,
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role:    model.RoleAssistant,
+					Content: "partial",
+				},
+			}},
+		},
+	})
+	assert.False(t, ok)
 }

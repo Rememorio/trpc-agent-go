@@ -568,7 +568,6 @@ func registerTools(options *Options) ([]tool.Tool, map[string]bool) {
 		nil,
 	)
 	allTools = appendSkillTools(allTools, options, runTool)
-	allTools = appendOnDemandSessionTools(allTools, options, nil)
 	return allTools, userToolNames
 }
 

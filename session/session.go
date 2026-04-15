@@ -799,10 +799,10 @@ type EventWindowRequest struct {
 	// AnchorEventID identifies the center event.
 	AnchorEventID string
 	// Before controls how many events before the anchor
-	// are included.
+	// are included. Negative values are rejected.
 	Before int
 	// After controls how many events after the anchor are
-	// included.
+	// included. Negative values are rejected.
 	After int
 	// Roles optionally restrict the window to specific
 	// message roles.
