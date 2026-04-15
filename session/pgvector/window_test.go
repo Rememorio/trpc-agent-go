@@ -336,3 +336,150 @@ func TestExtractWindowEventText_RejectsPartialResponses(t *testing.T) {
 	})
 	assert.False(t, ok)
 }
+
+func TestWindowHelpers(t *testing.T) {
+	filter := makeRoleFilter([]model.Role{"", " user ", model.RoleAssistant})
+	require.Len(t, filter, 2)
+	assert.Nil(t, makeRoleFilter(nil))
+	assert.Nil(t, makeRoleFilter([]model.Role{""}))
+
+	assert.True(t, eventAllowedInWindow(nil, nil))
+	assert.False(t, eventAllowedInWindow(&event.Event{}, filter))
+
+	entries := []session.EventWindowEntry{
+		{Event: event.Event{ID: "evt-1"}},
+		{Event: event.Event{ID: "evt-2"}},
+		{Event: event.Event{ID: "evt-3"}},
+	}
+	reverseWindowEntries(entries)
+	assert.Equal(t, []string{"evt-3", "evt-2", "evt-1"}, []string{
+		entries[0].Event.ID,
+		entries[1].Event.ID,
+		entries[2].Event.ID,
+	})
+}
+
+func TestDecodeWindowEntry_AndExtractWindowEventText_EdgeBranches(t *testing.T) {
+	_, ok, err := decodeWindowEntry([]byte("not-json"), time.Now(), nil)
+	require.Error(t, err)
+	assert.False(t, ok)
+
+	toolCallEvent := event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					ToolCalls: []model.ToolCall{{ID: "call-1", Type: "function"}},
+				},
+			}},
+		},
+	}
+	bytes, err := json.Marshal(toolCallEvent)
+	require.NoError(t, err)
+
+	_, ok, err = decodeWindowEntry(bytes, time.Now(), map[model.Role]struct{}{
+		model.RoleAssistant: {},
+	})
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	text, role, ok := extractWindowEventText(&event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Content: "assistant default role",
+				},
+			}},
+		},
+	})
+	require.True(t, ok)
+	assert.Equal(t, model.RoleAssistant, role)
+	assert.Equal(t, "assistant default role", text)
+
+	text, role, ok = extractWindowEventText(&event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role:     model.RoleTool,
+					ToolID:   "call-1",
+					ToolName: "db_query",
+					Content:  "row_count=42",
+				},
+			}},
+		},
+	})
+	require.True(t, ok)
+	assert.Equal(t, model.RoleTool, role)
+	assert.Equal(t, "db_query: row_count=42", text)
+
+	_, _, ok = extractWindowEventText(&event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role:    model.RoleSystem,
+					Content: "system message",
+				},
+			}},
+		},
+	})
+	assert.False(t, ok)
+
+	_, _, ok = extractWindowEventText(&event.Event{
+		Response: &model.Response{
+			Choices: []model.Choice{{
+				Message: model.Message{
+					Role: model.RoleAssistant,
+				},
+			}},
+		},
+	})
+	assert.False(t, ok)
+}
+
+func TestLoadWindowHelpers_EdgeBranches(t *testing.T) {
+	s, mock, db := newTestService(t, nil)
+	defer db.Close()
+
+	entries, err := s.loadWindowNeighbors(
+		context.Background(),
+		session.Key{
+			AppName:   "app",
+			UserID:    "user",
+			SessionID: "sess",
+		},
+		time.Now(),
+		12,
+		0,
+		nil,
+		nil,
+		true,
+	)
+	require.NoError(t, err)
+	assert.Nil(t, entries)
+
+	anchorRows := sqlmock.NewRows(
+		[]string{"id", "event", "created_at"},
+	).AddRow(
+		int64(22),
+		[]byte("not-json"),
+		time.Date(2025, 4, 7, 9, 0, 0, 0, time.UTC),
+	)
+
+	mock.ExpectQuery(`SELECT se\.id, se\.event, se\.created_at`).
+		WithArgs("app", "user", "sess", "evt-1").
+		WillReturnRows(anchorRows)
+
+	_, err = s.loadWindowAnchor(
+		context.Background(),
+		session.Key{
+			AppName:   "app",
+			UserID:    "user",
+			SessionID: "sess",
+		},
+		"evt-1",
+		nil,
+		nil,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal event window row")
+	require.NoError(t, mock.ExpectationsWereMet())
+}

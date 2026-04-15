@@ -15,9 +15,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/internal/flow"
 	"trpc.group/trpc-go/trpc-agent-go/internal/flow/processor"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 type onDemandSessionToolService struct {
@@ -77,4 +79,59 @@ func TestLLMAgent_OnDemandSessionTools_StaticAndInvocationAware(t *testing.T) {
 	require.NotNil(t, findTool(tools, "session_search"))
 	require.NotNil(t, findTool(tools, "session_load"))
 	require.NotNil(t, userToolNames)
+}
+
+func TestAppendOnDemandSessionProcessor(t *testing.T) {
+	requestProcessors := []flow.RequestProcessor{}
+
+	withoutFeature := appendOnDemandSessionProcessor(&Options{}, requestProcessors)
+	require.Len(t, withoutFeature, 0)
+
+	opts := &Options{}
+	WithEnableOnDemandSession(true)(opts)
+	withFeature := appendOnDemandSessionProcessor(opts, requestProcessors)
+	require.Len(t, withFeature, 1)
+	_, ok := withFeature[0].(*processor.OnDemandSessionRequestProcessor)
+	require.True(t, ok)
+}
+
+func TestAppendOnDemandSessionTools_Gating(t *testing.T) {
+	baseTools := []tool.Tool{}
+
+	require.Len(
+		t,
+		appendOnDemandSessionTools(baseTools, nil, nil),
+		0,
+	)
+
+	require.Len(
+		t,
+		appendOnDemandSessionTools(baseTools, &Options{}, nil),
+		0,
+	)
+
+	opts := &Options{}
+	WithEnableOnDemandSession(true)(opts)
+
+	staticTools := appendOnDemandSessionTools(baseTools, opts, nil)
+	require.NotNil(t, findTool(staticTools, "session_search"))
+	require.NotNil(t, findTool(staticTools, "session_load"))
+
+	unsupportedInv := &agent.Invocation{
+		Session:        session.NewSession("app", "user", "sess"),
+		SessionService: sessioninmemory.NewSessionService(),
+	}
+	unsupportedTools := appendOnDemandSessionTools(baseTools, opts, unsupportedInv)
+	require.Nil(t, findTool(unsupportedTools, "session_search"))
+	require.Nil(t, findTool(unsupportedTools, "session_load"))
+
+	supportedInv := &agent.Invocation{
+		Session: session.NewSession("app", "user", "sess"),
+		SessionService: &onDemandSessionToolService{
+			Service: sessioninmemory.NewSessionService(),
+		},
+	}
+	supportedTools := appendOnDemandSessionTools(baseTools, opts, supportedInv)
+	require.NotNil(t, findTool(supportedTools, "session_search"))
+	require.NotNil(t, findTool(supportedTools, "session_load"))
 }

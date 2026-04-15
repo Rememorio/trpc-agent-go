@@ -365,6 +365,21 @@ func TestSearchResultHelpers(t *testing.T) {
 		session.EventSearchResult{},
 		searchExpandedHits,
 	))
+
+	windowSvc.windowErr = assert.AnError
+	assert.Nil(t, searchResultWindow(
+		context.Background(),
+		windowSvc,
+		session.EventSearchResult{
+			SessionKey: session.Key{
+				AppName:   "app",
+				UserID:    "user",
+				SessionID: "sess",
+			},
+			Event: event.Event{ID: "evt-2"},
+		},
+		0,
+	))
 }
 
 func TestMergeSearchResultsAndLexicalScore(t *testing.T) {
@@ -746,6 +761,215 @@ func TestSearchCurrentSessionByScanAndAllSessions(t *testing.T) {
 			allResults[1].SessionKey.SessionID,
 		},
 	)
+}
+
+func TestSearchHelpers_EdgeBranches(t *testing.T) {
+	assert.Equal(t, session.SearchModeHybrid, normalizeSearchMode("invalid"))
+	assert.Equal(t, "current_hidden", normalizeScope(""))
+	assert.Equal(t, []string{"alpha", "beta"}, dedupeStrings([]string{"", "alpha", "beta", "alpha"}))
+	assert.Nil(t, dedupeStrings(nil))
+
+	before, after := normalizeWindowSize(-2, -3)
+	assert.Equal(t, defaultWindowBefore, before)
+	assert.Equal(t, defaultWindowAfter, after)
+
+	before, after = normalizeWindowSize(4, 4)
+	assert.Equal(t, 2, before)
+	assert.Equal(t, 2, after)
+
+	assert.Nil(t, searchQueries(""))
+	assert.Nil(t, fallbackSearchQueries("the and or"))
+	assert.NotEmpty(
+		t,
+		fallbackSearchQueries("alpha beta gamma delta epsilon zeta eta theta iota"),
+	)
+	assert.Empty(t, keywordSearchQuery("the and or"))
+	assert.Nil(t, keywordTokens("the and or"))
+
+	assert.Nil(t, lexicalScanSessionEvents(nil, session.Key{}, "alpha", time.Time{}, 1))
+	assert.Nil(t, lexicalScanSessionEvents(session.NewSession("app", "user", "sess"), session.Key{}, "", time.Time{}, 1))
+
+	assert.Zero(
+		t,
+		lexicalEventScore(
+			"alpha beta gamma",
+			[]string{"alpha", "beta", "gamma"},
+			"alpha only",
+		),
+	)
+
+	assert.Equal(t, "", compactSnippetText("abcdef", -1))
+	assert.Equal(t, "abc", compactSnippetText("abcdef", 3))
+	assert.Equal(t, "", windowSnippet(nil))
+	assert.Equal(t, "", windowSnippet(&session.EventWindow{}))
+}
+
+func TestSearchSessionHistory_AndScanErrorBranches(t *testing.T) {
+	summaryUpdatedAt := time.Date(2025, 4, 7, 11, 0, 0, 0, time.UTC)
+	sess := session.NewSession(
+		"app",
+		"user",
+		"sess",
+		session.WithSessionSummaries(map[string]*session.Summary{
+			"": {Summary: "summary", UpdatedAt: summaryUpdatedAt},
+		}),
+	)
+	sess.SetState(
+		summaryLastIncludedTsKey,
+		[]byte(summaryUpdatedAt.Add(-time.Minute).Format(time.RFC3339Nano)),
+	)
+
+	svc := &mockSessionService{
+		Service: sessioninmemory.NewSessionService(),
+		searchFunc: func(
+			req session.EventSearchRequest,
+		) ([]session.EventSearchResult, error) {
+			switch {
+			case len(req.SessionIDs) > 0:
+				return []session.EventSearchResult{{
+					SessionKey: session.Key{SessionID: req.SessionIDs[0]},
+					Event:      event.Event{ID: "evt-current"},
+					Score:      0.9,
+				}}, nil
+			case len(req.ExcludeSessionIDs) > 0:
+				return []session.EventSearchResult{{
+					SessionKey: session.Key{SessionID: "evt-other-sess"},
+					Event:      event.Event{ID: "evt-other"},
+					Score:      0.8,
+				}}, nil
+			default:
+				return nil, assert.AnError
+			}
+		},
+	}
+	inv := agent.NewInvocation(
+		agent.WithInvocationSession(sess),
+		agent.WithInvocationSessionService(svc),
+	)
+
+	results, err := searchSessionHistory(
+		context.Background(),
+		svc,
+		inv,
+		ScopeCurrentSession,
+		&SearchSessionRequest{Query: "alpha"},
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "evt-current", results[0].Event.ID)
+
+	results, err = searchSessionHistory(
+		context.Background(),
+		svc,
+		inv,
+		ScopeOtherSessions,
+		&SearchSessionRequest{Query: "alpha"},
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "evt-other", results[0].Event.ID)
+
+	results, err = searchSessionHistory(
+		context.Background(),
+		svc,
+		inv,
+		ScopeAllSessions,
+		&SearchSessionRequest{Query: "alpha", TopK: 2},
+	)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+
+	_, err = searchAllSessions(
+		context.Background(),
+		svc,
+		agent.NewInvocation(
+			agent.WithInvocationSession(session.NewSession("", "user", "sess")),
+		),
+		&SearchSessionRequest{Query: "alpha"},
+	)
+	require.Error(t, err)
+
+	_, err = searchCurrentSession(
+		context.Background(),
+		svc,
+		nil,
+		&SearchSessionRequest{Query: "alpha"},
+	)
+	require.Error(t, err)
+
+	_, err = searchCurrentSessionScan(
+		context.Background(),
+		&agent.Invocation{
+			Session: session.NewSession("", "user", "sess"),
+			SessionService: &mockSessionService{
+				Service: sessioninmemory.NewSessionService(),
+			},
+		},
+		&SearchSessionRequest{Query: "alpha"},
+		time.Time{},
+	)
+	require.Error(t, err)
+
+	_, err = searchCurrentSessionScan(
+		context.Background(),
+		&agent.Invocation{
+			Session: session.NewSession("app", "user", "sess"),
+			SessionService: &mockSessionService{
+				Service: sessioninmemory.NewSessionService(),
+				getSessionFunc: func(
+					session.Key,
+					...session.Option,
+				) (*session.Session, error) {
+					return nil, assert.AnError
+				},
+			},
+		},
+		&SearchSessionRequest{Query: "alpha"},
+		time.Time{},
+	)
+	require.Error(t, err)
+
+	results, err = searchCurrentSessionScan(
+		context.Background(),
+		&agent.Invocation{
+			Session: session.NewSession("app", "user", "sess"),
+			SessionService: &mockSessionService{
+				Service: sessioninmemory.NewSessionService(),
+				getSessionFunc: func(
+					session.Key,
+					...session.Option,
+				) (*session.Session, error) {
+					return nil, nil
+				},
+			},
+		},
+		&SearchSessionRequest{Query: "alpha"},
+		time.Time{},
+	)
+	require.NoError(t, err)
+	assert.Nil(t, results)
+}
+
+func TestNewSearchAndLoadTool_NilPayloads(t *testing.T) {
+	inv := &agent.Invocation{
+		Session: session.NewSession("app", "user", "sess"),
+		SessionService: &mockSessionService{
+			Service: sessioninmemory.NewSessionService(),
+			window:  &session.EventWindow{},
+		},
+	}
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	searchResult, err := NewSearchTool().Call(ctx, []byte("null"))
+	require.NoError(t, err)
+	searchResp, ok := searchResult.(*SearchSessionResponse)
+	require.True(t, ok)
+	assert.Empty(t, searchResp.Query)
+	assert.Empty(t, searchResp.Results)
+
+	_, err = NewLoadTool().Call(ctx, []byte("null"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event_id is required")
 }
 
 func TestLoadTool_ErrorPaths(t *testing.T) {
