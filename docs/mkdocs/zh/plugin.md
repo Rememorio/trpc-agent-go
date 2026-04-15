@@ -851,3 +851,158 @@ defer runnerInstance.Close()
 可运行的完整示例（包含一个自定义策略插件）见：
 
 - `examples/plugin`
+
+## HTTP 诊断中间件（httpdiag）
+
+### 概述
+
+`plugin/httpdiag` 提供了一组 **SDK 无关的 HTTP 中间件**，用于调试 LLM SDK 的底层
+HTTP 交互。它可以帮助你：
+
+- 检测 200 OK 响应中隐藏的错误字段（某些 OpenAI 兼容代理的常见问题）
+- 记录请求/响应元数据和完整 Body
+- 编写自定义拦截逻辑
+
+这些中间件通过轻量级适配器函数接入 OpenAI、Anthropic 等 SDK，只需一行代码即可启用。
+
+### 安装
+
+```go
+import "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+```
+
+### 内建中间件
+
+| 中间件 | 说明 |
+|--------|------|
+| `ErrorResponseMiddleware()` | 检测 200 OK 响应中的 `"error"` 字段，改写状态码为 400 让 SDK 正确触发错误处理 |
+| `RequestLoggingMiddleware()` | 记录每个请求的 HTTP 方法、URL 和响应状态码 |
+| `RequestBodyLoggingMiddleware()` | 记录完整请求 Body（JSON 美化输出），注意可能包含敏感信息 |
+| `ResponseBodyLoggingMiddleware()` | 记录完整非流式响应 Body，自动跳过 `text/event-stream` 流式响应 |
+
+### 日志输出
+
+所有诊断信息通过框架的 `log.Logger` 以 **Debug 级别**输出，默认使用
+`log.Default`。
+
+如果你希望这些日志继续走框架默认日志通道，需要打开全局 Debug 级别：
+
+```go
+log.SetLevel("debug")
+```
+
+如果你**只想看 `httpdiag` 的诊断日志，不想混入框架其他 Debug 日志**，
+更推荐通过 `httpdiag.SetLogger()` 注入专属 logger：
+
+```go
+httpdiag.SetLogger(myCustomLogger)
+```
+
+### 中间件链
+
+多个中间件可以用 `Chain` 组合，也可以直接传给适配器函数（内部自动组合）：
+
+```go
+// 手动组合
+chained := httpdiag.Chain(
+    httpdiag.RequestLoggingMiddleware(),
+    httpdiag.ErrorResponseMiddleware(),
+)
+
+// 或直接传给适配器（推荐，效果一样）
+opts := httpdiag.OpenAIMiddleware(
+    httpdiag.RequestLoggingMiddleware(),
+    httpdiag.ErrorResponseMiddleware(),
+)
+```
+
+### 接入 OpenAI SDK
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model/openai"
+    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+)
+
+llm := openai.New("gpt-4o",
+    openai.WithOpenAIOptions(
+        httpdiag.OpenAIMiddleware(
+            httpdiag.RequestLoggingMiddleware(),
+            httpdiag.ErrorResponseMiddleware(),
+        )...,
+    ),
+)
+```
+
+### 接入 Anthropic SDK
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model/anthropic"
+    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+)
+
+llm := anthropic.New("claude-sonnet-4-0",
+    anthropic.WithAnthropicClientOptions(
+        httpdiag.AnthropicMiddleware(
+            httpdiag.RequestLoggingMiddleware(),
+            httpdiag.ErrorResponseMiddleware(),
+        )...,
+    ),
+)
+```
+
+### 自定义中间件
+
+`httpdiag.Middleware` 类型与 OpenAI / Anthropic SDK 的中间件签名完全一致：
+
+```go
+type Middleware func(req *http.Request, next MiddlewareNext) (*http.Response, error)
+```
+
+你可以编写自己的中间件，然后与内建中间件混合使用：
+
+```go
+addDebugHeader := func(req *http.Request, next httpdiag.MiddlewareNext) (*http.Response, error) {
+    req.Header.Set("X-Debug", "true")
+    return next(req)
+}
+
+llm := openai.New("gpt-4o",
+    openai.WithOpenAIOptions(
+        httpdiag.OpenAIMiddleware(
+            addDebugHeader,
+            httpdiag.RequestLoggingMiddleware(),
+            httpdiag.ErrorResponseMiddleware(),
+        )...,
+    ),
+)
+```
+
+### ErrorResponseMiddleware 详解
+
+某些 OpenAI 兼容代理（如部分私有化部署的网关）会在 HTTP 200 OK 响应的 JSON Body
+中嵌入错误字段，例如：
+
+```json
+{
+  "error": {
+    "message": "rate limit exceeded",
+    "type": "rate_limit_error"
+  }
+}
+```
+
+SDK 默认只根据 HTTP 状态码判断是否出错，因此不会触发重试或错误处理。
+`ErrorResponseMiddleware` 会：
+
+1. 仅拦截 `200 OK` 的非流式响应
+2. 尝试 JSON 解析响应 Body
+3. 如果发现 `"error"` 字段非 null，则将响应状态码改写为 `400 Bad Request`
+4. 这样 SDK 的重试和错误处理逻辑就能正常生效
+
+### 完整示例
+
+可运行的完整示例见：
+
+- `examples/httpdiag`

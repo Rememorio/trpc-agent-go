@@ -10,6 +10,7 @@ replace (
 	trpc.group/trpc-go/trpc-agent-go/model/gemini => ../model/gemini
 	trpc.group/trpc-go/trpc-agent-go/model/ollama => ../model/ollama
 	trpc.group/trpc-go/trpc-agent-go/model/provider => ../model/provider
+	trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag => ../plugin/httpdiag
 	trpc.group/trpc-go/trpc-agent-go/tool/openapi => ../tool/openapi
 	trpc.group/trpc-go/trpc-agent-go/tool/wikipedia => ../tool/wikipedia
 )
@@ -23,9 +24,10 @@ require (
 	go.opentelemetry.io/otel/metric v1.38.0
 	go.opentelemetry.io/otel/trace v1.38.0
 	trpc.group/trpc-go/trpc-a2a-go v0.2.5
-	trpc.group/trpc-go/trpc-agent-go v0.8.0
+	trpc.group/trpc-go/trpc-agent-go v1.8.1
 	trpc.group/trpc-go/trpc-agent-go/codeexecutor/jupyter v1.1.2-0.20260108033914-7a20241f1ad5
 	trpc.group/trpc-go/trpc-agent-go/evaluation v1.1.2-0.20260108033914-7a20241f1ad5
+	trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag v0.0.0
 	trpc.group/trpc-go/trpc-agent-go/tool/openapi v1.1.2-0.20260108033914-7a20241f1ad5
 	trpc.group/trpc-go/trpc-agent-go/tool/wikipedia v1.1.2-0.20260108033914-7a20241f1ad5
 	trpc.group/trpc-go/trpc-mcp-go v0.0.10

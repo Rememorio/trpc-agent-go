@@ -841,3 +841,164 @@ If you allocate resources (files, background goroutines, buffers), implement
 For a complete, runnable example (including a custom policy plugin), see:
 
 - `examples/plugin`
+
+## HTTP Diagnostic Middlewares (httpdiag)
+
+### Overview
+
+`plugin/httpdiag` provides **SDK-agnostic HTTP middlewares** for debugging
+the raw HTTP interactions between your agent and LLM providers. It helps you:
+
+- Detect hidden error fields in 200 OK responses (common with some
+  OpenAI-compatible proxies)
+- Log request/response metadata and full bodies
+- Write custom interception logic
+
+These middlewares plug into the OpenAI and Anthropic Go SDKs via thin adapter
+functions — a single line of code is all you need.
+
+### Installation
+
+```go
+import "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+```
+
+### Built-in Middlewares
+
+| Middleware | Description |
+|------------|-------------|
+| `ErrorResponseMiddleware()` | Detects `"error"` fields in 200 OK responses and rewrites the status to 400 so the SDK's error handling kicks in |
+| `RequestLoggingMiddleware()` | Logs HTTP method, URL, and response status code for every request |
+| `RequestBodyLoggingMiddleware()` | Logs the full request body (JSON pretty-printed). May contain sensitive data |
+| `ResponseBodyLoggingMiddleware()` | Logs full non-streaming response body. Automatically skips `text/event-stream` |
+
+### Log Output
+
+All diagnostic messages are logged at **Debug level** through the framework's
+`log.Logger`, defaulting to `log.Default`.
+
+If you want those messages to flow through the framework's default logger, you
+need to enable the global Debug level:
+
+```go
+log.SetLevel("debug")
+```
+
+If you **only want `httpdiag` diagnostics without enabling every framework
+Debug log**, it is usually better to inject a dedicated logger:
+
+```go
+httpdiag.SetLogger(myCustomLogger)
+```
+
+### Chaining
+
+Multiple middlewares can be combined with `Chain`, or simply passed to the
+adapter function (which chains internally):
+
+```go
+// Explicit chain
+chained := httpdiag.Chain(
+    httpdiag.RequestLoggingMiddleware(),
+    httpdiag.ErrorResponseMiddleware(),
+)
+
+// Or pass directly to adapter (recommended, same effect)
+opts := httpdiag.OpenAIMiddleware(
+    httpdiag.RequestLoggingMiddleware(),
+    httpdiag.ErrorResponseMiddleware(),
+)
+```
+
+### OpenAI SDK Integration
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model/openai"
+    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+)
+
+llm := openai.New("gpt-4o",
+    openai.WithOpenAIOptions(
+        httpdiag.OpenAIMiddleware(
+            httpdiag.RequestLoggingMiddleware(),
+            httpdiag.ErrorResponseMiddleware(),
+        )...,
+    ),
+)
+```
+
+### Anthropic SDK Integration
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model/anthropic"
+    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+)
+
+llm := anthropic.New("claude-sonnet-4-0",
+    anthropic.WithAnthropicClientOptions(
+        httpdiag.AnthropicMiddleware(
+            httpdiag.RequestLoggingMiddleware(),
+            httpdiag.ErrorResponseMiddleware(),
+        )...,
+    ),
+)
+```
+
+### Custom Middlewares
+
+The `httpdiag.Middleware` type matches the signature used by both the OpenAI
+and Anthropic SDKs:
+
+```go
+type Middleware func(req *http.Request, next MiddlewareNext) (*http.Response, error)
+```
+
+Write your own and mix with the built-ins:
+
+```go
+addDebugHeader := func(req *http.Request, next httpdiag.MiddlewareNext) (*http.Response, error) {
+    req.Header.Set("X-Debug", "true")
+    return next(req)
+}
+
+llm := openai.New("gpt-4o",
+    openai.WithOpenAIOptions(
+        httpdiag.OpenAIMiddleware(
+            addDebugHeader,
+            httpdiag.RequestLoggingMiddleware(),
+            httpdiag.ErrorResponseMiddleware(),
+        )...,
+    ),
+)
+```
+
+### ErrorResponseMiddleware in Detail
+
+Some OpenAI-compatible proxies (e.g. certain private deployment gateways)
+return HTTP 200 OK with an error embedded in the JSON body:
+
+```json
+{
+  "error": {
+    "message": "rate limit exceeded",
+    "type": "rate_limit_error"
+  }
+}
+```
+
+SDKs typically rely on the HTTP status code to detect errors, so these
+"hidden errors" slip through silently. `ErrorResponseMiddleware` will:
+
+1. Only intercept `200 OK` non-streaming responses
+2. Attempt to JSON-parse the response body
+3. If an `"error"` field is present and non-null, rewrite the status to
+   `400 Bad Request`
+4. This allows the SDK's built-in retry and error handling to work correctly
+
+### Full Example
+
+For a complete, runnable example, see:
+
+- `examples/httpdiag`
