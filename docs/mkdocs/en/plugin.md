@@ -842,20 +842,21 @@ For a complete, runnable example (including a custom policy plugin), see:
 
 - `examples/plugin`
 
-## HTTP Diagnostic Middlewares (httpdiag)
+## HTTP Diagnostic Plugin (httpdiag)
 
 ### Overview
 
-`plugin/httpdiag` provides **SDK-agnostic HTTP middlewares** for debugging
-the raw HTTP interactions between your agent and LLM providers. It helps you:
+`plugin/httpdiag` provides a real Runner plugin for debugging the raw HTTP
+interactions between your agent and supported LLM providers. It helps you:
 
+- Log request metadata and raw JSON request bodies
+- Log response metadata and raw JSON response bodies
 - Detect hidden error fields in 200 OK responses (common with some
-  OpenAI-compatible proxies)
-- Log request/response metadata and full bodies
-- Write custom interception logic
+  OpenAI-compatible proxies) and rewrite them to 400
 
-These middlewares plug into the OpenAI and Anthropic Go SDKs via thin adapter
-functions — a single line of code is all you need.
+The plugin supports OpenAI and Anthropic models. It installs provider SDK
+middleware **per request** in `BeforeModel`, so you do not need to wire SDK
+middleware at model construction time.
 
 ### Installation
 
@@ -863,14 +864,14 @@ functions — a single line of code is all you need.
 import "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
 ```
 
-### Built-in Middlewares
+### Options
 
-| Middleware | Description |
-|------------|-------------|
-| `ErrorResponseMiddleware()` | Detects `"error"` fields in 200 OK responses and rewrites the status to 400 so the SDK's error handling kicks in |
-| `RequestLoggingMiddleware()` | Logs HTTP method, URL, and response status code for every request |
-| `RequestBodyLoggingMiddleware()` | Logs the full request body (JSON pretty-printed). May contain sensitive data |
-| `ResponseBodyLoggingMiddleware()` | Logs full non-streaming response body. Automatically skips `text/event-stream` |
+| Option | Description |
+|--------|-------------|
+| `httpdiag.WithRequestBody()` | Logs the raw request body (JSON pretty-printed when possible) |
+| `httpdiag.WithResponseBody()` | Logs raw non-streaming response bodies |
+| `httpdiag.WithRewrite200Error()` | Rewrites `200 OK` JSON responses whose top-level `"error"` field is non-null to `400 Bad Request` |
+| `httpdiag.WithName(name)` | Overrides the plugin name registered on the Runner |
 
 ### Log Output
 
@@ -891,111 +892,51 @@ Debug log**, it is usually better to inject a dedicated logger:
 httpdiag.SetLogger(myCustomLogger)
 ```
 
-### Chaining
-
-Multiple middlewares can be combined with `Chain`, or simply passed to the
-adapter function (which chains internally):
+### Register on a Runner
 
 ```go
-// Explicit chain
-chained := httpdiag.Chain(
-    httpdiag.RequestLoggingMiddleware(),
-    httpdiag.ErrorResponseMiddleware(),
+import (
+    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
-// Or pass directly to adapter (recommended, same effect)
-opts := httpdiag.OpenAIMiddleware(
-    httpdiag.RequestLoggingMiddleware(),
-    httpdiag.ErrorResponseMiddleware(),
+runnerInstance := runner.NewRunner(
+    "my-app",
+    agentInstance,
+    runner.WithPlugins(
+        httpdiag.New(
+            httpdiag.WithRequestBody(),
+            httpdiag.WithResponseBody(),
+            httpdiag.WithRewrite200Error(),
+        ),
+    ),
 )
+defer runnerInstance.Close()
 ```
 
-### OpenAI SDK Integration
+### Model Construction Stays Clean
+
+No extra SDK middleware wiring is needed when you create the model:
 
 ```go
 import (
     "trpc.group/trpc-go/trpc-agent-go/model/openai"
-    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
 )
 
-llm := openai.New("gpt-4o",
-    openai.WithOpenAIOptions(
-        httpdiag.OpenAIMiddleware(
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
-    ),
-)
+llm := openai.New("gpt-4o")
 ```
 
-### Anthropic SDK Integration
+### How It Works
 
-```go
-import (
-    "trpc.group/trpc-go/trpc-agent-go/model/anthropic"
-    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
-)
-
-llm := anthropic.New("claude-sonnet-4-0",
-    anthropic.WithAnthropicClientOptions(
-        httpdiag.AnthropicMiddleware(
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
-    ),
-)
-```
-
-### Custom Middlewares
-
-The `httpdiag.Middleware` type matches the signature used by both the OpenAI
-and Anthropic SDKs:
-
-```go
-type Middleware func(req *http.Request, next MiddlewareNext) (*http.Response, error)
-```
-
-Write your own and mix with the built-ins:
-
-```go
-addDebugHeader := func(req *http.Request, next httpdiag.MiddlewareNext) (*http.Response, error) {
-    req.Header.Set("X-Debug", "true")
-    return next(req)
-}
-
-llm := openai.New("gpt-4o",
-    openai.WithOpenAIOptions(
-        httpdiag.OpenAIMiddleware(
-            addDebugHeader,
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
-    ),
-)
-```
-
-### ErrorResponseMiddleware in Detail
-
-Some OpenAI-compatible proxies (e.g. certain private deployment gateways)
-return HTTP 200 OK with an error embedded in the JSON body:
-
-```json
-{
-  "error": {
-    "message": "rate limit exceeded",
-    "type": "rate_limit_error"
-  }
-}
-```
-
-SDKs typically rely on the HTTP status code to detect errors, so these
-"hidden errors" slip through silently. `ErrorResponseMiddleware` will:
-
-1. Only intercept `200 OK` non-streaming responses
-2. Attempt to JSON-parse the response body
-3. If an `"error"` field is present and non-null, rewrite the status to
-   `400 Bad Request`
-4. This allows the SDK's built-in retry and error handling to work correctly
+1. The plugin runs in `BeforeModel`.
+2. It inspects `agent.InvocationFromContext(ctx)` to detect the concrete model
+   type.
+3. For supported models, it injects provider-specific SDK request options into
+   the current request context.
+4. The OpenAI / Anthropic model adapters read those per-request options from
+   context and append them to the current SDK call.
+5. The injected SDK middleware logs the raw HTTP request / response payloads and
+   optionally rewrites hidden `200-with-error` responses.
 
 ### Full Example
 

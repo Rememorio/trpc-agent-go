@@ -4,9 +4,14 @@ This example runs an interactive multi-turn chat with **all model HTTP
 request/response bodies printed by default**, so you can see exactly what goes
 over the wire between your agent and the LLM provider.
 
+Unlike the earlier middleware-only design, this example enables `httpdiag` as a
+real Runner plugin. The plugin injects SDK middleware per model call, so you do
+not need to wire provider-specific middleware when constructing the model.
+
 ## What It Does
 
 - Starts a multi-turn conversational loop (like `examples/runner`)
+- Registers `runner.WithPlugins(httpdiag.New(...))`
 - Every HTTP request sent to the model API is logged (method, URL, full body)
 - Every HTTP response received is logged (status, full body)
 - 200-OK-with-hidden-error responses are automatically rewritten to 400
@@ -47,8 +52,8 @@ export OPENAI_API_KEY="your-api-key"
 go run .
 ```
 
-The example injects a dedicated logger via `httpdiag.SetLogger(...)`, so you see
-HTTP diagnostics without turning on the framework's global debug logs.
+The example injects a dedicated logger via `httpdiag.SetLogger(...)`, so you
+see HTTP diagnostics without turning on the framework's global debug logs.
 
 ### Quiet mode (metadata only, no bodies):
 
@@ -116,10 +121,10 @@ httpdiag: request body:
 
 ## How It Works
 
-1. Builds a chain of `httpdiag.Middleware` functions based on CLI flags
-2. Converts them to OpenAI SDK options via `httpdiag.OpenAIMiddleware(...)`
-3. Passes the options to `openai.WithOpenAIOptions(...)` when creating the model
-4. Every HTTP round-trip is intercepted and logged by the middleware chain
+1. Builds `httpdiag.New(...)` plugin options based on CLI flags
+2. Registers the plugin via `runner.WithPlugins(...)`
+3. Before each model call, the plugin injects per-request SDK middleware using context
+4. Every HTTP round-trip is intercepted and logged by that injected middleware
 
 ### Using with Anthropic
 
@@ -127,21 +132,26 @@ httpdiag: request body:
 import (
     "trpc.group/trpc-go/trpc-agent-go/model/anthropic"
     "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
-llm := anthropic.New("claude-sonnet-4-0",
-    anthropic.WithAnthropicClientOptions(
-        httpdiag.AnthropicMiddleware(
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.RequestBodyLoggingMiddleware(),
-            httpdiag.ResponseBodyLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
+llm := anthropic.New("claude-sonnet-4-0")
+
+runnerInstance := runner.NewRunner(
+    "my-app",
+    agentInstance,
+    runner.WithPlugins(
+        httpdiag.New(
+            httpdiag.WithRequestBody(),
+            httpdiag.WithResponseBody(),
+            httpdiag.WithRewrite200Error(),
+        ),
     ),
 )
+defer runnerInstance.Close()
 ```
 
 ## Files
 
-- `main.go` — Interactive chat loop + Runner setup with httpdiag middlewares
+- `main.go` — Interactive chat loop + Runner setup with the httpdiag plugin
 - `tools.go` — Calculator and current_time tool implementations

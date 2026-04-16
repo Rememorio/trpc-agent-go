@@ -9,225 +9,143 @@
 package httpdiag
 
 import (
-	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
+	"trpc.group/trpc-go/trpc-agent-go/model"
+	anthropicmodel "trpc.group/trpc-go/trpc-agent-go/model/anthropic"
+	openaimodel "trpc.group/trpc-go/trpc-agent-go/model/openai"
 )
 
-// helper: build a simple *http.Request for testing.
-func newTestRequest(t *testing.T) *http.Request {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "https://api.example.com/v1/chat/completions", nil)
-	return req
+type recordingLogger struct {
+	mu      sync.Mutex
+	entries []string
 }
 
-// helper: build a mock next that returns a given response.
-func mockNext(resp *http.Response, err error) MiddlewareNext {
-	return func(r *http.Request) (*http.Response, error) {
-		return resp, err
-	}
+func (l *recordingLogger) add(s string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, s)
 }
 
-// helper: build a 200 response with the given JSON body.
-func jsonResponse(body string) *http.Response {
-	return &http.Response{
-		Status:     "200 OK",
-		StatusCode: http.StatusOK,
-		Proto:      "HTTP/1.1",
-		ProtoMajor: 1,
-		ProtoMinor: 1,
-		Header: http.Header{
-			"Content-Type": []string{"application/json"},
-		},
-		Body:          io.NopCloser(strings.NewReader(body)),
-		ContentLength: int64(len(body)),
-	}
+func (l *recordingLogger) joined() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.entries, "\n")
 }
 
-func TestErrorResponseMiddleware_NormalResponse(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	body := `{"id":"chatcmpl-123","choices":[]}`
-	resp, err := mw(newTestRequest(t), mockNext(jsonResponse(body), nil))
+func (l *recordingLogger) Debug(args ...any)                 { l.add(fmt.Sprint(args...)) }
+func (l *recordingLogger) Debugf(format string, args ...any) { l.add(fmt.Sprintf(format, args...)) }
+func (l *recordingLogger) Info(args ...any)                  {}
+func (l *recordingLogger) Infof(string, ...any)              {}
+func (l *recordingLogger) Warn(args ...any)                  {}
+func (l *recordingLogger) Warnf(string, ...any)              {}
+func (l *recordingLogger) Error(args ...any)                 {}
+func (l *recordingLogger) Errorf(string, ...any)             {}
+func (l *recordingLogger) Fatal(args ...any)                 {}
+func (l *recordingLogger) Fatalf(string, ...any)             {}
+
+func TestBeforeModel_OpenAIInjectsRequestOptions(t *testing.T) {
+	p := New().(*Plugin)
+	ctx := agent.NewInvocationContext(
+		context.Background(),
+		agent.NewInvocation(
+			agent.WithInvocationModel(openaimodel.New("gpt-test")),
+		),
+	)
+
+	result, err := p.beforeModel(ctx, &model.BeforeModelArgs{Request: &model.Request{}})
 	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	// Body should still be readable.
-	got, _ := io.ReadAll(resp.Body)
-	assert.JSONEq(t, body, string(got))
+	require.NotNil(t, result)
+	assert.Len(t, openaimodel.RequestOptionsFromContext(result.Context), 1)
+	assert.Len(t, openaimodel.RequestOptionsFromContext(ctx), 0)
 }
 
-func TestErrorResponseMiddleware_WithErrorField(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	body := `{"error":{"message":"rate limit","type":"rate_limit_error"}}`
-	resp, err := mw(newTestRequest(t), mockNext(jsonResponse(body), nil))
+func TestBeforeModel_AnthropicInjectsRequestOptions(t *testing.T) {
+	p := New().(*Plugin)
+	ctx := agent.NewInvocationContext(
+		context.Background(),
+		agent.NewInvocation(
+			agent.WithInvocationModel(anthropicmodel.New("claude-test")),
+		),
+	)
+
+	result, err := p.beforeModel(ctx, &model.BeforeModelArgs{Request: &model.Request{}})
 	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Len(t, anthropicmodel.RequestOptionsFromContext(result.Context), 1)
+	assert.Len(t, anthropicmodel.RequestOptionsFromContext(ctx), 0)
+}
+
+func TestOpenAIMiddleware_LogsBodiesAndRewrites200Error(t *testing.T) {
+	rec := &recordingLogger{}
+	prev := logger
+	SetLogger(rec)
+	t.Cleanup(func() { SetLogger(prev) })
+
+	p := New(WithRequestBody(), WithResponseBody(), WithRewrite200Error()).(*Plugin)
+	req := httptest.NewRequest(http.MethodPost, "https://api.example.com/v1/chat/completions", strings.NewReader(`{"model":"gpt-test"}`))
+	resp, err := p.openAIMiddleware()(req, func(r *http.Request) (*http.Response, error) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"application/json"},
+			},
+			Body: io.NopCloser(strings.NewReader(`{"error":{"message":"rate limit"}}`)),
+		}, nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
+	assert.JSONEq(t, `{"error":{"message":"rate limit"}}`, string(body))
 
-	got, _ := io.ReadAll(resp.Body)
-	assert.JSONEq(t, body, string(got))
+	logs := rec.joined()
+	assert.Contains(t, logs, "httpdiag: -> POST https://api.example.com/v1/chat/completions")
+	assert.Contains(t, logs, `"model": "gpt-test"`)
+	assert.Contains(t, logs, "200-with-error detected")
+	assert.Contains(t, logs, "response body (status=400)")
 }
 
-func TestErrorResponseMiddleware_ErrorFieldNull(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	body := `{"error":null,"data":"ok"}`
-	resp, err := mw(newTestRequest(t), mockNext(jsonResponse(body), nil))
+func TestAnthropicMiddleware_SkipsStreamingBody(t *testing.T) {
+	rec := &recordingLogger{}
+	prev := logger
+	SetLogger(rec)
+	t.Cleanup(func() { SetLogger(prev) })
+
+	p := New(WithResponseBody()).(*Plugin)
+	req := httptest.NewRequest(http.MethodPost, "https://api.example.com/v1/messages", nil)
+	streamBody := "data: {\"type\":\"message_start\"}\n\n"
+	resp, err := p.anthropicMiddleware()(req, func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			Status:     "200 OK",
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": []string{"text/event-stream"},
+			},
+			Body: io.NopCloser(strings.NewReader(streamBody)),
+		}, nil
+	})
 	require.NoError(t, err)
-	// error is null -> should not rewrite status.
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotNil(t, resp)
+	body, readErr := io.ReadAll(resp.Body)
+	require.NoError(t, readErr)
+	assert.Equal(t, streamBody, string(body))
+	assert.NotContains(t, rec.joined(), "response body")
 }
 
-func TestErrorResponseMiddleware_NonJSON(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	body := `<html>not json</html>`
-	resp, err := mw(newTestRequest(t), mockNext(jsonResponse(body), nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestErrorResponseMiddleware_StreamingSkipped(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header: http.Header{
-			"Content-Type": []string{"text/event-stream"},
-		},
-		Body: io.NopCloser(strings.NewReader(`data: {"error":"oh no"}`)),
-	}
-	out, err := mw(newTestRequest(t), mockNext(resp, nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, out.StatusCode)
-}
-
-func TestErrorResponseMiddleware_Non200(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	resp := &http.Response{
-		StatusCode: http.StatusInternalServerError,
-		Header:     http.Header{},
-		Body:       io.NopCloser(strings.NewReader(`{"error":"server down"}`)),
-	}
-	out, err := mw(newTestRequest(t), mockNext(resp, nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusInternalServerError, out.StatusCode)
-}
-
-func TestErrorResponseMiddleware_NextError(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	_, err := mw(newTestRequest(t), mockNext(nil, io.ErrUnexpectedEOF))
-	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
-}
-
-func TestErrorResponseMiddleware_NilResponse(t *testing.T) {
-	mw := ErrorResponseMiddleware()
-	resp, err := mw(newTestRequest(t), mockNext(nil, nil))
-	require.NoError(t, err)
-	assert.Nil(t, resp)
-}
-
-func TestChain_Empty(t *testing.T) {
-	chained := Chain()
-	body := `{"ok":true}`
-	resp, err := chained(newTestRequest(t), mockNext(jsonResponse(body), nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestChain_Ordering(t *testing.T) {
-	var order []string
-
-	mw1 := func(req *http.Request, next MiddlewareNext) (*http.Response, error) {
-		order = append(order, "mw1-before")
-		resp, err := next(req)
-		order = append(order, "mw1-after")
-		return resp, err
-	}
-	mw2 := func(req *http.Request, next MiddlewareNext) (*http.Response, error) {
-		order = append(order, "mw2-before")
-		resp, err := next(req)
-		order = append(order, "mw2-after")
-		return resp, err
-	}
-
-	chained := Chain(mw1, mw2)
-	body := `{"ok":true}`
-	_, err := chained(newTestRequest(t), mockNext(jsonResponse(body), nil))
-	require.NoError(t, err)
-
-	// mw1 wraps mw2: mw1-before -> mw2-before -> next -> mw2-after -> mw1-after
-	expected := []string{"mw1-before", "mw2-before", "mw2-after", "mw1-after"}
-	assert.Equal(t, expected, order)
-}
-
-func TestRequestLoggingMiddleware(t *testing.T) {
-	mw := RequestLoggingMiddleware()
-	body := `{"ok":true}`
-	resp, err := mw(newTestRequest(t), mockNext(jsonResponse(body), nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestRequestBodyLoggingMiddleware(t *testing.T) {
-	mw := RequestBodyLoggingMiddleware()
-	reqBody := `{"messages":[{"role":"user","content":"hi"}]}`
-	req := httptest.NewRequest(http.MethodPost, "https://api.example.com/v1/chat/completions",
-		bytes.NewReader([]byte(reqBody)))
-	resp, err := mw(req, mockNext(jsonResponse(`{"ok":true}`), nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-func TestResponseBodyLoggingMiddleware(t *testing.T) {
-	mw := ResponseBodyLoggingMiddleware()
-	body := `{"choices":[{"message":{"content":"hello"}}]}`
-	resp, err := mw(newTestRequest(t), mockNext(jsonResponse(body), nil))
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	// Body should still be readable after logging.
-	got, _ := io.ReadAll(resp.Body)
-	assert.JSONEq(t, body, string(got))
-}
-
-func TestResponseBodyLoggingMiddleware_StreamSkipped(t *testing.T) {
-	mw := ResponseBodyLoggingMiddleware()
-	streamBody := `data: {"chunk":1}`
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header: http.Header{
-			"Content-Type": []string{"text/event-stream"},
-		},
-		Body: io.NopCloser(strings.NewReader(streamBody)),
-	}
-	out, err := mw(newTestRequest(t), mockNext(resp, nil))
-	require.NoError(t, err)
-	// Body should not have been consumed.
-	got, _ := io.ReadAll(out.Body)
-	assert.Equal(t, streamBody, string(got))
-}
-
-func TestPrettyJSON_Valid(t *testing.T) {
-	got := prettyJSON([]byte(`{"a":1,"b":2}`))
-	assert.Contains(t, got, "\n")
-}
-
-func TestPrettyJSON_Invalid(t *testing.T) {
-	got := prettyJSON([]byte(`not json`))
-	assert.Equal(t, "not json", got)
-}
-
-func TestChain_Single(t *testing.T) {
-	called := false
-	mw := func(req *http.Request, next MiddlewareNext) (*http.Response, error) {
-		called = true
-		return next(req)
-	}
-	chained := Chain(mw)
-	_, err := chained(newTestRequest(t), mockNext(jsonResponse(`{}`), nil))
-	require.NoError(t, err)
-	assert.True(t, called)
+func TestPrettyJSON_InvalidFallsBackToRawString(t *testing.T) {
+	assert.Equal(t, "not json", prettyJSON([]byte("not json")))
 }

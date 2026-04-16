@@ -180,6 +180,10 @@ func (m *Model) GenerateContent(
 	if err != nil {
 		return nil, fmt.Errorf("build chat request: %w", err)
 	}
+	opts := append(
+		append([]option.RequestOption(nil), m.anthropicRequestOptions...),
+		RequestOptionsFromContext(ctx)...,
+	)
 	// Execute callback synchronously before starting the goroutine
 	// to avoid a race where the runner and HTTP handler finish
 	// (closing the SSE writer) while the callback is still running.
@@ -189,10 +193,10 @@ func (m *Model) GenerateContent(
 	go func() {
 		defer close(responseChan)
 		if request.Stream {
-			m.handleStreamingResponse(ctx, *chatRequest, responseChan)
+			m.handleStreamingResponse(ctx, *chatRequest, responseChan, opts...)
 			return
 		}
-		m.handleNonStreamingResponse(ctx, *chatRequest, responseChan)
+		m.handleNonStreamingResponse(ctx, *chatRequest, responseChan, opts...)
 	}()
 	return responseChan, nil
 }
@@ -434,9 +438,10 @@ func (m *Model) handleNonStreamingResponse(
 	ctx context.Context,
 	chatRequest anthropic.MessageNewParams,
 	responseChan chan<- *model.Response,
+	opts ...option.RequestOption,
 ) {
 	// Issue non-streaming request.
-	message, err := m.client.Messages.New(ctx, chatRequest, m.anthropicRequestOptions...)
+	message, err := m.client.Messages.New(ctx, chatRequest, opts...)
 	if err != nil {
 		m.sendErrorResponse(ctx, responseChan, model.ErrorTypeAPIError, err)
 		return
@@ -490,9 +495,10 @@ func (m *Model) handleStreamingResponse(
 	ctx context.Context,
 	chatRequest anthropic.MessageNewParams,
 	responseChan chan<- *model.Response,
+	opts ...option.RequestOption,
 ) {
 	// Issue streaming request.
-	stream := m.client.Messages.NewStreaming(ctx, chatRequest, m.anthropicRequestOptions...)
+	stream := m.client.Messages.NewStreaming(ctx, chatRequest, opts...)
 	defer stream.Close()
 	// Accumulator to build final response.
 	acc := anthropic.Message{}

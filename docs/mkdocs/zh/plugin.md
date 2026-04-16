@@ -852,18 +852,20 @@ defer runnerInstance.Close()
 
 - `examples/plugin`
 
-## HTTP 诊断中间件（httpdiag）
+## HTTP 诊断插件（httpdiag）
 
 ### 概述
 
-`plugin/httpdiag` 提供了一组 **SDK 无关的 HTTP 中间件**，用于调试 LLM SDK 的底层
-HTTP 交互。它可以帮助你：
+`plugin/httpdiag` 提供了一个真正的 Runner 插件，用于调试 Agent 与受支持
+LLM Provider 之间的底层 HTTP 交互。它可以帮助你：
 
-- 检测 200 OK 响应中隐藏的错误字段（某些 OpenAI 兼容代理的常见问题）
-- 记录请求/响应元数据和完整 Body
-- 编写自定义拦截逻辑
+- 记录请求元数据与原始 JSON 请求体
+- 记录响应元数据与原始 JSON 响应体
+- 检测 200 OK 响应中隐藏的错误字段（某些 OpenAI 兼容代理的常见问题），并改写为 400
 
-这些中间件通过轻量级适配器函数接入 OpenAI、Anthropic 等 SDK，只需一行代码即可启用。
+该插件当前支持 OpenAI 与 Anthropic 模型。它会在 `BeforeModel` 阶段按
+**单次请求** 注入 provider SDK middleware，因此你不需要在创建模型时手工拼装
+SDK middleware。
 
 ### 安装
 
@@ -871,14 +873,14 @@ HTTP 交互。它可以帮助你：
 import "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
 ```
 
-### 内建中间件
+### 可用选项
 
-| 中间件 | 说明 |
-|--------|------|
-| `ErrorResponseMiddleware()` | 检测 200 OK 响应中的 `"error"` 字段，改写状态码为 400 让 SDK 正确触发错误处理 |
-| `RequestLoggingMiddleware()` | 记录每个请求的 HTTP 方法、URL 和响应状态码 |
-| `RequestBodyLoggingMiddleware()` | 记录完整请求 Body（JSON 美化输出），注意可能包含敏感信息 |
-| `ResponseBodyLoggingMiddleware()` | 记录完整非流式响应 Body，自动跳过 `text/event-stream` 流式响应 |
+| 选项 | 说明 |
+|------|------|
+| `httpdiag.WithRequestBody()` | 记录原始请求 Body（可能会做 JSON 美化） |
+| `httpdiag.WithResponseBody()` | 记录原始非流式响应 Body |
+| `httpdiag.WithRewrite200Error()` | 若 `200 OK` 的 JSON 响应顶层 `"error"` 字段非空，则改写为 `400 Bad Request` |
+| `httpdiag.WithName(name)` | 覆盖注册到 Runner 时使用的插件名 |
 
 ### 日志输出
 
@@ -898,108 +900,47 @@ log.SetLevel("debug")
 httpdiag.SetLogger(myCustomLogger)
 ```
 
-### 中间件链
-
-多个中间件可以用 `Chain` 组合，也可以直接传给适配器函数（内部自动组合）：
+### 注册到 Runner
 
 ```go
-// 手动组合
-chained := httpdiag.Chain(
-    httpdiag.RequestLoggingMiddleware(),
-    httpdiag.ErrorResponseMiddleware(),
+import (
+    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
+    "trpc.group/trpc-go/trpc-agent-go/runner"
 )
 
-// 或直接传给适配器（推荐，效果一样）
-opts := httpdiag.OpenAIMiddleware(
-    httpdiag.RequestLoggingMiddleware(),
-    httpdiag.ErrorResponseMiddleware(),
+runnerInstance := runner.NewRunner(
+    "my-app",
+    agentInstance,
+    runner.WithPlugins(
+        httpdiag.New(
+            httpdiag.WithRequestBody(),
+            httpdiag.WithResponseBody(),
+            httpdiag.WithRewrite200Error(),
+        ),
+    ),
 )
+defer runnerInstance.Close()
 ```
 
-### 接入 OpenAI SDK
+### 模型构造保持干净
+
+创建模型时不需要额外手工接 SDK middleware：
 
 ```go
 import (
     "trpc.group/trpc-go/trpc-agent-go/model/openai"
-    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
 )
 
-llm := openai.New("gpt-4o",
-    openai.WithOpenAIOptions(
-        httpdiag.OpenAIMiddleware(
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
-    ),
-)
+llm := openai.New("gpt-4o")
 ```
 
-### 接入 Anthropic SDK
+### 工作原理
 
-```go
-import (
-    "trpc.group/trpc-go/trpc-agent-go/model/anthropic"
-    "trpc.group/trpc-go/trpc-agent-go/plugin/httpdiag"
-)
-
-llm := anthropic.New("claude-sonnet-4-0",
-    anthropic.WithAnthropicClientOptions(
-        httpdiag.AnthropicMiddleware(
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
-    ),
-)
-```
-
-### 自定义中间件
-
-`httpdiag.Middleware` 类型与 OpenAI / Anthropic SDK 的中间件签名完全一致：
-
-```go
-type Middleware func(req *http.Request, next MiddlewareNext) (*http.Response, error)
-```
-
-你可以编写自己的中间件，然后与内建中间件混合使用：
-
-```go
-addDebugHeader := func(req *http.Request, next httpdiag.MiddlewareNext) (*http.Response, error) {
-    req.Header.Set("X-Debug", "true")
-    return next(req)
-}
-
-llm := openai.New("gpt-4o",
-    openai.WithOpenAIOptions(
-        httpdiag.OpenAIMiddleware(
-            addDebugHeader,
-            httpdiag.RequestLoggingMiddleware(),
-            httpdiag.ErrorResponseMiddleware(),
-        )...,
-    ),
-)
-```
-
-### ErrorResponseMiddleware 详解
-
-某些 OpenAI 兼容代理（如部分私有化部署的网关）会在 HTTP 200 OK 响应的 JSON Body
-中嵌入错误字段，例如：
-
-```json
-{
-  "error": {
-    "message": "rate limit exceeded",
-    "type": "rate_limit_error"
-  }
-}
-```
-
-SDK 默认只根据 HTTP 状态码判断是否出错，因此不会触发重试或错误处理。
-`ErrorResponseMiddleware` 会：
-
-1. 仅拦截 `200 OK` 的非流式响应
-2. 尝试 JSON 解析响应 Body
-3. 如果发现 `"error"` 字段非 null，则将响应状态码改写为 `400 Bad Request`
-4. 这样 SDK 的重试和错误处理逻辑就能正常生效
+1. 插件在 `BeforeModel` 阶段运行。
+2. 它通过 `agent.InvocationFromContext(ctx)` 判断当前模型的具体类型。
+3. 对受支持模型，插件会把 provider-specific SDK request option 注入到当前请求的 context 中。
+4. OpenAI / Anthropic 模型适配器会从 context 里读取这些 per-request options，并追加到当前 SDK 调用。
+5. 被注入的 SDK middleware 会打印原始 HTTP 请求 / 响应 payload，并可选改写隐藏的 `200-with-error` 响应。
 
 ### 完整示例
 

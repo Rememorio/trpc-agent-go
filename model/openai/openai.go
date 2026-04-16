@@ -428,6 +428,7 @@ func (m *Model) prepareChatRequest(
 	// Apply token tailoring if configured.
 	m.applyTokenTailoring(ctx, request)
 	chatRequest, opts := m.buildChatRequest(request)
+	opts = append(opts, RequestOptionsFromContext(ctx)...)
 	return chatRequest, opts, nil
 }
 

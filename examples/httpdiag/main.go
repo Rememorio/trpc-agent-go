@@ -6,9 +6,9 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-// Package main demonstrates an interactive multi-turn chat with httpdiag
-// middlewares enabled. All model HTTP request/response bodies are printed
-// by default so you can see exactly what goes over the wire.
+// Package main demonstrates an interactive multi-turn chat with the httpdiag
+// Runner plugin enabled. Raw model HTTP request/response bodies are printed by
+// SDK middleware injected by the plugin just before each model call.
 //
 // Usage:
 //
@@ -163,28 +163,23 @@ func (c *multiTurnChat) run() error {
 	return c.startChat(ctx)
 }
 
-// setup builds the runner with a model, httpdiag middlewares, tools, and
-// the in-memory session store.
+// setup builds the runner with a model, the httpdiag plugin, tools, and the
+// in-memory session store.
 func (c *multiTurnChat) setup(_ context.Context) error {
-	// Build httpdiag middleware chain based on flags.
-	var mws []httpdiag.Middleware
-	mws = append(mws, httpdiag.RequestLoggingMiddleware())
+	var pluginOpts []httpdiag.Option
 	if *errorRewrite {
-		mws = append(mws, httpdiag.ErrorResponseMiddleware())
+		pluginOpts = append(pluginOpts, httpdiag.WithRewrite200Error())
 	}
 	if *logReqBody {
-		mws = append(mws, httpdiag.RequestBodyLoggingMiddleware())
+		pluginOpts = append(pluginOpts, httpdiag.WithRequestBody())
 	}
 	if *logRespBody {
-		mws = append(mws, httpdiag.ResponseBodyLoggingMiddleware())
+		pluginOpts = append(pluginOpts, httpdiag.WithResponseBody())
 	}
 
 	modelInstance := openai.New(
 		c.modelName,
 		openai.WithVariant(openai.Variant(c.variant)),
-		openai.WithOpenAIOptions(
-			httpdiag.OpenAIMiddleware(mws...)...,
-		),
 	)
 
 	sessionService := sessioninmemory.NewSessionService()
@@ -219,6 +214,7 @@ func (c *multiTurnChat) setup(_ context.Context) error {
 		appName,
 		llmAgent,
 		runner.WithSessionService(sessionService),
+		runner.WithPlugins(httpdiag.New(pluginOpts...)),
 	)
 
 	c.userID = "demo-user"
