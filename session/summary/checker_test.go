@@ -112,7 +112,7 @@ func TestCheckEventThreshold(t *testing.T) {
 
 	t.Run("sub-agent events excluded from count", func(t *testing.T) {
 		// Full-session scenario: 1 primary + 5 sub-agent events.
-		// Mixed FilterKeys → only primary counted. 1 > 2 = false.
+		// Only primary activity counts toward the full-session threshold.
 		const appName = "my-app"
 		checker := CheckEventThreshold(2)
 		events := []event.Event{
@@ -131,47 +131,61 @@ func TestCheckEventThreshold(t *testing.T) {
 		assert.False(t, checker(sess))
 	})
 
-	t.Run("branch summary counts all events in branch", func(t *testing.T) {
-		// Branch-summary scenario: computeDeltaSince already
-		// pre-filtered to one sub-agent branch. All events share
-		// the same FilterKey, so they are all counted.
+	t.Run("full-session ignores child-only activity", func(t *testing.T) {
 		const appName = "my-app"
+		checker := CheckEventThreshold(0)
+		sess := &session.Session{
+			AppName: appName,
+			Events: []event.Event{
+				{Timestamp: time.Now(), FilterKey: "my-app/sub-agent"},
+			},
+		}
+		assert.False(t, checker(sess))
+	})
+
+	t.Run("branch summary counts scoped branch events", func(t *testing.T) {
+		const (
+			appName = "my-app"
+			branch  = "my-app/sub-agent"
+		)
 		checker := CheckEventThreshold(2)
 		events := make([]event.Event, 5)
 		for i := range events {
 			events[i] = event.Event{
 				Timestamp: time.Now(),
-				FilterKey: "sub-agent-abc",
+				FilterKey: branch,
 			}
 		}
 		sess := &session.Session{
 			AppName: appName,
 			Events:  events,
 		}
-		// Single FilterKey → no filtering → 5 > 2 = true.
+		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 
-	t.Run("prepended summary event does not break branch detection", func(t *testing.T) {
+	t.Run("prepended summary event is preserved in scoped branch checks", func(t *testing.T) {
 		// prependPrevSummary inserts a synthetic event with
-		// FilterKey="" at the head of the event list. This empty
-		// FilterKey must not cause filterPrimaryEvents to treat
-		// the set as "mixed" and discard all sub-agent events.
-		const appName = "my-app"
+		// FilterKey="" at the head of the event list. Scoped branch
+		// checks must keep that synthetic context while still counting
+		// only the branch subtree.
+		const (
+			appName = "my-app"
+			branch  = "my-app/sub-agent"
+		)
 		checker := CheckEventThreshold(2)
 		events := []event.Event{
 			// Synthetic summary event (FilterKey="").
 			{Timestamp: time.Now(), FilterKey: ""},
-			{Timestamp: time.Now(), FilterKey: "sub-agent-abc"},
-			{Timestamp: time.Now(), FilterKey: "sub-agent-abc"},
-			{Timestamp: time.Now(), FilterKey: "sub-agent-abc"},
+			{Timestamp: time.Now(), FilterKey: branch},
+			{Timestamp: time.Now(), FilterKey: branch},
+			{Timestamp: time.Now(), FilterKey: branch},
 		}
 		sess := &session.Session{
 			AppName: appName,
 			Events:  events,
 		}
-		// Empty FilterKey is ignored in mixed detection → single
-		// non-empty key "sub-agent-abc" → 4 > 2 = true.
+		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 
@@ -274,6 +288,19 @@ func TestCheckTimeThreshold_BranchScopeUsesScopedLastEvent(t *testing.T) {
 
 	isummaryscope.SetScopeFilterKey(sess, branch)
 	assert.True(t, checker(sess))
+}
+
+func TestCheckTimeThreshold_FullSessionUsesLastSessionEvent(t *testing.T) {
+	checker := CheckTimeThreshold(time.Hour)
+	sess := &session.Session{
+		AppName: "my-app",
+		Events: []event.Event{
+			{Timestamp: time.Now().Add(-2 * time.Hour), FilterKey: "my-app"},
+			{Timestamp: time.Now().Add(-10 * time.Minute), FilterKey: "my-app/sub-agent"},
+		},
+	}
+
+	assert.False(t, checker(sess))
 }
 
 func TestCheckTokenThreshold(t *testing.T) {
@@ -419,10 +446,10 @@ func TestCheckTokenThreshold(t *testing.T) {
 		assert.False(t, checker(sess))
 	})
 
-	t.Run("only sub-agent events yields false", func(t *testing.T) {
+	t.Run("mixed root and sub-agent events stay below threshold when root text is small", func(t *testing.T) {
 		// Full-session scenario: primary event below threshold,
-		// sub-agent event above threshold. Mixed FilterKeys trigger
-		// filtering, so only the small primary event is counted.
+		// sub-agent event above threshold. Only the primary activity
+		// should count toward the full-session threshold.
 		const appName = "my-app"
 		checker := CheckTokenThreshold(100)
 		sess := &session.Session{
@@ -451,11 +478,7 @@ func TestCheckTokenThreshold(t *testing.T) {
 		assert.False(t, checker(sess))
 	})
 
-	t.Run("branch summary counts all events in branch", func(t *testing.T) {
-		// Branch-summary scenario: computeDeltaSince already
-		// pre-filtered events to one sub-agent branch. All events
-		// share the same FilterKey, so filterPrimaryEvents should
-		// NOT discard them even though they differ from AppName.
+	t.Run("child-only text does not trigger full-session token threshold", func(t *testing.T) {
 		const appName = "my-app"
 		checker := CheckTokenThreshold(10)
 		sess := &session.Session{
@@ -463,7 +486,7 @@ func TestCheckTokenThreshold(t *testing.T) {
 			Events: []event.Event{
 				{
 					Author:    "assistant",
-					FilterKey: "child-agent-xyz",
+					FilterKey: "my-app/sub-agent",
 					Timestamp: time.Now(),
 					Response: &model.Response{Choices: []model.Choice{{
 						Message: model.Message{
@@ -473,16 +496,42 @@ func TestCheckTokenThreshold(t *testing.T) {
 				},
 			},
 		}
-		// Single FilterKey → no filtering → triggers.
+		assert.False(t, checker(sess))
+	})
+
+	t.Run("branch summary counts scoped branch text", func(t *testing.T) {
+		const (
+			appName = "my-app"
+			branch  = "my-app/sub-agent"
+		)
+		checker := CheckTokenThreshold(10)
+		sess := &session.Session{
+			AppName: appName,
+			Events: []event.Event{
+				{
+					Author:    "assistant",
+					FilterKey: branch,
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{
+							Content: strings.Repeat("a", 800),
+						},
+					}}},
+				},
+			},
+		}
+		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 
-	t.Run("prepended summary event does not break branch detection", func(t *testing.T) {
+	t.Run("prepended summary event is preserved in scoped branch token checks", func(t *testing.T) {
 		// prependPrevSummary inserts a synthetic event with
-		// FilterKey="" at the head. This must not cause
-		// filterPrimaryEvents to treat the set as "mixed" and
-		// discard all sub-agent events.
-		const appName = "my-app"
+		// FilterKey="" at the head. Scoped branch checks should keep
+		// that synthetic context while still measuring the branch text.
+		const (
+			appName = "my-app"
+			branch  = "my-app/sub-agent"
+		)
 		checker := CheckTokenThreshold(10)
 		sess := &session.Session{
 			AppName: appName,
@@ -497,7 +546,7 @@ func TestCheckTokenThreshold(t *testing.T) {
 				},
 				{
 					Author:    "assistant",
-					FilterKey: "child-agent-xyz",
+					FilterKey: branch,
 					Timestamp: time.Now(),
 					Response: &model.Response{Choices: []model.Choice{{
 						Message: model.Message{
@@ -507,8 +556,7 @@ func TestCheckTokenThreshold(t *testing.T) {
 				},
 			},
 		}
-		// Empty FilterKey ignored in mixed detection → single
-		// non-empty key → triggers.
+		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 

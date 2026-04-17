@@ -191,6 +191,49 @@ func TestSessionSummarizer_Summarize(t *testing.T) {
 		assert.Contains(t, text, "descendant message")
 	})
 
+	t.Run("full-session summary keeps child branch content", func(t *testing.T) {
+		s := NewSummarizer(
+			&fakeModel{},
+			WithPrompt("Conversation:\n{conversation_text}\n\nSummary:"),
+		)
+		sess := &session.Session{
+			ID:      "full-session-mixed",
+			AppName: "app",
+			Events: []event.Event{
+				{
+					Author:    "user",
+					FilterKey: "app",
+					Timestamp: time.Now().Add(-3 * time.Second),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "root message"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: "app/sub",
+					Timestamp: time.Now().Add(-2 * time.Second),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "child message"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: "app/sub/tool",
+					Timestamp: time.Now().Add(-1 * time.Second),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "descendant message"},
+					}}},
+				},
+			},
+		}
+
+		text, err := s.Summarize(context.Background(), sess)
+		require.NoError(t, err)
+		assert.Contains(t, text, "root message")
+		assert.Contains(t, text, "child message")
+		assert.Contains(t, text, "descendant message")
+	})
+
 }
 
 func TestSessionSummarizer_Metadata(t *testing.T) {
