@@ -859,11 +859,25 @@ type Service interface {
 	Close() error
 }
 
+// IngestOptions captures configurable knobs for Ingestor.IngestSession.
+// Fields can be added without changing the Ingestor interface signature, so
+// implementations stay forward compatible as ingestion semantics evolve.
+type IngestOptions struct{}
+
+// IngestOption configures a single ingestion request. Functional options are
+// reserved for forward compatibility; today no options are exported, but the
+// interface accepts them so future toggles (for example, force re-ingest or
+// per-request filters) can be added without breaking existing implementations.
+type IngestOption func(*IngestOptions)
+
 // Ingestor ingests a completed session transcript into an external
 // long-term memory platform (e.g. mem0). Implementations enqueue the session
 // for asynchronous ingestion; the runner calls this after each turn completes.
+//
+// IngestSession accepts variadic IngestOption values so the contract can
+// evolve without breaking existing implementations.
 type Ingestor interface {
-	IngestSession(ctx context.Context, sess *Session) error
+	IngestSession(ctx context.Context, sess *Session, opts ...IngestOption) error
 }
 
 // Key is the key for a session.

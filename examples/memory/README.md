@@ -82,7 +82,7 @@ stored memories through read-only tools.
 
 **Key Features:**
 
-- Session ingestion via `runner.WithIngestor(...)`
+- Session ingestion via `runner.WithSessionIngestor(...)`
 - Read-only `memory_search` and optional `memory_load` tools
 - No local LLM extractor needed — mem0 handles extraction natively
 

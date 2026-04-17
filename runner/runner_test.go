@@ -2006,12 +2006,12 @@ func TestWithMemoryService(t *testing.T) {
 	})
 }
 
-func TestWithIngestor(t *testing.T) {
+func TestWithSessionIngestor(t *testing.T) {
 	t.Run("sets ingestor in options", func(t *testing.T) {
 		ingestor := &mockIngestor{}
 		opts := &Options{}
 
-		option := WithIngestor(ingestor)
+		option := WithSessionIngestor(ingestor)
 		option(opts)
 
 		assert.Equal(t, ingestor, opts.ingestor, "Ingestor should be set in options")
@@ -2020,7 +2020,7 @@ func TestWithIngestor(t *testing.T) {
 	t.Run("sets nil ingestor", func(t *testing.T) {
 		opts := &Options{}
 
-		option := WithIngestor(nil)
+		option := WithSessionIngestor(nil)
 		option(opts)
 
 		assert.Nil(t, opts.ingestor, "Ingestor should be nil")

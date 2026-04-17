@@ -70,7 +70,7 @@ func main() {
 		*appName,
 		chatAgent,
 		runner.WithSessionService(sessioninmemory.NewSessionService()),
-		runner.WithIngestor(mem0Svc),
+		runner.WithSessionIngestor(mem0Svc),
 	)
 	defer r.Close()
 

@@ -89,9 +89,15 @@ func WithMemoryService(service memory.Service) Option {
 	}
 }
 
-// WithIngestor sets the session ingestor that receives completed session
-// transcripts for ingestion into an external long-term memory platform.
-func WithIngestor(ingestor session.Ingestor) Option {
+// WithSessionIngestor sets the session ingestor that receives completed
+// session transcripts for ingestion into an external long-term memory
+// platform.
+//
+// The name is intentionally scoped to "Session" because today the contract
+// only operates on completed session transcripts. Keeping the option name
+// specific leaves room for additional ingestor flavours (e.g. event-level
+// or user-level) without overloading a single option.
+func WithSessionIngestor(ingestor session.Ingestor) Option {
 	return func(opts *Options) {
 		opts.ingestor = ingestor
 	}

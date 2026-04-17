@@ -11,7 +11,7 @@ tools to the agent.
 The integration works in two parts:
 
 1. **Session ingestion** — After each conversation turn the Runner sends the
-   new session transcript to mem0 via `runner.WithIngestor(...)`. Mem0
+   new session transcript to mem0 via `runner.WithSessionIngestor(...)`. Mem0
    analyses the raw messages and decides what to remember on its own.
 2. **Read-only tools** — The agent can search and load memories through
    `memory_search` and (optionally) `memory_load`. Write tools such as
@@ -141,7 +141,7 @@ r := runner.NewRunner(
     "my-app",
     agent,
     runner.WithSessionService(sessionSvc),
-    runner.WithIngestor(mem0Svc), // session.Ingestor
+    runner.WithSessionIngestor(mem0Svc), // session.Ingestor
 )
 defer r.Close()
 ```
@@ -150,8 +150,8 @@ Key points:
 
 - `mem0Svc.Tools()` returns `memory_search` and optionally `memory_load`
   (enable with `memorymem0.WithLoadToolEnabled(true)`).
-- `runner.WithIngestor(mem0Svc)` hooks the mem0 service into the runner's
-  post-turn lifecycle via the `session.Ingestor` interface.
+- `runner.WithSessionIngestor(mem0Svc)` hooks the mem0 service into the
+  runner's post-turn lifecycle via the `session.Ingestor` interface.
 - Mem0 performs its own extraction with `infer: true` — no local LLM
   extractor is needed.
 

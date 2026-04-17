@@ -767,7 +767,7 @@ For externally hosted memory platforms/services such as mem0, prefer an **ingest
 Recommendations:
 
 - Place the package under `memory/mem0/` for better discoverability within the memory domain.
-- Let Runner hand the completed session transcript to the platform after each turn via `runner.WithIngestor(...)`.
+- Let Runner hand the completed session transcript to the platform after each turn via `runner.WithSessionIngestor(...)`.
 - Expose only the platform capabilities that naturally fit agent usage. For mem0, that typically means read-only tools such as `memory_search` and optional `memory_load`.
 - Keep platform-specific ingestion, polling, authentication and retry logic inside `memory/mem0` rather than spreading it across core memory abstractions.
 
@@ -793,7 +793,7 @@ r := runner.NewRunner(
     appName,
     ag,
     runner.WithSessionService(sessionSvc),
-    runner.WithIngestor(mem0Svc),
+    runner.WithSessionIngestor(mem0Svc),
 )
 ```
 

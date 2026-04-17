@@ -53,7 +53,16 @@ func (s *Service) Tools() []tool.Tool {
 }
 
 // IngestSession enqueues session transcript ingestion into mem0.
-func (s *Service) IngestSession(ctx context.Context, sess *session.Session) error {
+//
+// The opts arguments are reserved for forward compatibility on the
+// session.Ingestor contract. The mem0 implementation does not consume any
+// per-request options today, but accepts them so callers can pass future
+// toggles without breaking the interface.
+func (s *Service) IngestSession(
+	ctx context.Context,
+	sess *session.Session,
+	_ ...session.IngestOption,
+) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
