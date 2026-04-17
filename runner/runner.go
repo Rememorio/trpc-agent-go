@@ -26,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/trace"
 	"trpc.group/trpc-go/trpc-agent-go/artifact"
 	"trpc.group/trpc-go/trpc-agent-go/event"
+	"trpc.group/trpc-go/trpc-agent-go/evolution"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/appender"
 	"trpc.group/trpc-go/trpc-agent-go/internal/state/barrier"
@@ -93,6 +94,15 @@ func WithMemoryService(service memory.Service) Option {
 func WithArtifactService(service artifact.Service) Option {
 	return func(opts *Options) {
 		opts.artifactService = service
+	}
+}
+
+// WithEvolutionService sets the evolution service that reviews
+// completed sessions and extracts reusable skills.
+// The runner closes the service when Runner.Close is called.
+func WithEvolutionService(service evolution.Service) Option {
+	return func(opts *Options) {
+		opts.evolutionService = service
 	}
 }
 
@@ -200,6 +210,7 @@ type runner struct {
 	sessionService   session.Service
 	memoryService    memory.Service
 	artifactService  artifact.Service
+	evolutionService evolution.Service
 	pluginManager    agent.PluginManager
 	ralphLoop        *RalphLoopConfig
 
@@ -221,13 +232,14 @@ type runHandle struct {
 
 // Options is the options for the Runner.
 type Options struct {
-	sessionService  session.Service
-	memoryService   memory.Service
-	artifactService artifact.Service
-	agents          map[string]agent.Agent
-	agentFactories  map[string]AgentFactory
-	plugins         []plugin.Plugin
-	ralphLoop       *RalphLoopConfig
+	sessionService   session.Service
+	memoryService    memory.Service
+	artifactService  artifact.Service
+	evolutionService evolution.Service
+	agents           map[string]agent.Agent
+	agentFactories   map[string]AgentFactory
+	plugins          []plugin.Plugin
+	ralphLoop        *RalphLoopConfig
 }
 
 // newOptions creates a new Options.
@@ -274,6 +286,7 @@ func NewRunner(appName string, ag agent.Agent, opts ...Option) Runner {
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
 		artifactService:     options.artifactService,
+		evolutionService:    options.evolutionService,
 		pluginManager:       pm,
 		ralphLoop:           options.ralphLoop,
 		ownedSessionService: ownedSessionService,
@@ -324,6 +337,7 @@ func NewRunnerWithAgentFactory(
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
 		artifactService:     options.artifactService,
+		evolutionService:    options.evolutionService,
 		pluginManager:       pm,
 		ralphLoop:           options.ralphLoop,
 		ownedSessionService: ownedSessionService,
@@ -332,7 +346,8 @@ func NewRunnerWithAgentFactory(
 
 // Close closes the runner and cleans up owned resources.
 // It's safe to call Close multiple times.
-// Only resources created by this runner will be closed.
+// User-provided evolution services registered via WithEvolutionService are also
+// closed so their background workers do not leak across runs.
 func (r *runner) Close() error {
 	var closeErr error
 	r.closeOnce.Do(func() {
@@ -341,6 +356,12 @@ func (r *runner) Close() error {
 			if err := r.pluginManager.Close(context.Background()); err != nil {
 				closeErr = err
 				log.Errorf("close plugins failed: %v", err)
+			}
+		}
+		if r.evolutionService != nil {
+			if err := r.evolutionService.Close(); err != nil {
+				closeErr = err
+				log.Errorf("close evolution service failed: %v", err)
 			}
 		}
 		// Only close resources that we own (created by this runner).
@@ -1542,6 +1563,9 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 
 	// Enqueue auto memory extraction job if memory service is configured.
 	r.enqueueAutoMemoryJob(ctx, loop.sess)
+
+	// Enqueue evolution learning job if the evolution service is configured.
+	r.enqueueEvolutionLearningJob(ctx, loop.sess)
 }
 
 func resolveExecutionTraceStatus(loop *eventLoopContext, ctxErr error) trace.TraceStatus {
@@ -1838,7 +1862,7 @@ func collectPriorAssistantResponseIDs(sess *session.Session) map[string]struct{}
 	var responseIDs map[string]struct{}
 	for i := range sess.Events {
 		evt := &sess.Events[i]
-		if evt == nil || evt.Response == nil || evt.IsPartial {
+		if evt.Response == nil || evt.IsPartial {
 			continue
 		}
 		if isGraphCompletionEvent(evt) {
@@ -2061,6 +2085,18 @@ func (r *runner) enqueueAutoMemoryJob(ctx context.Context, sess *session.Session
 	}
 	if err := r.memoryService.EnqueueAutoMemoryJob(ctx, sess); err != nil {
 		log.DebugfContext(ctx, "Auto memory extraction skipped or failed: %v", err)
+		return
+	}
+}
+
+// enqueueEvolutionLearningJob triggers evolution extraction if the evolution
+// service is configured.
+func (r *runner) enqueueEvolutionLearningJob(ctx context.Context, sess *session.Session) {
+	if r.evolutionService == nil || sess == nil {
+		return
+	}
+	if err := r.evolutionService.EnqueueLearningJob(ctx, sess); err != nil {
+		log.DebugfContext(ctx, "Evolution learning job skipped or failed: %v", err)
 		return
 	}
 }

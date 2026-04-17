@@ -2115,6 +2115,28 @@ func TestToolSet_Close_WithError(t *testing.T) {
 			t.Errorf("Expected 'failed to close MCP session' error, got: %v", err)
 		}
 	})
+
+	t.Run("ignore process already finished close error", func(t *testing.T) {
+		config := ConnectionConfig{
+			Transport: "stdio",
+			Command:   "echo",
+			Args:      []string{"hello"},
+		}
+		toolset := NewMCPToolSet(config)
+
+		manager := toolset.sessionManager
+		manager.mu.Lock()
+		manager.client = &stubConnector{
+			closeError: fmt.Errorf("failed to kill process: os: process already finished"),
+		}
+		manager.connected = true
+		manager.mu.Unlock()
+
+		err := toolset.Close()
+		if err != nil {
+			t.Fatalf("expected nil error for benign close failure, got: %v", err)
+		}
+	})
 }
 
 // TestExecuteWithSessionReconnect_SuccessfulReconnect tests the successful reconnection path.

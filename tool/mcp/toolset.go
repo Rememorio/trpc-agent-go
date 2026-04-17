@@ -13,8 +13,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -440,12 +442,26 @@ func (m *mcpSessionManager) close() error {
 	m.client = nil
 
 	if err != nil {
+		if isIgnorableCloseError(err) {
+			log.Debug("Ignoring benign MCP client close error", "error", err)
+			return nil
+		}
 		log.Error("Failed to close MCP client", "error", err)
 		return fmt.Errorf("failed to close MCP client: %w", err)
 	}
 
 	log.Debug("MCP session closed successfully")
 	return nil
+}
+
+func isIgnorableCloseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrProcessDone) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "process already finished")
 }
 
 // isConnected returns whether the session is connected and initialized.
