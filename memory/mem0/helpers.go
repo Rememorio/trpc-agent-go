@@ -10,6 +10,7 @@
 package mem0
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -314,16 +315,30 @@ func isInvalidPageError(err error) bool {
 	return apiErr.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(apiErr.Body), "invalid page")
 }
 
-// cloneMetadata returns a shallow copy of meta. The copy isolates worker-side
-// mutations from the caller's map, ensuring per-request metadata supplied via
-// session.WithIngestMetadata is not retained by the worker.
+// cloneMetadata returns a deep clone of meta with no aliased nested state.
+//
+// Ingestion runs asynchronously on a worker goroutine, so the outer map and
+// any nested containers must be independent of the caller's memory: otherwise
+// a caller mutating its metadata map after IngestSession has returned could
+// race with, or change, the payload the worker eventually marshals. The clone
+// round-trips through JSON because the metadata is ultimately transmitted to
+// mem0 as JSON — so the canonicalization is lossless with respect to what the
+// backend actually receives.
 func cloneMetadata(meta map[string]any) map[string]any {
 	if len(meta) == 0 {
 		return nil
 	}
-	out := make(map[string]any, len(meta))
-	for k, v := range meta {
-		out[k] = v
+	data, err := json.Marshal(meta)
+	if err != nil {
+		// Metadata that cannot be serialized would also fail downstream when
+		// the worker builds the createMemoryRequest payload; drop it here so
+		// the ingest payload simply omits metadata rather than aliasing the
+		// caller's map.
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
 	}
 	return out
 }

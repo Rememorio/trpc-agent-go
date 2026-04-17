@@ -127,6 +127,9 @@ import (
 mem0Svc, err := memorymem0.NewService(
     memorymem0.WithAPIKey(os.Getenv("MEM0_API_KEY")),
 )
+if err != nil {
+    log.Fatalf("create mem0 service: %v", err)
+}
 defer mem0Svc.Close()
 
 // 2. Create the agent with read-only memory tools.

@@ -58,6 +58,10 @@ func (s *Service) Tools() []tool.Tool {
 // (e.g. session.WithIngestMetadata, session.WithIngestAgentID,
 // session.WithIngestRunID). The resolved snapshot is forwarded to mem0's
 // POST /v1/memories/ payload as metadata, agent_id and run_id respectively.
+//
+// An invalid session scope (empty AppName / UserID) is surfaced as an error
+// rather than silently dropped, so caller misconfiguration is distinguishable
+// from a successful no-op, matching ReadMemories / SearchMemories behaviour.
 func (s *Service) IngestSession(
 	ctx context.Context,
 	sess *session.Session,
@@ -71,7 +75,7 @@ func (s *Service) IngestSession(
 	}
 	userKey := memory.UserKey{AppName: sess.AppName, UserID: sess.UserID}
 	if err := userKey.CheckUserKey(); err != nil {
-		return nil
+		return err
 	}
 	since := readLastExtractAt(sess)
 	latestTs, messages := scanDeltaSince(sess, since)
