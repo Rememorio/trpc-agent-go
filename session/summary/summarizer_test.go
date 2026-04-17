@@ -147,6 +147,50 @@ func TestSessionSummarizer_Summarize(t *testing.T) {
 		}
 	})
 
+	t.Run("branch scope excludes ancestor root events from summary text", func(t *testing.T) {
+		s := NewSummarizer(
+			&fakeModel{},
+			WithPrompt("Conversation:\n{conversation_text}\n\nSummary:"),
+		)
+		sess := &session.Session{
+			ID:      "branch-scope",
+			AppName: "app",
+			Events: []event.Event{
+				{
+					Author:    "user",
+					FilterKey: "app",
+					Timestamp: time.Now().Add(-3 * time.Second),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "root message"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: "app/sub",
+					Timestamp: time.Now().Add(-2 * time.Second),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "branch message"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: "app/sub/tool",
+					Timestamp: time.Now().Add(-1 * time.Second),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "descendant message"},
+					}}},
+				},
+			},
+		}
+		isummaryscope.SetScopeFilterKey(sess, "app/sub")
+
+		text, err := s.Summarize(context.Background(), sess)
+		require.NoError(t, err)
+		assert.NotContains(t, text, "root message")
+		assert.Contains(t, text, "branch message")
+		assert.Contains(t, text, "descendant message")
+	})
+
 }
 
 func TestSessionSummarizer_Metadata(t *testing.T) {

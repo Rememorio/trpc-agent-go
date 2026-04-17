@@ -282,7 +282,10 @@ func (s *sessionSummarizer) Summarize(ctx context.Context, sess *session.Session
 
 	// Extract conversation text from events. Use filtered events for summarization
 	// to skip recent events while ensuring proper context.
-	eventsToSummarize := s.filterEventsForSummary(sess.Events)
+	eventsToSummarize := filterPrimaryEventsForSession(
+		s.filterEventsForSummary(sess.Events),
+		sess,
+	)
 
 	conversationText := s.extractConversationText(eventsToSummarize)
 	if s.preHook != nil {

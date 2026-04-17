@@ -239,6 +239,25 @@ func TestCheckTimeThreshold_NoEvents(t *testing.T) {
 	assert.False(t, result)
 }
 
+func TestCheckTimeThreshold_BranchScopeUsesScopedLastEvent(t *testing.T) {
+	const (
+		appName = "my-app"
+		branch  = "my-app/sub-agent"
+	)
+	checker := CheckTimeThreshold(time.Hour)
+	sess := &session.Session{
+		AppName: appName,
+		Events: []event.Event{
+			{Timestamp: time.Now().Add(-10 * time.Minute), FilterKey: appName},
+			{Timestamp: time.Now().Add(-2 * time.Hour), FilterKey: branch},
+			{Timestamp: time.Now().Add(-90 * time.Minute), FilterKey: branch + "/tool"},
+		},
+	}
+
+	isummaryscope.SetScopeFilterKey(sess, branch)
+	assert.True(t, checker(sess))
+}
+
 func TestCheckTokenThreshold(t *testing.T) {
 	t.Run("tokens exceed threshold based on conversation text", func(t *testing.T) {
 		checker := CheckTokenThreshold(100)

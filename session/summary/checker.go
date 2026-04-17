@@ -210,7 +210,11 @@ func CheckTimeThreshold(interval time.Duration) Checker {
 		if sess == nil || len(sess.Events) == 0 {
 			return false
 		}
-		lastEvent := sess.Events[len(sess.Events)-1]
+		primary := filterPrimaryEventsForSession(sess.Events, sess)
+		if len(primary) == 0 {
+			return false
+		}
+		lastEvent := primary[len(primary)-1]
 		return time.Since(lastEvent.Timestamp) > interval
 	}
 }
