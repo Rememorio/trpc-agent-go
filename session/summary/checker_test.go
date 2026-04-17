@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
 )
 
 func TestCheckEventThreshold(t *testing.T) {
@@ -171,6 +172,25 @@ func TestCheckEventThreshold(t *testing.T) {
 		}
 		// Empty FilterKey is ignored in mixed detection → single
 		// non-empty key "sub-agent-abc" → 4 > 2 = true.
+		assert.True(t, checker(sess))
+	})
+
+	t.Run("branch scope ignores ancestor root events", func(t *testing.T) {
+		const (
+			appName = "my-app"
+			branch  = "my-app/sub-agent"
+		)
+		checker := CheckEventThreshold(2)
+		sess := &session.Session{
+			AppName: appName,
+			Events: []event.Event{
+				{Timestamp: time.Now(), FilterKey: appName},
+				{Timestamp: time.Now(), FilterKey: branch},
+				{Timestamp: time.Now(), FilterKey: branch + "/tool"},
+				{Timestamp: time.Now(), FilterKey: branch},
+			},
+		}
+		isummary.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 }
@@ -452,6 +472,46 @@ func TestCheckTokenThreshold(t *testing.T) {
 		}
 		// Empty FilterKey ignored in mixed detection → single
 		// non-empty key → triggers.
+		assert.True(t, checker(sess))
+	})
+
+	t.Run("branch scope counts descendant events but excludes ancestor root text", func(t *testing.T) {
+		const (
+			threshold = 100
+			appName   = "my-app"
+			branch    = "my-app/sub-agent"
+		)
+		checker := CheckTokenThreshold(threshold)
+		sess := &session.Session{
+			AppName: appName,
+			Events: []event.Event{
+				{
+					Author:    "user",
+					FilterKey: appName,
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "root context"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: branch,
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: strings.Repeat("a", 800)},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: branch + "/tool",
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: strings.Repeat("b", 800)},
+					}}},
+				},
+			},
+		}
+		isummary.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 
@@ -884,10 +944,6 @@ func TestCheckContextThreshold_EmptySession(t *testing.T) {
 	checker := CheckContextThreshold()
 	sess := &session.Session{}
 	assert.False(t, checker(context.Background(), sess))
-}
-
-func TestResolveContextWindowFromCtx_NilCtx(t *testing.T) {
-	assert.Equal(t, 32000, resolveContextWindowFromCtx(nil, 32000))
 }
 
 func TestResolveContextWindowFromCtx_NoInvocation(t *testing.T) {

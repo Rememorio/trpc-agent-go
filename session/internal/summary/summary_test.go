@@ -142,6 +142,23 @@ func (f *fakeSummarizerWithTs) SetPrompt(prompt string)  {}
 func (f *fakeSummarizerWithTs) SetModel(m model.Model)   {}
 func (f *fakeSummarizerWithTs) Metadata() map[string]any { return map[string]any{} }
 
+type thresholdSummarizer struct {
+	out     string
+	checker func(*session.Session) bool
+}
+
+func (t *thresholdSummarizer) ShouldSummarize(sess *session.Session) bool {
+	return t.checker(sess)
+}
+
+func (t *thresholdSummarizer) Summarize(context.Context, *session.Session) (string, error) {
+	return t.out, nil
+}
+
+func (t *thresholdSummarizer) SetPrompt(string)         {}
+func (t *thresholdSummarizer) SetModel(model.Model)     {}
+func (t *thresholdSummarizer) Metadata() map[string]any { return map[string]any{} }
+
 func makeEvent(content string, ts time.Time, filterKey string) event.Event {
 	return event.Event{
 		Branch:    filterKey,
@@ -361,6 +378,62 @@ func TestSummarizeSession_UsesLastIncludedTimestampWhenProvided(t *testing.T) {
 	require.NotNil(t, base.Summaries)
 	require.Equal(t, "sum", base.Summaries[""].Summary)
 	require.Equal(t, t2.UTC(), base.Summaries[""].UpdatedAt)
+}
+
+func TestSummarizeSession_FilteredKey_CountsScopedSubtreeForThreshold(t *testing.T) {
+	now := time.Now()
+	const (
+		appName = "app"
+		branch  = "app/take-car"
+	)
+	base := &session.Session{ID: "s1", AppName: appName, UserID: "u"}
+	base.Events = []event.Event{
+		makeEvent("root", now.Add(-4*time.Minute), appName),
+		makeEvent("branch-1", now.Add(-3*time.Minute), branch),
+		makeEvent("branch-2", now.Add(-2*time.Minute), branch+"/selector"),
+		makeEvent("branch-3", now.Add(-1*time.Minute), branch),
+	}
+
+	s := &thresholdSummarizer{
+		out: "sum",
+		checker: func(sess *session.Session) bool {
+			scopeKey := GetScopeFilterKey(sess)
+			if scopeKey == "" {
+				return false
+			}
+			count := 0
+			for _, e := range sess.Events {
+				if e.FilterKey == scopeKey || e.FilterKey == scopeKey+"/selector" {
+					count++
+				}
+			}
+			return count > 2
+		},
+	}
+
+	updated, err := SummarizeSession(context.Background(), s, base, branch, false)
+	require.NoError(t, err)
+	require.True(t, updated)
+	require.NotNil(t, base.Summaries)
+	require.Equal(t, "sum", base.Summaries[branch].Summary)
+}
+
+func TestScopeFilterKeyHelpers(t *testing.T) {
+	t.Run("set and get scope filter key", func(t *testing.T) {
+		sess := &session.Session{}
+		SetScopeFilterKey(sess, "app/sub")
+		require.Equal(t, "app/sub", GetScopeFilterKey(sess))
+		require.Equal(t, "app/sub", sess.ServiceMeta[serviceMetaScopeFilterKey])
+	})
+
+	t.Run("ignore empty or nil input", func(t *testing.T) {
+		require.Equal(t, "", GetScopeFilterKey(nil))
+
+		sess := &session.Session{}
+		SetScopeFilterKey(sess, "")
+		require.Nil(t, sess.ServiceMeta)
+		require.Equal(t, "", GetScopeFilterKey(sess))
+	})
 }
 
 func TestMeetsTimeCriteria(t *testing.T) {

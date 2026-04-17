@@ -355,7 +355,7 @@ func (s *sessionSummarizer) buildCheckSession(
 	checkSess := sess.Clone()
 	delta := filterDeltaEvents(checkSess)
 	filtered := s.filterEventsForSummary(delta)
-	primary := filterPrimaryEvents(filtered, checkSess.AppName)
+	primary := filterPrimaryEventsForSession(filtered, checkSess)
 	checkSess.SetState(
 		tokenThresholdConversationTextStateKey,
 		[]byte(s.extractConversationText(primary)),

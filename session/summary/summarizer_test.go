@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
 )
 
 func TestSessionSummarizer_ShouldSummarize(t *testing.T) {
@@ -1538,6 +1539,50 @@ func TestSessionSummarizer_BuildCheckSession(t *testing.T) {
 		raw, ok := checkSess.GetState(tokenThresholdConversationTextStateKey)
 		require.True(t, ok)
 		assert.Empty(t, string(raw))
+	})
+
+	t.Run("uses branch scope when building injected token text", func(t *testing.T) {
+		s := &sessionSummarizer{}
+		sess := &session.Session{
+			AppName: "app",
+			Events: []event.Event{
+				{
+					Author:    "user",
+					FilterKey: "app",
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "root message"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: "app/sub",
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "branch message"},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: "app/sub/tool",
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "descendant message"},
+					}}},
+				},
+			},
+		}
+		isummary.SetScopeFilterKey(sess, "app/sub")
+
+		checkSess := s.buildCheckSession(sess)
+		require.NotNil(t, checkSess)
+
+		raw, ok := checkSess.GetState(tokenThresholdConversationTextStateKey)
+		require.True(t, ok)
+		text := string(raw)
+		assert.NotContains(t, text, "root message")
+		assert.Contains(t, text, "branch message")
+		assert.Contains(t, text, "descendant message")
 	})
 }
 

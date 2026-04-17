@@ -10,6 +10,7 @@ package summary
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
 )
 
 // Checker defines a function type for checking if summarization is needed.
@@ -95,44 +97,66 @@ func filterDeltaEvents(sess *session.Session) []event.Event {
 	return out
 }
 
-// filterPrimaryEvents prevents sub-agent events from inflating
-// parent-level threshold checks in the full-session summary scenario.
-//
-// The function distinguishes two cases by inspecting whether the events
-// contain multiple distinct non-empty FilterKey values:
-//
-//  1. Single non-empty FilterKey (branch summary) — all events with a
-//     non-empty FilterKey share the same value because computeDeltaSince
-//     already filtered by that branch. No further filtering is needed;
-//     return the events as-is.
-//
-//  2. Mixed non-empty FilterKeys (full-session summary) — events come
-//     from both the primary agent and one or more sub-agents. Only
-//     events whose FilterKey matches the session's AppName (the primary
-//     agent's key) are retained so that sub-agent tokens/counts do not
-//     inflate the parent threshold.
-//
-// Events with an empty FilterKey (e.g. synthetic summary events created
-// by prependPrevSummary) are ignored when determining whether the set is
-// mixed, and are always kept in the output. This prevents a single
-// prepended summary event from incorrectly triggering the mixed-key
-// filtering path for what is actually a single-branch summary.
-//
-// When AppName is empty, no filtering is applied for backward
-// compatibility with sessions that do not set an AppName.
-func filterPrimaryEvents(
-	events []event.Event, appName string,
+func resolvePrimaryEventScope(sess *session.Session) (string, bool) {
+	if sess == nil {
+		return "", false
+	}
+	if filterKey := isummary.GetScopeFilterKey(sess); filterKey != "" {
+		return filterKey, true
+	}
+	return sess.AppName, false
+}
+
+func effectiveFilterKey(e event.Event) string {
+	if e.FilterKey != "" {
+		return e.FilterKey
+	}
+	if e.Version != event.CurrentVersion {
+		return e.Branch
+	}
+	return ""
+}
+
+func filterPrimaryEventsForSession(
+	events []event.Event,
+	sess *session.Session,
 ) []event.Event {
-	if appName == "" || len(events) == 0 {
+	scopeKey, includeDescendants := resolvePrimaryEventScope(sess)
+	return filterPrimaryEvents(events, scopeKey, includeDescendants)
+}
+
+// filterPrimaryEvents narrows threshold accounting to the primary summary
+// scope. Full-session checks keep only the root app's exact filter key when
+// mixed branch events are present. Branch-scoped checks keep the requested
+// branch plus its descendants while excluding ancestor root events that were
+// pulled in by hierarchical filter matching.
+func filterPrimaryEvents(
+	events []event.Event,
+	scopeKey string,
+	includeDescendants bool,
+) []event.Event {
+	if scopeKey == "" || len(events) == 0 {
 		return events
 	}
+	if includeDescendants {
+		out := make([]event.Event, 0, len(events))
+		prefix := scopeKey + event.FilterKeyDelimiter
+		for _, e := range events {
+			fk := effectiveFilterKey(e)
+			if fk == "" || fk == scopeKey || strings.HasPrefix(fk, prefix) {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+
 	// Detect whether the events contain multiple distinct non-empty
 	// FilterKeys. Empty FilterKeys are ignored because they come
 	// from synthetic events (e.g. prepended previous summary).
 	var firstNonEmpty string
 	mixed := false
 	for i := range events {
-		fk := events[i].FilterKey
+		fk := effectiveFilterKey(events[i])
 		if fk == "" {
 			continue
 		}
@@ -156,7 +180,8 @@ func filterPrimaryEvents(
 	// an empty FilterKey (synthetic summary events).
 	out := make([]event.Event, 0, len(events))
 	for _, e := range events {
-		if e.FilterKey == appName || e.FilterKey == "" {
+		fk := effectiveFilterKey(e)
+		if fk == scopeKey || fk == "" {
 			out = append(out, e)
 		}
 	}
@@ -173,7 +198,7 @@ func CheckEventThreshold(eventCount int) Checker {
 		if len(delta) == 0 {
 			return false
 		}
-		primary := filterPrimaryEvents(delta, sess.AppName)
+		primary := filterPrimaryEventsForSession(delta, sess)
 		return len(primary) > eventCount
 	}
 }
@@ -257,7 +282,7 @@ func checkTokenThreshold(
 	if len(delta) == 0 {
 		return false
 	}
-	primary := filterPrimaryEvents(delta, sess.AppName)
+	primary := filterPrimaryEventsForSession(delta, sess)
 	if len(primary) == 0 {
 		return false
 	}
