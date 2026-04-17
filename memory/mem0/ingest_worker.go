@@ -29,6 +29,7 @@ type ingestJob struct {
 	Session  *session.Session
 	LatestTs time.Time
 	Messages []model.Message
+	Options  session.IngestOptions
 }
 
 type ingestWorker struct {
@@ -159,12 +160,18 @@ func (w *ingestWorker) process(job *ingestJob) {
 		ctx, cancel = context.WithTimeout(ctx, w.timeout)
 		defer cancel()
 	}
-	if err := w.ingest(ctx, job.UserKey, job.Session, job.Messages); err != nil {
+	if err := w.ingest(ctx, job.UserKey, job.Session, job.Messages, job.Options); err != nil {
 		log.WarnfContext(ctx, "mem0: ingest failed for user %s/%s: %v", job.UserKey.AppName, job.UserKey.UserID, err)
 	}
 }
 
-func (w *ingestWorker) ingest(ctx context.Context, userKey memory.UserKey, _ *session.Session, messages []model.Message) error {
+func (w *ingestWorker) ingest(
+	ctx context.Context,
+	userKey memory.UserKey,
+	_ *session.Session,
+	messages []model.Message,
+	reqOpts session.IngestOptions,
+) error {
 	apiMsgs := make([]apiMessage, 0, len(messages))
 	for _, m := range messages {
 		content := messageText(m)
@@ -180,6 +187,9 @@ func (w *ingestWorker) ingest(ctx context.Context, userKey memory.UserKey, _ *se
 		Messages:  apiMsgs,
 		UserID:    userKey.UserID,
 		AppID:     userKey.AppName,
+		AgentID:   reqOpts.AgentID,
+		RunID:     reqOpts.RunID,
+		Metadata:  cloneMetadata(reqOpts.Metadata),
 		Infer:     true,
 		Async:     w.asyncMode,
 		Version:   w.version,

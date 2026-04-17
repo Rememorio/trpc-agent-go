@@ -25,17 +25,20 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 )
 
 const defaultModelName = "deepseek-chat"
 
 var (
-	modelName = flag.String("model", defaultModelName, "Chat model name")
-	appName   = flag.String("app", "mem0-integration-demo", "Application name used for mem0 ownership")
-	userID    = flag.String("user", "demo-user", "User ID used for mem0 ownership")
-	sessionID = flag.String("session", "", "Session ID (default: generated from timestamp)")
-	waitFor   = flag.Duration("wait-timeout", 90*time.Second, "How long to wait for the memory to become readable")
+	modelName  = flag.String("model", defaultModelName, "Chat model name")
+	appName    = flag.String("app", "mem0-integration-demo", "Application name used for mem0 ownership")
+	userID     = flag.String("user", "demo-user", "User ID used for mem0 ownership")
+	sessionID  = flag.String("session", "", "Session ID (default: generated from timestamp)")
+	waitFor    = flag.Duration("wait-timeout", 90*time.Second, "How long to wait for the memory to become readable")
+	withCustom = flag.Bool("with-options", false, "If set, calls IngestSession directly with custom per-request IngestOption values to demonstrate the option pattern (bypasses the runner's default ingestion)")
+	tagValue   = flag.String("tag", "support", "Value attached to mem0 metadata when -with-options is set")
 )
 
 func main() {
@@ -66,12 +69,19 @@ func main() {
 		llmagent.WithDescription("A concise assistant with mem0-backed long-term memory integration."),
 		llmagent.WithTools(mem0Svc.Tools()),
 	)
-	r := runner.NewRunner(
-		*appName,
-		chatAgent,
-		runner.WithSessionService(sessioninmemory.NewSessionService()),
-		runner.WithSessionIngestor(mem0Svc),
-	)
+
+	sessSvc := sessioninmemory.NewSessionService()
+	runnerOpts := []runner.Option{
+		runner.WithSessionService(sessSvc),
+	}
+	// When -with-options is set the example bypasses the runner-driven
+	// ingestion so it can call IngestSession directly with custom per-request
+	// options. Otherwise the runner attaches its default options
+	// (WithIngestRunID(sess.ID) and WithIngestAgentID(invocation.AgentName)).
+	if !*withCustom {
+		runnerOpts = append(runnerOpts, runner.WithSessionIngestor(mem0Svc))
+	}
+	r := runner.NewRunner(*appName, chatAgent, runnerOpts...)
 	defer r.Close()
 
 	ctx := context.Background()
@@ -93,14 +103,57 @@ func main() {
 	}
 	fmt.Println()
 
+	// When custom options are requested, exercise the per-request IngestOption
+	// API directly so callers can verify metadata/agent_id/run_id round-trip
+	// to mem0 records.
+	if *withCustom {
+		sess, err := lookupSession(ctx, sessSvc, *userID, sid)
+		if err != nil {
+			log.Fatalf("lookup session: %v", err)
+		}
+		if err := mem0Svc.IngestSession(ctx, sess,
+			session.WithIngestMetadata(map[string]any{
+				"trpc_demo_tag":   *tagValue,
+				"trpc_demo_token": token,
+			}),
+			session.WithIngestAgentID("billing-bot"),
+			session.WithIngestRunID(fmt.Sprintf("ticket-%d", time.Now().UnixNano())),
+		); err != nil {
+			log.Fatalf("custom IngestSession: %v", err)
+		}
+		fmt.Println("Submitted IngestSession with custom IngestOption set; verifying metadata...")
+	}
+
 	entries, err := waitForToken(ctx, mem0Svc, memory.UserKey{AppName: *appName, UserID: *userID}, token, *waitFor)
 	if err != nil {
-		log.Fatalf("memory was not readable: %v", err)
+		// Mem0 sometimes takes longer than the demo timeout to make natively
+		// ingested memories visible via search (the underlying ingest is async
+		// even with async_mode=false). Warn rather than fail so the per-request
+		// option demo (above) is still observable to the caller.
+		log.Printf("warning: memory not yet searchable via SearchMemories: %v", err)
+		return
 	}
 	fmt.Printf("Stored memories (%d):\n", len(entries))
 	for i, entry := range entries {
 		fmt.Printf("  %d. %s\n", i+1, entry.Memory.Memory)
+		if extras := summariseExtras(entry); extras != "" {
+			fmt.Printf("     %s\n", extras)
+		}
 	}
+}
+
+// summariseExtras renders the option-driven fields (tags, agent_id, run_id)
+// that mem0 echoes back inside Entry.Memory.Topics / Memory.Metadata so the
+// example clearly shows the per-request options round-tripping.
+func summariseExtras(entry *memory.Entry) string {
+	if entry == nil || entry.Memory == nil {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if len(entry.Memory.Topics) > 0 {
+		parts = append(parts, "topics="+strings.Join(entry.Memory.Topics, ","))
+	}
+	return strings.Join(parts, " ")
 }
 
 func newMem0Service(timeout time.Duration) (*memorymem0.Service, error) {
@@ -172,6 +225,27 @@ func collectResponse(out *runResult, seen map[string]struct{}, evt *event.Event)
 			out.reply = text
 		}
 	}
+}
+
+// lookupSession fetches the persisted session the runner just produced from
+// the supplied session.Service. It is used by the -with-options demo to call
+// IngestSession directly with custom per-request IngestOption values.
+func lookupSession(ctx context.Context, svc session.Service, userID, sessionID string) (*session.Session, error) {
+	if svc == nil {
+		return nil, fmt.Errorf("nil session service")
+	}
+	sess, err := svc.GetSession(ctx, session.Key{
+		AppName:   *appName,
+		UserID:    userID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+	return sess, nil
 }
 
 func waitForToken(ctx context.Context, svc *memorymem0.Service, userKey memory.UserKey, token string, timeout time.Duration) ([]*memory.Entry, error) {

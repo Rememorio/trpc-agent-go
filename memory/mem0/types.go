@@ -23,6 +23,7 @@ type createMemoryRequest struct {
 	Messages  []apiMessage   `json:"messages"`
 	UserID    string         `json:"user_id,omitempty"`
 	AppID     string         `json:"app_id,omitempty"`
+	AgentID   string         `json:"agent_id,omitempty"`
 	RunID     string         `json:"run_id,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 	Infer     bool           `json:"infer"`

@@ -1521,7 +1521,7 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 	// Enqueue auto memory extraction job if memory service is configured.
 	r.enqueueAutoMemoryJob(ctx, loop.sess)
 	// Enqueue external session ingestion if configured.
-	r.enqueueSessionIngest(ctx, loop.sess)
+	r.enqueueSessionIngest(ctx, loop.sess, loop.invocation)
 }
 
 func resolveExecutionTraceStatus(loop *eventLoopContext, ctxErr error) trace.TraceStatus {
@@ -2045,11 +2045,42 @@ func (r *runner) enqueueAutoMemoryJob(ctx context.Context, sess *session.Session
 	}
 }
 
-func (r *runner) enqueueSessionIngest(ctx context.Context, sess *session.Session) {
+func (r *runner) enqueueSessionIngest(
+	ctx context.Context,
+	sess *session.Session,
+	inv *agent.Invocation,
+) {
 	if r.ingestor == nil || sess == nil {
 		return
 	}
-	if err := r.ingestor.IngestSession(ctx, sess); err != nil {
+	opts := r.defaultIngestOptions(sess, inv)
+	if err := r.ingestor.IngestSession(ctx, sess, opts...); err != nil {
 		log.DebugfContext(ctx, "Session ingest skipped or failed: %v", err)
 	}
+}
+
+// defaultIngestOptions builds the per-request ingestion options the runner
+// passes to Ingestor.IngestSession on each turn. The defaults thread the
+// session ID through as run_id and the active invocation's agent name through
+// as agent_id, giving downstream backends (e.g. mem0) natural grouping keys
+// without requiring callers to construct options manually.
+func (r *runner) defaultIngestOptions(
+	sess *session.Session,
+	inv *agent.Invocation,
+) []session.IngestOption {
+	var opts []session.IngestOption
+	if sess != nil && sess.ID != "" {
+		opts = append(opts, session.WithIngestRunID(sess.ID))
+	}
+	agentName := ""
+	if inv != nil {
+		agentName = inv.AgentName
+	}
+	if agentName == "" {
+		agentName = r.defaultAgentName
+	}
+	if agentName != "" {
+		opts = append(opts, session.WithIngestAgentID(agentName))
+	}
+	return opts
 }

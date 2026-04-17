@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
@@ -33,15 +34,23 @@ type mockIngestor struct {
 	enqueueCalled bool
 	enqueueErr    error
 	sess          *session.Session
+	lastOptions   session.IngestOptions
 }
 
 func (m *mockIngestor) IngestSession(
 	ctx context.Context,
 	sess *session.Session,
-	_ ...session.IngestOption,
+	opts ...session.IngestOption,
 ) error {
 	m.enqueueCalled = true
 	m.sess = sess
+	m.lastOptions = session.IngestOptions{}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(&m.lastOptions)
+	}
 	return m.enqueueErr
 }
 
@@ -162,4 +171,32 @@ func TestRunner_WithSessionIngestor_Integration(t *testing.T) {
 	require.NotNil(t, mockIngestor.sess)
 	require.Equal(t, "test-app", mockIngestor.sess.AppName)
 	require.Equal(t, "user", mockIngestor.sess.UserID)
+	require.Equal(t, "session", mockIngestor.lastOptions.RunID)
+	require.Equal(t, "test-agent", mockIngestor.lastOptions.AgentID)
+}
+
+// resolveIngestOpts is a small test helper that applies IngestOption values to
+// a zero-value IngestOptions, mirroring what an Ingestor implementation does.
+func resolveIngestOpts(opts ...session.IngestOption) session.IngestOptions {
+	var got session.IngestOptions
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(&got)
+	}
+	return got
+}
+
+func TestRunner_DefaultIngestOptions_PrefersInvocationAgent(t *testing.T) {
+	r := &runner{defaultAgentName: "fallback-agent"}
+	sess := session.NewSession("app", "user", "sess-id")
+
+	withInv := resolveIngestOpts(r.defaultIngestOptions(sess, &agent.Invocation{AgentName: "live-agent"})...)
+	require.Equal(t, "sess-id", withInv.RunID)
+	require.Equal(t, "live-agent", withInv.AgentID)
+
+	withoutInv := resolveIngestOpts(r.defaultIngestOptions(sess, nil)...)
+	require.Equal(t, "sess-id", withoutInv.RunID)
+	require.Equal(t, "fallback-agent", withoutInv.AgentID)
 }

@@ -54,14 +54,14 @@ func (s *Service) Tools() []tool.Tool {
 
 // IngestSession enqueues session transcript ingestion into mem0.
 //
-// The opts arguments are reserved for forward compatibility on the
-// session.Ingestor contract. The mem0 implementation does not consume any
-// per-request options today, but accepts them so callers can pass future
-// toggles without breaking the interface.
+// Per-request settings are configured via session.IngestOption helpers
+// (e.g. session.WithIngestMetadata, session.WithIngestAgentID,
+// session.WithIngestRunID). The resolved snapshot is forwarded to mem0's
+// POST /v1/memories/ payload as metadata, agent_id and run_id respectively.
 func (s *Service) IngestSession(
 	ctx context.Context,
 	sess *session.Session,
-	_ ...session.IngestOption,
+	opts ...session.IngestOption,
 ) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -79,12 +79,20 @@ func (s *Service) IngestSession(
 		return nil
 	}
 	writeLastExtractAt(sess, latestTs)
+	var reqOpts session.IngestOptions
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		opt(&reqOpts)
+	}
 	job := &ingestJob{
 		Ctx:      context.WithoutCancel(ctx),
 		UserKey:  userKey,
 		Session:  sess,
 		LatestTs: latestTs,
 		Messages: messages,
+		Options:  reqOpts,
 	}
 	if s.ingestWorker.tryEnqueue(ctx, job) {
 		return nil
@@ -99,7 +107,7 @@ func (s *Service) IngestSession(
 	}
 	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	return s.ingestWorker.ingest(syncCtx, userKey, sess, messages)
+	return s.ingestWorker.ingest(syncCtx, userKey, sess, messages, reqOpts)
 }
 
 // ReadMemories reads memories for a user.

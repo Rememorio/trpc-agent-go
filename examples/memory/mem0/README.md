@@ -155,6 +155,30 @@ Key points:
 - Mem0 performs its own extraction with `infer: true` — no local LLM
   extractor is needed.
 
+### Per-Request Ingestion Options
+
+`session.Ingestor` accepts variadic `session.IngestOption` values so callers
+can attach platform-agnostic per-request settings without breaking the
+interface. The runner threads two natural defaults on every turn:
+
+- `session.WithIngestRunID(sess.ID)` → mem0 `run_id`
+- `session.WithIngestAgentID(invocation.AgentName)` (falls back to the
+  runner's default agent name) → mem0 `agent_id`
+
+Custom callers (or custom Ingestor wrappers) can supply additional metadata:
+
+```go
+err := mem0Svc.IngestSession(ctx, sess,
+    session.WithIngestMetadata(map[string]any{"channel": "support"}),
+    session.WithIngestAgentID("billing-bot"),
+    session.WithIngestRunID("ticket-42"),
+)
+```
+
+mem0 stores the resolved values as `metadata`, `agent_id` and `run_id` on
+the underlying memories, which then become available for downstream filtering
+and grouping.
+
 ## Configuration Options
 
 The mem0 service accepts the following options:

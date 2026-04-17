@@ -313,3 +313,17 @@ func isInvalidPageError(err error) bool {
 	}
 	return apiErr.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(apiErr.Body), "invalid page")
 }
+
+// cloneMetadata returns a shallow copy of meta. The copy isolates worker-side
+// mutations from the caller's map, ensuring per-request metadata supplied via
+// session.WithIngestMetadata is not retained by the worker.
+func cloneMetadata(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(meta))
+	for k, v := range meta {
+		out[k] = v
+	}
+	return out
+}
