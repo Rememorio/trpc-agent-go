@@ -20,7 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
-	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
+	isummaryscope "trpc.group/trpc-go/trpc-agent-go/session/internal/summaryscope"
 )
 
 func TestCheckEventThreshold(t *testing.T) {
@@ -190,7 +190,7 @@ func TestCheckEventThreshold(t *testing.T) {
 				{Timestamp: time.Now(), FilterKey: branch},
 			},
 		}
-		isummary.SetScopeFilterKey(sess, branch)
+		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 }
@@ -511,7 +511,7 @@ func TestCheckTokenThreshold(t *testing.T) {
 				},
 			},
 		}
-		isummary.SetScopeFilterKey(sess, branch)
+		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
 

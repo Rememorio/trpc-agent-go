@@ -19,7 +19,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
-	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
+	isummaryscope "trpc.group/trpc-go/trpc-agent-go/session/internal/summaryscope"
 )
 
 // Checker defines a function type for checking if summarization is needed.
@@ -101,7 +101,7 @@ func resolvePrimaryEventScope(sess *session.Session) (string, bool) {
 	if sess == nil {
 		return "", false
 	}
-	if filterKey := isummary.GetScopeFilterKey(sess); filterKey != "" {
+	if filterKey := isummaryscope.GetScopeFilterKey(sess); filterKey != "" {
 		return filterKey, true
 	}
 	return sess.AppName, false

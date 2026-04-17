@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	isummaryscope "trpc.group/trpc-go/trpc-agent-go/session/internal/summaryscope"
 )
 
 type mockSummarizerWithTs struct {
@@ -397,7 +398,7 @@ func TestSummarizeSession_FilteredKey_CountsScopedSubtreeForThreshold(t *testing
 	s := &thresholdSummarizer{
 		out: "sum",
 		checker: func(sess *session.Session) bool {
-			scopeKey := GetScopeFilterKey(sess)
+			scopeKey := isummaryscope.GetScopeFilterKey(sess)
 			if scopeKey == "" {
 				return false
 			}
@@ -416,24 +417,6 @@ func TestSummarizeSession_FilteredKey_CountsScopedSubtreeForThreshold(t *testing
 	require.True(t, updated)
 	require.NotNil(t, base.Summaries)
 	require.Equal(t, "sum", base.Summaries[branch].Summary)
-}
-
-func TestScopeFilterKeyHelpers(t *testing.T) {
-	t.Run("set and get scope filter key", func(t *testing.T) {
-		sess := &session.Session{}
-		SetScopeFilterKey(sess, "app/sub")
-		require.Equal(t, "app/sub", GetScopeFilterKey(sess))
-		require.Equal(t, "app/sub", sess.ServiceMeta[serviceMetaScopeFilterKey])
-	})
-
-	t.Run("ignore empty or nil input", func(t *testing.T) {
-		require.Equal(t, "", GetScopeFilterKey(nil))
-
-		sess := &session.Session{}
-		SetScopeFilterKey(sess, "")
-		require.Nil(t, sess.ServiceMeta)
-		require.Equal(t, "", GetScopeFilterKey(sess))
-	})
 }
 
 func TestMeetsTimeCriteria(t *testing.T) {

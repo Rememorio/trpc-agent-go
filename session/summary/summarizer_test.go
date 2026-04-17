@@ -20,7 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
-	isummary "trpc.group/trpc-go/trpc-agent-go/session/internal/summary"
+	isummaryscope "trpc.group/trpc-go/trpc-agent-go/session/internal/summaryscope"
 )
 
 func TestSessionSummarizer_ShouldSummarize(t *testing.T) {
@@ -1572,7 +1572,7 @@ func TestSessionSummarizer_BuildCheckSession(t *testing.T) {
 				},
 			},
 		}
-		isummary.SetScopeFilterKey(sess, "app/sub")
+		isummaryscope.SetScopeFilterKey(sess, "app/sub")
 
 		checkSess := s.buildCheckSession(sess)
 		require.NotNil(t, checkSess)

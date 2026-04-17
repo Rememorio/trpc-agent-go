@@ -19,6 +19,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	"trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // summaryJob represents a job for async summary extraction.
@@ -40,7 +41,7 @@ type AsyncSummaryWorker struct {
 
 // AsyncSummaryConfig contains configuration for async summary worker.
 type AsyncSummaryConfig struct {
-	Summarizer        SessionSummarizer
+	Summarizer        summary.SessionSummarizer
 	AsyncSummaryNum   int
 	SummaryQueueSize  int
 	SummaryJobTimeout time.Duration

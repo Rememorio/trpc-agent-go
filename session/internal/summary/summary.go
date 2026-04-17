@@ -20,6 +20,8 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	isummaryscope "trpc.group/trpc-go/trpc-agent-go/session/internal/summaryscope"
+	"trpc.group/trpc-go/trpc-agent-go/session/summary"
 )
 
 // authorSystem is the system author.
@@ -79,7 +81,7 @@ func buildFilterSession(base *session.Session, filterKey string, evs []event.Eve
 		UpdatedAt: time.Now(),
 		CreatedAt: base.CreatedAt,
 	}
-	SetScopeFilterKey(tmp, filterKey)
+	isummaryscope.SetScopeFilterKey(tmp, filterKey)
 	return tmp
 }
 
@@ -91,7 +93,7 @@ func buildFilterSession(base *session.Session, filterKey string, evs []event.Eve
 //     updated=true to trigger persistence without LLM call, and sets proper UpdatedAt.
 func SummarizeSession(
 	ctx context.Context,
-	m SessionSummarizer,
+	m summary.SessionSummarizer,
 	base *session.Session,
 	filterKey string,
 	force bool,

@@ -6,7 +6,9 @@
 // trpc-agent-go is licensed under the Apache License Version 2.0.
 //
 
-package summary
+// Package summaryscope stores temporary scope metadata used while evaluating
+// summary thresholds for filtered session branches.
+package summaryscope
 
 import "trpc.group/trpc-go/trpc-agent-go/session"
 
