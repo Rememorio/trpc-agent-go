@@ -193,6 +193,24 @@ func TestCheckEventThreshold(t *testing.T) {
 		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
 	})
+
+	t.Run("branch scope stays below threshold when scoped events are insufficient", func(t *testing.T) {
+		const (
+			appName = "my-app"
+			branch  = "my-app/sub-agent"
+		)
+		checker := CheckEventThreshold(2)
+		sess := &session.Session{
+			AppName: appName,
+			Events: []event.Event{
+				{Timestamp: time.Now(), FilterKey: appName},
+				{Timestamp: time.Now(), FilterKey: appName},
+				{Timestamp: time.Now(), FilterKey: branch},
+			},
+		}
+		isummaryscope.SetScopeFilterKey(sess, branch)
+		assert.False(t, checker(sess))
+	})
 }
 
 func TestCheckTimeThreshold(t *testing.T) {
@@ -532,6 +550,38 @@ func TestCheckTokenThreshold(t *testing.T) {
 		}
 		isummaryscope.SetScopeFilterKey(sess, branch)
 		assert.True(t, checker(sess))
+	})
+
+	t.Run("branch scope stays below token threshold when scoped text is insufficient", func(t *testing.T) {
+		const (
+			threshold = 100
+			appName   = "my-app"
+			branch    = "my-app/sub-agent"
+		)
+		checker := CheckTokenThreshold(threshold)
+		sess := &session.Session{
+			AppName: appName,
+			Events: []event.Event{
+				{
+					Author:    "user",
+					FilterKey: appName,
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: strings.Repeat("r", 800)},
+					}}},
+				},
+				{
+					Author:    "assistant",
+					FilterKey: branch,
+					Timestamp: time.Now(),
+					Response: &model.Response{Choices: []model.Choice{{
+						Message: model.Message{Content: "short branch message"},
+					}}},
+				},
+			},
+		}
+		isummaryscope.SetScopeFilterKey(sess, branch)
+		assert.False(t, checker(sess))
 	})
 
 	t.Run("injected conversation text takes precedence", func(t *testing.T) {
