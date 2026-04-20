@@ -793,7 +793,53 @@ defer runnerInstance.Close()
 
 完整示例见 [examples/plugin/messagemerger](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/plugin/messagemerger)。
 
-说明：目前仓库内置了 Logging、GlobalInstruction、ToolCallID、MessageMerger、Guardrail 五类插件。其中 Guardrail 插件当前提供的内置 capability 包括工具审批、Prompt Injection 和 Unsafe Intent。更多插件可通过自定义插件实现。
+### ErrorMessage（错误消息改写）
+
+`plugin/errormessage` 下的 `errormessage.New(opts...)` 会在 Runner 把错误事件写入 session 之前，改写这条错误事件里对用户可见的 `Choices[].Message.Content`。
+
+当一个 event 带有 `Response.Error` 但还没有 `Choices[].Message.Content` 时（例如 `llmflow` 把 `agent.StopError` 转成的 `stop_agent_error` 事件、或者任何直接 `event.NewErrorEvent(...)` 产出的事件），Runner 会用一句固定的英文兜底文案 `"An error occurred during execution. Please contact the service provider."` 补齐。这个插件在 `OnEvent` 中先一步把 content 填好，方便业务侧展示更友好、本地化或按租户定制的提示信息。结构化的 `Response.Error` 不会被修改，调试和下游消费方仍能看到原始原因。
+
+插件只会改写尚未带有有效 content 的错误事件，所以失败前已经产出的流式助手消息不会被覆盖。
+
+静态文案：
+
+```go
+rewriter := errormessage.New(
+    errormessage.WithContent("本次执行已停止，请稍后再试。"),
+)
+runnerInstance := runner.NewRunner(
+    "my-app",
+    agentInstance,
+    runner.WithPlugins(rewriter),
+)
+defer runnerInstance.Close()
+```
+
+动态 resolver（例如对 `stop_agent_error` 使用更友好的话术）：
+
+```go
+rewriter := errormessage.New(
+    errormessage.WithResolver(func(
+        _ context.Context,
+        _ *agent.Invocation,
+        e *event.Event,
+    ) (string, bool) {
+        if e == nil || e.Response == nil || e.Response.Error == nil {
+            return "", false
+        }
+        if e.Response.Error.Type == agent.ErrorTypeStopAgentError {
+            return "本次执行已按策略停止，请稍后再试。", true
+        }
+        return "执行失败，请稍后重试。", true
+    }),
+)
+```
+
+resolver 返回 `ok=false` 或空字符串时，事件保持不变，Runner 内置的兜底文案仍然生效。
+
+完整示例见 [examples/plugin/errormessage](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/plugin/errormessage)。
+
+说明：目前仓库内置了 Logging、GlobalInstruction、ToolCallID、MessageMerger、ErrorMessage、Guardrail 六类插件。其中 Guardrail 插件当前提供的内置 capability 包括工具审批、Prompt Injection 和 Unsafe Intent。更多插件可通过自定义插件实现。
 
 ## 如何扩展：写一个自己的插件
 
