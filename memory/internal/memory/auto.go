@@ -98,6 +98,31 @@ const (
 	reconcileMinProbeScore = 0.30
 )
 
+// Reconcile decision tiers. A higher tier is always preferred when
+// choosing among candidates, so a clearly duplicate entry is never
+// shadowed by a weaker-signal candidate with slightly higher token
+// overlap but no threshold crossing.
+const (
+	reconcileTierNone   = 0
+	reconcileTierUpdate = 1
+	reconcileTierSkip   = 2
+)
+
+// reconcileDecisionTier classifies a candidate against the reconcile
+// thresholds. The same helper is shared by the candidate picker in
+// decideAddOp and by the final switch, so both always agree on what
+// "skip" / "update" / "keep" mean.
+func reconcileDecisionTier(score, jaccard float64) int {
+	switch {
+	case score >= reconcileSkipScore || jaccard >= reconcileJaccardHigh:
+		return reconcileTierSkip
+	case score >= reconcileUpdateScore || jaccard >= reconcileJaccardMid:
+		return reconcileTierUpdate
+	default:
+		return reconcileTierNone
+	}
+}
+
 // MemoryJob represents a job for async memory extraction.
 type MemoryJob struct {
 	Ctx      context.Context
@@ -727,7 +752,27 @@ func (w *AutoMemoryWorker) reconcileOps(
 			out = append(out, op)
 			continue
 		}
+		// Preserve the original Add tool gating. When the caller
+		// disabled memory_add, reconcile must not sneak a mutation
+		// through by rewriting the op into an Update. Leave the op
+		// untouched and let executeOperation's EnabledTools check
+		// skip it as it would have without reconcile.
+		if !w.isToolEnabled(memory.AddToolName) {
+			out = append(out, op)
+			continue
+		}
 		decided := w.decideAddOp(ctx, userKey, op)
+		// If reconcile rewrites an Add into an Update but memory_update
+		// is disabled, the original Add would still have run under the
+		// pre-reconcile behavior. Fall back to the original Add so the
+		// Add tool gating keeps deciding the outcome, rather than
+		// silently dropping the write.
+		if decided != nil &&
+			decided.Type == extractor.OperationUpdate &&
+			!w.isToolEnabled(memory.UpdateToolName) {
+			out = append(out, op)
+			continue
+		}
 		if decided != nil {
 			out = append(out, decided)
 		}
@@ -761,20 +806,29 @@ func (w *AutoMemoryWorker) decideAddOp(
 	if err != nil || len(candidates) == 0 {
 		return op
 	}
-	// Pick the candidate that maximizes a blended signal. This guards
-	// against the case where the best vector/keyword match is not the
-	// best token-overlap match, which can happen on short paraphrases
-	// where a weaker-scored candidate actually shares more entities.
-	best := candidates[0]
-	bestJaccard := tokenJaccard(op.Memory, best.Memory.Memory)
-	for _, c := range candidates[1:] {
+	// Pick the candidate that produces the strongest reconcile
+	// decision tier, not the highest Jaccard alone. Otherwise a
+	// high-score duplicate could be shadowed by a candidate with
+	// slightly higher token overlap that still sits below all
+	// reconcile thresholds, causing the Add to be kept despite a
+	// clearly duplicate entry existing.
+	var best *memory.Entry
+	bestJaccard := 0.0
+	bestTier := -1
+	for _, c := range candidates {
 		if c == nil || c.Memory == nil {
 			continue
 		}
 		j := tokenJaccard(op.Memory, c.Memory.Memory)
-		if j > bestJaccard || (j == bestJaccard && c.Score > best.Score) {
+		tier := reconcileDecisionTier(c.Score, j)
+		if best == nil ||
+			tier > bestTier ||
+			(tier == bestTier &&
+				(c.Score > best.Score ||
+					(c.Score == best.Score && j > bestJaccard))) {
 			best = c
 			bestJaccard = j
+			bestTier = tier
 		}
 	}
 	if best == nil || best.Memory == nil || best.ID == "" {
@@ -784,8 +838,8 @@ func (w *AutoMemoryWorker) decideAddOp(
 	// Classify with two independent signals in logical OR so both
 	// vector-backed and keyword-backed stores see reconcile kick in
 	// on the same kinds of near-duplicates.
-	switch {
-	case best.Score >= reconcileSkipScore || bestJaccard >= reconcileJaccardHigh:
+	switch bestTier {
+	case reconcileTierSkip:
 		if hasNewTopics(best.Memory.Topics, op.Topics) {
 			log.DebugfContext(ctx,
 				"auto_memory: reconcile merge topics for user %s/%s "+
@@ -801,7 +855,7 @@ func (w *AutoMemoryWorker) decideAddOp(
 			best.ID, best.Score, bestJaccard)
 		return nil
 
-	case best.Score >= reconcileUpdateScore || bestJaccard >= reconcileJaccardMid:
+	case reconcileTierUpdate:
 		log.DebugfContext(ctx,
 			"auto_memory: reconcile rewrite add as update for user "+
 				"%s/%s (best=%s score=%.3f jaccard=%.3f)",
@@ -866,7 +920,16 @@ func toUpdateOp(op *extractor.Operation, best *memory.Entry) *extractor.Operatio
 	updated.Type = extractor.OperationUpdate
 	updated.MemoryID = best.ID
 	updated.Topics = merged
-	// Keep episodic metadata as-is: UpdateMemory flows through
+	// Preserve the existing memory kind when the extractor did not
+	// classify this candidate itself. executeOperation -> opToMetadata
+	// defaults an empty kind to KindFact and ApplyMetadataPatch always
+	// writes Kind unconditionally, so a missing carry-over would
+	// silently downgrade an episode (or any custom kind) on the
+	// stored entry.
+	if updated.MemoryKind == "" && best.Memory != nil {
+		updated.MemoryKind = EffectiveKind(best.Memory)
+	}
+	// Keep other episodic metadata as-is: UpdateMemory flows through
 	// ApplyMetadataPatch which only overwrites non-zero fields, so the
 	// existing entry's metadata is preserved when the extractor did not
 	// supply replacements.

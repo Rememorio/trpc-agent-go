@@ -2083,3 +2083,165 @@ func TestTokenJaccard_Symmetric(t *testing.T) {
 	assert.Equal(t, 0.0, tokenJaccard("", ""))
 	assert.Equal(t, 0.0, tokenJaccard("hi", ""))
 }
+
+// TestReconcileOps_AddDisabledUpdateEnabled ensures reconcile does not
+// smuggle a mutation through by rewriting an Add into an Update when
+// the caller has disabled memory_add. The original Add is passed
+// through so executeOperation's EnabledTools gate can drop it the
+// same way it would have in the pre-reconcile behavior.
+func TestReconcileOps_AddDisabledUpdateEnabled(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-1",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "User works at Acme as a backend engineer",
+			Topics: []string{"work"},
+		},
+		Score: 0.95,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{
+		EnabledTools: map[string]struct{}{
+			memory.UpdateToolName: {},
+			// memory.AddToolName intentionally missing.
+		},
+	}, op)
+
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "User works at Acme as a backend engineer",
+		Topics: []string{"work"},
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type,
+		"Add disabled must not be rewritten into an Update by reconcile")
+	assert.Empty(t, out[0].MemoryID)
+}
+
+// TestReconcileOps_AddEnabledUpdateDisabled ensures that when
+// memory_update is disabled, a reconcile decision that would have
+// produced an Update falls back to the original Add so the write is
+// not silently dropped.
+func TestReconcileOps_AddEnabledUpdateDisabled(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-1",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "User lives in Portland",
+			Topics: []string{"location"},
+		},
+		Score: 0.65, // mid-band, would normally become an Update.
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{
+		EnabledTools: map[string]struct{}{
+			memory.AddToolName: {},
+			// memory.UpdateToolName intentionally missing.
+		},
+	}, op)
+
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Lives in Portland Oregon",
+		Topics: []string{"location", "oregon"},
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type,
+		"Update disabled must fall back to the original Add rather than silently dropping it")
+	assert.Empty(t, out[0].MemoryID)
+}
+
+// TestReconcileOps_PreservesExistingKind covers the case where an Add
+// is rewritten into an Update against an existing episode memory: the
+// resulting op must carry the existing kind so downstream
+// ApplyMetadataPatch does not downgrade it to the default fact kind.
+func TestReconcileOps_PreservesExistingKind(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-ep",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "User attended the annual review on 2024-06-10",
+			Topics: []string{"event"},
+			Kind:   memory.KindEpisode,
+		},
+		Score: 0.95,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "User attended the annual review on 2024-06-10",
+		Topics: []string{"event", "review"}, // new topic triggers update.
+		// MemoryKind intentionally empty to exercise the carry-over.
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "mem-ep", out[0].MemoryID)
+	assert.Equal(t, memory.KindEpisode, out[0].MemoryKind,
+		"reconcile must carry over the existing kind so opToMetadata does not downgrade to fact")
+}
+
+// TestReconcileDecisionTier verifies that the tier helper respects
+// both signal bars and returns the highest tier any signal earns.
+func TestReconcileDecisionTier(t *testing.T) {
+	// Clear skip via score.
+	assert.Equal(t, reconcileTierSkip, reconcileDecisionTier(0.95, 0.0))
+	// Clear skip via jaccard.
+	assert.Equal(t, reconcileTierSkip, reconcileDecisionTier(0.0, 0.80))
+	// Update band via score.
+	assert.Equal(t, reconcileTierUpdate, reconcileDecisionTier(0.70, 0.0))
+	// Update band via jaccard.
+	assert.Equal(t, reconcileTierUpdate, reconcileDecisionTier(0.0, 0.50))
+	// Below everything.
+	assert.Equal(t, reconcileTierNone, reconcileDecisionTier(0.30, 0.20))
+}
+
+// TestReconcileOps_PrefersHigherTierCandidate guards against the
+// pre-fix behavior where a higher-Jaccard but below-threshold
+// candidate could shadow a clearly-duplicate higher-scored entry.
+// The candidate list intentionally puts the weaker-signal item
+// first; reconcile must still pick the tier-Skip entry.
+func TestReconcileOps_PrefersHigherTierCandidate(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{
+		{
+			// Token overlap is very high but both signals sit below
+			// any reconcile threshold, so this entry belongs to tier
+			// "none" even though its Jaccard is the largest.
+			ID:      "mem-weak",
+			AppName: "app", UserID: "u1",
+			Memory: &memory.Memory{
+				Memory: "foo bar baz qux",
+				Topics: []string{"x"},
+			},
+			Score: 0.20,
+		},
+		{
+			// Vector-backed duplicate: Score crosses the skip bar so
+			// this entry is tier "skip" and must win the pick even
+			// though its Jaccard with the incoming text is tiny.
+			ID:      "mem-strong",
+			AppName: "app", UserID: "u1",
+			Memory: &memory.Memory{
+				Memory: "completely different wording here",
+				Topics: []string{"x"},
+			},
+			Score: 0.95,
+		},
+	}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "foo bar baz quux",
+		Topics: []string{"x"},
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	// Same topics + tier-skip candidate → drop.
+	require.Empty(t, out,
+		"reconcile should drop the Add based on the tier-skip candidate rather than keep it based on a tier-none Jaccard winner")
+}

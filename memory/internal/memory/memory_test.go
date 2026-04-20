@@ -763,6 +763,41 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 			map[string]struct{}{"john": {}, "museum": {}},
 		), 1e-9)
 	})
+
+	t.Run("deduplicate drops chain duplicates against higher-scored entries", func(t *testing.T) {
+		// A~B above threshold, B~C above threshold, A!~C. The dedup
+		// pass must still drop C because a higher-scored
+		// near-duplicate (B) existed in the input, even though C's
+		// only surviving higher-scored neighbor (A) is below the
+		// threshold. Without the prefix scan this regresses to
+		// keeping both A and C.
+		a := &memory.Entry{
+			ID:    "A",
+			Score: 0.95,
+			Memory: &memory.Memory{
+				Memory: "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
+			},
+		}
+		b := &memory.Entry{
+			ID:    "B",
+			Score: 0.90,
+			Memory: &memory.Memory{
+				Memory: "alpha bravo charlie delta echo foxtrot golf hotel india kilo",
+			},
+		}
+		c := &memory.Entry{
+			ID:    "C",
+			Score: 0.80,
+			Memory: &memory.Memory{
+				Memory: "bravo charlie delta echo foxtrot golf hotel india kilo lima",
+			},
+		}
+		deduped := DeduplicateResults([]*memory.Entry{a, b, c})
+		// Only A must survive; B is a duplicate of A, C is a
+		// duplicate of B (a higher-scored input entry).
+		require.Len(t, deduped, 1)
+		assert.Equal(t, "A", deduped[0].ID)
+	})
 }
 
 func TestMatchMemoryEntry_FallbackNoTokens(t *testing.T) {

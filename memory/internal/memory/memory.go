@@ -1555,11 +1555,10 @@ func MergeHybridResults(
 //     ordering.
 //   - Output preserves the caller's original slice ordering among the
 //     survivors, matching the long-standing contract of this helper.
-//   - Each surviving entry's token set is only compared against other
-//     already-kept survivors (not the full slice), turning the old
-//     O(N^2) pairwise scan into O(k*N) where k is the number of
-//     survivors — typically a small fraction of N for duplicate-heavy
-//     result sets.
+//   - Each candidate is compared against every higher-scored entry
+//     (whether already kept or already dropped) so pairwise semantics
+//     hold: a chain such as A~B, B~C, A!~C still drops C because C has
+//     a higher-scored near-duplicate (B) in the input.
 func DeduplicateResults(results []*memory.Entry) []*memory.Entry {
 	const jaccardThreshold = 0.80
 	if len(results) < 2 {
@@ -1584,11 +1583,21 @@ func DeduplicateResults(results []*memory.Entry) []*memory.Entry {
 		return results[order[a]].Score > results[order[b]].Score
 	})
 
-	keepIdx := make([]int, 0, len(results))
+	// Compare each candidate against every already-visited index, not
+	// just survivors. Without this, a chain A~B and B~C (with A not
+	// similar to C) can leave both A and C in the output, which would
+	// contradict the documented pairwise semantics: every dropped
+	// entry must have at least one higher-scored near-duplicate in
+	// the final output *or* in the set of already-dropped duplicates.
+	// Comparing against all higher-scored entries (via the prefix of
+	// the sorted order) preserves that invariant.
 	kept := make([]bool, len(results))
-	for _, idx := range order {
+	kept[order[0]] = true
+	for pos := 1; pos < len(order); pos++ {
+		idx := order[pos]
 		isDup := false
-		for _, k := range keepIdx {
+		for prev := 0; prev < pos; prev++ {
+			k := order[prev]
 			if jaccardAtLeast(sets[idx], sets[k], jaccardThreshold) {
 				isDup = true
 				break
@@ -1597,13 +1606,12 @@ func DeduplicateResults(results []*memory.Entry) []*memory.Entry {
 		if isDup {
 			continue
 		}
-		keepIdx = append(keepIdx, idx)
 		kept[idx] = true
 	}
 
 	// Emit survivors in the original input order so callers relying on
 	// the historical ordering semantics keep working.
-	deduped := make([]*memory.Entry, 0, len(keepIdx))
+	deduped := make([]*memory.Entry, 0, len(results))
 	for i, r := range results {
 		if kept[i] {
 			deduped = append(deduped, r)
