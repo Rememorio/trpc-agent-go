@@ -2046,14 +2046,14 @@ func (m *Model) createPartialResponse(chunk openai.ChatCompletionChunk) *model.R
 }
 
 // normalizeStreamingError suppresses EOF-like transport errors when the stream
-// has already yielded a terminal completion chunk. Some providers close a
-// chunked HTTP stream without the final terminator, which surfaces as
-// io.ErrUnexpectedEOF in the SDK even though we already accumulated a complete
-// response with finish_reason.
+// has already yielded terminal completion chunks for every accumulated choice.
+// Some providers close a chunked HTTP stream without the final terminator,
+// which surfaces as io.ErrUnexpectedEOF in the SDK even though we already
+// accumulated a complete response with finish_reason.
 //
 // We also conservatively recover complete tool-call payloads when the provider
 // delivered a structurally complete function call chunk but dropped the trailing
-// tool_calls finish chunk or HTTP chunk terminator.
+// tool_calls finish chunk or HTTP chunk terminator for a single-choice stream.
 func normalizeStreamingError(
 	streamErr error,
 	acc openai.ChatCompletionAccumulator,
@@ -2066,15 +2066,25 @@ func normalizeStreamingError(
 	if !errors.Is(streamErr, io.EOF) && !errors.Is(streamErr, io.ErrUnexpectedEOF) {
 		return streamErr
 	}
-	for _, choice := range acc.Choices {
-		if choice.FinishReason != "" {
-			return nil
-		}
+	if allAccumulatedChoicesFinished(acc) {
+		return nil
 	}
-	if hasRecoverableToolCallBoundary(acc, lastChunk, sawChunk) {
+	if len(acc.Choices) == 1 && hasRecoverableToolCallBoundary(acc, lastChunk, sawChunk) {
 		return nil
 	}
 	return streamErr
+}
+
+func allAccumulatedChoicesFinished(acc openai.ChatCompletionAccumulator) bool {
+	if len(acc.Choices) == 0 {
+		return false
+	}
+	for _, choice := range acc.Choices {
+		if choice.FinishReason == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func hasRecoverableToolCallBoundary(
@@ -2098,7 +2108,7 @@ func hasRecoverableToolCallBoundary(
 }
 
 func hasRecoverableAccumulatedToolCalls(acc openai.ChatCompletionAccumulator) bool {
-	if len(acc.Choices) == 0 {
+	if len(acc.Choices) != 1 {
 		return false
 	}
 

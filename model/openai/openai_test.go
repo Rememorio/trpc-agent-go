@@ -2985,6 +2985,424 @@ func TestModel_GenerateContent_StreamingUnexpectedEOFAfterContentChunkStillRetur
 	}
 }
 
+func TestAllAccumulatedChoicesFinished(t *testing.T) {
+	tests := []struct {
+		name string
+		acc  openai.ChatCompletionAccumulator
+		want bool
+	}{
+		{
+			name: "empty accumulator",
+			acc:  openai.ChatCompletionAccumulator{},
+			want: false,
+		},
+		{
+			name: "all choices finished",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{FinishReason: "stop"},
+						{FinishReason: "tool_calls"},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "partial choice remains",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{FinishReason: "stop"},
+						{},
+					},
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, allAccumulatedChoicesFinished(tt.acc))
+		})
+	}
+}
+
+func TestHasRecoverableAccumulatedToolCalls(t *testing.T) {
+	tests := []struct {
+		name string
+		acc  openai.ChatCompletionAccumulator
+		want bool
+	}{
+		{
+			name: "requires exactly one choice",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								ToolCalls: []openai.ChatCompletionMessageToolCall{
+									{
+										ID: "call_1",
+										Function: openai.ChatCompletionMessageToolCallFunction{
+											Name:      "get_weather",
+											Arguments: `{"location":"Beijing"}`,
+										},
+									},
+								},
+							},
+						},
+						{},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "missing function name",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								ToolCalls: []openai.ChatCompletionMessageToolCall{
+									{
+										ID: "call_1",
+										Function: openai.ChatCompletionMessageToolCallFunction{
+											Arguments: `{"location":"Beijing"}`,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "missing tool calls",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "missing arguments",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								ToolCalls: []openai.ChatCompletionMessageToolCall{
+									{
+										ID: "call_1",
+										Function: openai.ChatCompletionMessageToolCallFunction{
+											Name: "get_weather",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "invalid arguments json",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								ToolCalls: []openai.ChatCompletionMessageToolCall{
+									{
+										ID: "call_1",
+										Function: openai.ChatCompletionMessageToolCallFunction{
+											Name:      "get_weather",
+											Arguments: `{"location"`,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "valid single-choice tool call",
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								ToolCalls: []openai.ChatCompletionMessageToolCall{
+									{
+										ID: "call_1",
+										Function: openai.ChatCompletionMessageToolCallFunction{
+											Name:      "get_weather",
+											Arguments: `{"location":"Beijing"}`,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, hasRecoverableAccumulatedToolCalls(tt.acc))
+		})
+	}
+}
+
+func TestHasRecoverableToolCallBoundary(t *testing.T) {
+	validAcc := openai.ChatCompletionAccumulator{
+		ChatCompletion: openai.ChatCompletion{
+			Choices: []openai.ChatCompletionChoice{
+				{
+					Message: openai.ChatCompletionMessage{
+						ToolCalls: []openai.ChatCompletionMessageToolCall{
+							{
+								ID: "call_1",
+								Function: openai.ChatCompletionMessageToolCallFunction{
+									Name:      "get_weather",
+									Arguments: `{"location":"Beijing"}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		acc       openai.ChatCompletionAccumulator
+		lastChunk openai.ChatCompletionChunk
+		sawChunk  bool
+		want      bool
+	}{
+		{
+			name:      "requires at least one chunk",
+			acc:       validAcc,
+			lastChunk: openai.ChatCompletionChunk{},
+			sawChunk:  false,
+			want:      false,
+		},
+		{
+			name: "requires tool call delta",
+			acc:  validAcc,
+			lastChunk: openai.ChatCompletionChunk{
+				Choices: []openai.ChatCompletionChunkChoice{
+					{
+						Delta: openai.ChatCompletionChunkChoiceDelta{
+							Content: "hello",
+						},
+					},
+				},
+			},
+			sawChunk: true,
+			want:     false,
+		},
+		{
+			name: "contentful tool call chunk is not recoverable",
+			acc:  validAcc,
+			lastChunk: openai.ChatCompletionChunk{
+				Choices: []openai.ChatCompletionChunkChoice{
+					{
+						Delta: openai.ChatCompletionChunkChoiceDelta{
+							Content: "extra",
+							ToolCalls: []openai.ChatCompletionChunkChoiceDeltaToolCall{
+								{
+									Index: 0,
+									ID:    "call_1",
+									Type:  "function",
+									Function: openai.ChatCompletionChunkChoiceDeltaToolCallFunction{
+										Name:      "get_weather",
+										Arguments: `{"location":"Beijing"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			sawChunk: true,
+			want:     false,
+		},
+		{
+			name: "pure tool call boundary is recoverable",
+			acc:  validAcc,
+			lastChunk: openai.ChatCompletionChunk{
+				Choices: []openai.ChatCompletionChunkChoice{
+					{
+						Delta: openai.ChatCompletionChunkChoiceDelta{
+							ToolCalls: []openai.ChatCompletionChunkChoiceDeltaToolCall{
+								{
+									Index: 0,
+									ID:    "call_1",
+									Type:  "function",
+									Function: openai.ChatCompletionChunkChoiceDeltaToolCallFunction{
+										Name:      "get_weather",
+										Arguments: `{"location":"Beijing"}`,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			sawChunk: true,
+			want:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, hasRecoverableToolCallBoundary(tt.acc, tt.lastChunk, tt.sawChunk))
+		})
+	}
+}
+
+func TestNormalizeStreamingError(t *testing.T) {
+	toolCallAcc := openai.ChatCompletionAccumulator{
+		ChatCompletion: openai.ChatCompletion{
+			Choices: []openai.ChatCompletionChoice{
+				{
+					Message: openai.ChatCompletionMessage{
+						ToolCalls: []openai.ChatCompletionMessageToolCall{
+							{
+								ID: "call_1",
+								Function: openai.ChatCompletionMessageToolCallFunction{
+									Name:      "get_weather",
+									Arguments: `{"location":"Beijing"}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	toolCallBoundaryChunk := openai.ChatCompletionChunk{
+		Choices: []openai.ChatCompletionChunkChoice{
+			{
+				Delta: openai.ChatCompletionChunkChoiceDelta{
+					ToolCalls: []openai.ChatCompletionChunkChoiceDeltaToolCall{
+						{
+							Index: 0,
+							ID:    "call_1",
+							Type:  "function",
+							Function: openai.ChatCompletionChunkChoiceDeltaToolCallFunction{
+								Name:      "get_weather",
+								Arguments: `{"location":"Beijing"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		streamErr error
+		acc       openai.ChatCompletionAccumulator
+		lastChunk openai.ChatCompletionChunk
+		sawChunk  bool
+		wantNil   bool
+		wantErr   error
+	}{
+		{
+			name:      "nil error remains nil",
+			streamErr: nil,
+			wantNil:   true,
+		},
+		{
+			name:      "non eof error is preserved",
+			streamErr: assert.AnError,
+			wantErr:   assert.AnError,
+		},
+		{
+			name:      "all choices finished recovers eof",
+			streamErr: io.ErrUnexpectedEOF,
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{FinishReason: "stop"},
+						{FinishReason: "tool_calls"},
+					},
+				},
+			},
+			wantNil: true,
+		},
+		{
+			name:      "single choice tool call boundary recovers eof",
+			streamErr: io.ErrUnexpectedEOF,
+			acc:       toolCallAcc,
+			lastChunk: toolCallBoundaryChunk,
+			sawChunk:  true,
+			wantNil:   true,
+		},
+		{
+			name:      "partial multi-choice stream still returns eof",
+			streamErr: io.ErrUnexpectedEOF,
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{FinishReason: "stop"},
+						{},
+					},
+				},
+			},
+			wantErr: io.ErrUnexpectedEOF,
+		},
+		{
+			name:      "multi-choice tool call boundary still returns eof",
+			streamErr: io.ErrUnexpectedEOF,
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						toolCallAcc.Choices[0],
+						{},
+					},
+				},
+			},
+			lastChunk: toolCallBoundaryChunk,
+			sawChunk:  true,
+			wantErr:   io.ErrUnexpectedEOF,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeStreamingError(tt.streamErr, tt.acc, tt.lastChunk, tt.sawChunk)
+			if tt.wantNil {
+				require.NoError(t, got)
+				return
+			}
+			require.ErrorIs(t, got, tt.wantErr)
+		})
+	}
+}
+
 func TestModel_GenerateContent_WithReasoningContent(t *testing.T) {
 	// Create a mock server that returns streaming responses with reasoning_content
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
