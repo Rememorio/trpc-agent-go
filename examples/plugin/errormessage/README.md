@@ -31,7 +31,7 @@ go run .
 You will see two blocks in the output. The first block is persisted **without**
 the plugin, so the default fallback message is stored:
 
-```
+```text
   Persisted error event:
     Response.Error.Type : stop_agent_error
     Response.Error.Msg  : max iterations reached
@@ -41,7 +41,7 @@ the plugin, so the default fallback message is stored:
 The second block is persisted **with** the plugin, which uses the resolver
 above to choose a friendlier message:
 
-```
+```text
   Persisted error event:
     Response.Error.Type : stop_agent_error
     Response.Error.Msg  : max iterations reached

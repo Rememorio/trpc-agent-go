@@ -65,7 +65,9 @@ func WithName(name string) Option {
 // WithContent sets a static message that replaces the framework's default
 // fallback content for all error events.
 //
-// Shorthand for WithResolver(func(...) (string, bool) { return content, true }).
+// It is shorthand for a Resolver that returns (content, content != ""), so
+// passing an empty string is a no-op and the event is left untouched, which
+// means Runner's built-in fallback message still applies.
 func WithContent(content string) Option {
 	return WithResolver(func(
 		_ context.Context,

@@ -16,6 +16,19 @@
 // that fallback and fills the Choices content itself, so callers can surface a
 // customised, tenant-specific, or localised message to end users while keeping
 // the structured Response.Error intact for debugging and downstream consumers.
+//
+// Scope:
+//
+//   - The plugin is triggered via the runner OnEvent hook, so it covers
+//     errors produced by agents during a run (for example, events emitted by
+//     llmflow for agent.StopError, or any raw event.NewErrorEvent).
+//   - Errors returned synchronously from agent.Run (before any event channel
+//     is produced) are handled by the runner itself via
+//     ensureErrorEventContent, and the runner applies its built-in fallback
+//     content to those events before invoking plugin hooks. In that specific
+//     path the plugin cannot rewrite the persisted content. Callers that need
+//     a custom message there should make their agent implementation surface
+//     a first error event instead of returning an error from Run.
 package errormessage
 
 import (
@@ -90,9 +103,14 @@ func (p *errorMessagePlugin) onEvent(
 // isRewritableErrorEvent reports whether the event is an error event that has
 // no assistant-visible content yet. Events that already carry valid content
 // (e.g. a partial assistant response produced before the failure) are left
-// untouched so this plugin never overwrites real assistant text.
+// untouched so this plugin never overwrites real assistant text. Partial
+// events are also skipped so that a later final event can still decide the
+// outcome without this plugin leaking a premature failure message to callers.
 func isRewritableErrorEvent(e *event.Event) bool {
 	if e == nil || e.Response == nil || e.Response.Error == nil {
+		return false
+	}
+	if e.IsPartial {
 		return false
 	}
 	if e.IsValidContent() {
@@ -114,7 +132,9 @@ func ensureFirstAssistantChoice(rsp *model.Response) {
 		}}
 		return
 	}
-	if rsp.Choices[0].Message.Role == "" {
-		rsp.Choices[0].Message.Role = model.RoleAssistant
-	}
+	// Always force the first choice into an assistant role so resolver
+	// output is never written into a non-assistant choice (for example when
+	// upstream emits an error event whose first choice carries a
+	// role=user or role=system placeholder).
+	rsp.Choices[0].Message.Role = model.RoleAssistant
 }

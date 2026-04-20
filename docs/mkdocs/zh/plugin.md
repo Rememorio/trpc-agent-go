@@ -837,6 +837,14 @@ rewriter := errormessage.New(
 
 resolver 返回 `ok=false` 或空字符串时，事件保持不变，Runner 内置的兜底文案仍然生效。
 
+FinishReason：
+
+插件默认会把合成 choice 的 `FinishReason` 设为 `"error"`。如果下游协议期望别的取值，可以通过 `errormessage.WithFinishReason("stop")` 等方式覆盖。如果原始 choice 已经带有 `FinishReason`，插件会原样保留，不会强制覆盖下游的预期。
+
+适用范围：
+
+插件通过 `runner.WithPlugins(...)` 注册，会在 Runner 处理每一条事件时触发，因此能覆盖 agent 从事件通道发出的错误事件（比如 `llmflow` 针对 `agent.StopError` 产出的 `stop_agent_error` 事件，以及任何 `event.NewErrorEvent(...)` 产出的事件）。但对于 `agent.Run` 同步返回 error（尚未建立事件通道）这一路径，Runner 会直接用内置兜底文案写入 session，此时本插件无法改写持久化内容。
+
 完整示例见 [examples/plugin/errormessage](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/plugin/errormessage)。
 
 说明：目前仓库内置了 Logging、GlobalInstruction、ToolCallID、MessageMerger、ErrorMessage、Guardrail 六类插件。其中 Guardrail 插件当前提供的内置 capability 包括工具审批、Prompt Injection 和 Unsafe Intent。更多插件可通过自定义插件实现。

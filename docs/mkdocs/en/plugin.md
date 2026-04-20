@@ -547,6 +547,14 @@ rewriter := errormessage.New(
 
 Returning `ok=false` or an empty string from the resolver leaves the event untouched, which means Runner's built-in fallback message still applies.
 
+Finish reason:
+
+By default the plugin sets the synthesised choice's `FinishReason` to `"error"`. Use `errormessage.WithFinishReason("stop")` or another value if your downstream protocol expects a different reason. If the original choice already has a `FinishReason`, the plugin preserves it and does not override downstream expectations.
+
+Scope:
+
+The plugin is installed via `runner.WithPlugins(...)` and runs on every event the runner processes, so it covers errors that agents emit on their event channel (for example, the `stop_agent_error` event produced by `llmflow` for `agent.StopError`, or any raw `event.NewErrorEvent(...)`). Errors returned synchronously from `agent.Run` (before any event channel is produced) are handled directly by Runner using its built-in fallback content, so this plugin does not rewrite the persisted content on that specific path.
+
 Full example: [examples/plugin/errormessage](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/plugin/errormessage).
 
 ### Guardrail

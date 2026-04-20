@@ -289,6 +289,77 @@ func TestPlugin_NilResponseIsSafe(t *testing.T) {
 	require.Same(t, original, out)
 }
 
+// TestPlugin_SkipsPartialErrorEvents ensures that partial error events are
+// forwarded unchanged. A later final event is free to override the outcome,
+// so the plugin must not surface a failure message for transient partial
+// frames.
+func TestPlugin_SkipsPartialErrorEvents(t *testing.T) {
+	p := errormessage.New(errormessage.WithContent("should not apply"))
+	m := newPluginManager(t, p)
+
+	rsp := &model.Response{
+		Object:    model.ObjectTypeError,
+		IsPartial: true,
+		Error: &model.ResponseError{
+			Type:    "flow_error",
+			Message: "transient failure",
+		},
+	}
+	original := event.NewResponseEvent("inv", "agent", rsp)
+
+	out, err := m.OnEvent(context.Background(), nil, original)
+	require.NoError(t, err)
+	require.Same(t, original, out)
+	require.Empty(t, original.Response.Choices)
+}
+
+// TestPlugin_NormalisesNonAssistantFirstChoiceRole ensures the plugin always
+// writes its resolved content into an assistant-role choice, even if upstream
+// emitted an error event whose first choice was authored as user/system.
+func TestPlugin_NormalisesNonAssistantFirstChoiceRole(t *testing.T) {
+	p := errormessage.New(errormessage.WithContent("friendly"))
+	m := newPluginManager(t, p)
+
+	rsp := &model.Response{
+		Object: model.ObjectTypeError,
+		Done:   true,
+		Error: &model.ResponseError{
+			Type:    "flow_error",
+			Message: "boom",
+		},
+		Choices: []model.Choice{{
+			Index: 0,
+			Message: model.Message{
+				Role: model.RoleUser,
+			},
+		}},
+	}
+	original := event.NewResponseEvent("inv", "agent", rsp)
+	require.False(t, original.Response.IsValidContent())
+
+	out, err := m.OnEvent(context.Background(), nil, original)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, out.Response.Choices, 1)
+	require.Equal(
+		t,
+		model.RoleAssistant,
+		out.Response.Choices[0].Message.Role,
+	)
+	require.Equal(
+		t,
+		"friendly",
+		out.Response.Choices[0].Message.Content,
+	)
+
+	// Original event must not be mutated by the plugin.
+	require.Equal(
+		t,
+		model.RoleUser,
+		original.Response.Choices[0].Message.Role,
+	)
+}
+
 // Using errors.New here keeps the option.go import block matching the rest of
 // the repository even when Resolver type evolves in the future.
 var _ errormessage.Resolver = func(
