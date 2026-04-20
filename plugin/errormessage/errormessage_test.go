@@ -369,3 +369,13 @@ var _ errormessage.Resolver = func(
 ) (string, bool) {
 	return errors.New("unused").Error(), false
 }
+
+// TestPlugin_RegisterNilRegistryIsNoop guards the defensive nil-registry
+// branch on the plugin.Register contract. It must not panic.
+func TestPlugin_RegisterNilRegistryIsNoop(t *testing.T) {
+	p := errormessage.New(errormessage.WithContent("friendly"))
+	// The plugin.Plugin contract allows implementations to be tolerant of
+	// a nil registry. We reach in via the exported interface so the call is
+	// identical to how plugin.NewManager would invoke it.
+	require.NotPanics(t, func() { p.Register(nil) })
+}
