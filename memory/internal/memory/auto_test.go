@@ -85,6 +85,11 @@ type mockOperator struct {
 	updateErr   error
 	deleteErr   error
 	clearErr    error
+	// searchResults, when non-nil, is returned directly by SearchMemories
+	// as a scored candidate list. Tests use this to exercise reconcile
+	// decision branches without needing a real search implementation.
+	// A nil value keeps the default behavior (reuse ReadMemories).
+	searchResults []*memory.Entry
 }
 
 func newMockOperator() *mockOperator {
@@ -123,6 +128,16 @@ func (m *mockOperator) SearchMemories(
 ) ([]*memory.Entry, error) {
 	if m.searchErr != nil {
 		return nil, m.searchErr
+	}
+	if m.searchResults != nil {
+		// Return fresh copies so callers mutating entries do not leak
+		// into the mock's own state across assertions.
+		out := make([]*memory.Entry, 0, len(m.searchResults))
+		for _, e := range m.searchResults {
+			cloned := *e
+			out = append(out, &cloned)
+		}
+		return out, nil
 	}
 	return m.ReadMemories(ctx, userKey, 0)
 }
@@ -1867,4 +1882,204 @@ func TestCreateAutoMemory_SearchError_FallsBackToRead(t *testing.T) {
 	assert.Equal(t, 1, op.addCalls)
 	require.Len(t, capturedExisting, 1)
 	assert.Equal(t, "fallback", capturedExisting[0].Memory.Memory)
+}
+
+// --- reconcile decision tests ------------------------------------------
+
+// reconcileUserKey returns the userKey used by reconcile decision tests.
+func reconcileUserKey() memory.UserKey {
+	return memory.UserKey{AppName: "app", UserID: "u1"}
+}
+
+// TestReconcileOps_SkipOnHighSimilarity verifies that an Add whose
+// content is already covered by an existing entry (identical topics)
+// is dropped entirely without reaching AddMemory or UpdateMemory.
+func TestReconcileOps_SkipOnHighSimilarity(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-1",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "User works at Acme as a backend engineer",
+			Topics: []string{"work", "Acme"},
+		},
+		Score: 0.95,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	ops := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "User works at Acme as a backend engineer",
+		Topics: []string{"work", "Acme"}, // same topics → drop.
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	require.Empty(t, out, "duplicate Add should be dropped")
+}
+
+// TestReconcileOps_SkipScoreWithNewTopics verifies that when the score
+// crosses the skip threshold but the incoming Add carries new topics,
+// reconcile rewrites the op into a topic-merging Update rather than
+// a complete drop.
+func TestReconcileOps_SkipScoreWithNewTopics(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-1",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "User works at Acme as a backend engineer",
+			Topics: []string{"work"},
+		},
+		Score: 0.95,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	ops := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "User works at Acme as a backend engineer",
+		Topics: []string{"Acme", "engineering"}, // new topics.
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "mem-1", out[0].MemoryID)
+	assert.Contains(t, out[0].Topics, "work")
+	assert.Contains(t, out[0].Topics, "Acme")
+	assert.Contains(t, out[0].Topics, "engineering")
+}
+
+// TestReconcileOps_RewriteAsUpdateOnMidSignal verifies that an Add
+// whose best candidate sits in the update band (via Score or Jaccard)
+// is rewritten into an Update targeting that candidate.
+func TestReconcileOps_RewriteAsUpdateOnMidSignal(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-loc",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "User lives in Portland",
+			Topics: []string{"location"},
+		},
+		Score: 0.65, // mid band, Jaccard is also mid+.
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	ops := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Lives in Portland Oregon",
+		Topics: []string{"location", "oregon"},
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "mem-loc", out[0].MemoryID)
+	assert.Contains(t, out[0].Topics, "location")
+	assert.Contains(t, out[0].Topics, "oregon")
+	// Update must carry the fresh wording.
+	assert.Equal(t, "Lives in Portland Oregon", out[0].Memory)
+}
+
+// TestReconcileOps_KeepsOpWhenNotSimilar verifies that unrelated facts
+// are passed through unchanged so reconcile never collapses distinct
+// memories into a single row.
+func TestReconcileOps_KeepsOpWhenNotSimilar(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "mem-unrelated",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "Owns a kitten named Mochi",
+			Topics: []string{"pet"},
+		},
+		Score: 0.1,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	ops := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "User graduated from Stanford University",
+		Topics: []string{"education"},
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+}
+
+// TestReconcileOps_PreservesNonAddOps ensures Update / Delete / Clear
+// ops are passed through untouched by reconcile.
+func TestReconcileOps_PreservesNonAddOps(t *testing.T) {
+	op := newMockOperator()
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	in := []*extractor.Operation{
+		{Type: extractor.OperationUpdate, MemoryID: "a", Memory: "x"},
+		{Type: extractor.OperationDelete, MemoryID: "b"},
+		{Type: extractor.OperationClear},
+	}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	require.Len(t, out, 3)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, extractor.OperationDelete, out[1].Type)
+	assert.Equal(t, extractor.OperationClear, out[2].Type)
+}
+
+// TestReconcileOps_SearchErrorIsNonFatal ensures a SearchMemories
+// failure degrades gracefully: the original Add op is preserved so
+// behavior matches the pre-reconcile baseline.
+func TestReconcileOps_SearchErrorIsNonFatal(t *testing.T) {
+	op := newMockOperator()
+	op.searchErr = errors.New("boom")
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "anything",
+	}}
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+}
+
+// TestReconcileOps_EmptyInputs covers the trivial fast paths so the
+// worker never returns a nil slice or panics on degenerate inputs.
+func TestReconcileOps_EmptyInputs(t *testing.T) {
+	op := newMockOperator()
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	assert.Empty(t, worker.reconcileOps(
+		context.Background(), reconcileUserKey(), nil))
+	assert.Empty(t, worker.reconcileOps(
+		context.Background(), reconcileUserKey(),
+		[]*extractor.Operation{}))
+
+	// Op with empty memory text is kept as-is.
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(),
+		[]*extractor.Operation{{Type: extractor.OperationAdd, Memory: ""}})
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+}
+
+// TestMergeTopics_Ordering verifies that merging preserves existing
+// order first and is case-insensitive for deduplication.
+func TestMergeTopics_Ordering(t *testing.T) {
+	got := mergeTopics(
+		[]string{"Work", "acme"},
+		[]string{"ACME", "engineering", ""},
+	)
+	assert.Equal(t, []string{"Work", "acme", "engineering"}, got)
+}
+
+// TestTokenJaccard_Symmetric verifies that the token Jaccard is
+// symmetric and handles degenerate inputs without panics.
+func TestTokenJaccard_Symmetric(t *testing.T) {
+	a := "User lives in Portland"
+	b := "Lives in Portland Oregon"
+	ab := tokenJaccard(a, b)
+	ba := tokenJaccard(b, a)
+	assert.InDelta(t, ab, ba, 1e-9)
+	assert.Greater(t, ab, 0.0)
+
+	// Empty / degenerate inputs should not panic and should yield 0.
+	assert.Equal(t, 0.0, tokenJaccard("", ""))
+	assert.Equal(t, 0.0, tokenJaccard("hi", ""))
 }
