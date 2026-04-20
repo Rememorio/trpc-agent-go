@@ -2069,6 +2069,15 @@ func TestMergeTopics_Ordering(t *testing.T) {
 	assert.Equal(t, []string{"Work", "acme", "engineering"}, got)
 }
 
+// TestMergeTopics_FreshOnlyNormalized ensures that when the existing
+// entry has no topics, the fresh slice still flows through trimming,
+// empty filtering, and case-insensitive de-duplication instead of
+// being persisted verbatim.
+func TestMergeTopics_FreshOnlyNormalized(t *testing.T) {
+	got := mergeTopics(nil, []string{"  work", "", "Work", "engineering"})
+	assert.Equal(t, []string{"work", "engineering"}, got)
+}
+
 // TestTokenJaccard_Symmetric verifies that the token Jaccard is
 // symmetric and handles degenerate inputs without panics.
 func TestTokenJaccard_Symmetric(t *testing.T) {
@@ -2209,13 +2218,16 @@ func TestReconcileOps_PrefersHigherTierCandidate(t *testing.T) {
 	op := newMockOperator()
 	op.searchResults = []*memory.Entry{
 		{
-			// Token overlap is very high but both signals sit below
-			// any reconcile threshold, so this entry belongs to tier
-			// "none" even though its Jaccard is the largest.
+			// Token overlap with the incoming text is meaningful but
+			// still below reconcileJaccardMid, so this entry sits in
+			// tier "none". The previous fixture accidentally crossed
+			// the mid bar and only exercised skip-vs-update ordering;
+			// this wording makes the regression actually hit the
+			// documented below-threshold shadowing scenario.
 			ID:      "mem-weak",
 			AppName: "app", UserID: "u1",
 			Memory: &memory.Memory{
-				Memory: "foo bar baz qux",
+				Memory: "foo bar zap alpha",
 				Topics: []string{"x"},
 			},
 			Score: 0.20,

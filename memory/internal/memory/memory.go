@@ -1579,8 +1579,18 @@ func DeduplicateResults(results []*memory.Entry) []*memory.Entry {
 	for i := range order {
 		order[i] = i
 	}
+	// Treat nil entries as having the lowest possible score so they
+	// sort last instead of panicking in the comparator. The Jaccard
+	// pass below is already nil-safe via entryTokenSet, so keeping
+	// nils at the tail is enough to preserve overall safety.
+	entryScore := func(e *memory.Entry) float64 {
+		if e == nil {
+			return math.Inf(-1)
+		}
+		return e.Score
+	}
 	sort.SliceStable(order, func(a, b int) bool {
-		return results[order[a]].Score > results[order[b]].Score
+		return entryScore(results[order[a]]) > entryScore(results[order[b]])
 	})
 
 	// Compare each candidate against every already-visited index, not

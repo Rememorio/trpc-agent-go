@@ -798,6 +798,28 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		require.Len(t, deduped, 1)
 		assert.Equal(t, "A", deduped[0].ID)
 	})
+
+	t.Run("deduplicate tolerates nil entries without panicking", func(t *testing.T) {
+		live := &memory.Entry{
+			ID:    "live",
+			Score: 0.9,
+			Memory: &memory.Memory{
+				Memory: "John went to the library with his kids on Saturday",
+			},
+		}
+		// Interleave nil entries before and after the live entry so
+		// the sort comparator and the Jaccard pass both observe them.
+		// The contract under test is that nil entries do not panic
+		// and do not cause the live entry to be dropped.
+		deduped := DeduplicateResults([]*memory.Entry{nil, live, nil})
+		var saw bool
+		for _, e := range deduped {
+			if e != nil && e.ID == "live" {
+				saw = true
+			}
+		}
+		assert.True(t, saw, "live entry should survive alongside nil entries")
+	})
 }
 
 func TestMatchMemoryEntry_FallbackNoTokens(t *testing.T) {

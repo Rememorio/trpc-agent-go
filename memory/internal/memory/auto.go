@@ -938,11 +938,11 @@ func toUpdateOp(op *extractor.Operation, best *memory.Entry) *extractor.Operatio
 
 // mergeTopics returns a case-insensitive de-duplicated union of the
 // two topic slices, preserving the ordering of the existing slice
-// first and appending new topics not yet present.
+// first and appending new topics not yet present. Both inputs flow
+// through the same trimming and empty-filtering pipeline so a
+// fresh-only merge (when the existing entry had no topics) still
+// emits a normalized slice.
 func mergeTopics(existing, fresh []string) []string {
-	if len(existing) == 0 {
-		return append([]string(nil), fresh...)
-	}
 	seen := make(map[string]struct{}, len(existing)+len(fresh))
 	out := make([]string, 0, len(existing)+len(fresh))
 	for _, t := range existing {
