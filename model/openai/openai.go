@@ -30,7 +30,6 @@ import (
 	openai "github.com/openai/openai-go"
 	openaiopt "github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/respjson"
-	"github.com/openai/openai-go/packages/ssestream"
 	"github.com/openai/openai-go/shared"
 	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -1296,6 +1295,8 @@ func (m *Model) handleStreamingResponseWithEmitter(
 	var reasoningBuf bytes.Buffer
 	// Track next available index for tool calls (for providers that don't set correct indices).
 	nextToolCallIndex := 0
+	var lastChunk openai.ChatCompletionChunk
+	var sawChunk bool
 
 	for stream.Next() {
 		chunk := stream.Current()
@@ -1318,6 +1319,8 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		// Accumulate chunk for correctness (tool call deltas are assembled later),
 		// but skip chunks with reasoning content that would cause the SDK accumulator to panic.
 		m.accumulateChunk(chunk, &acc, &reasoningBuf)
+		lastChunk = chunk
+		sawChunk = true
 
 		// Suppress chunks that carry no meaningful visible delta (including
 		// tool_call deltas, which we'll surface only in the final response).
@@ -1338,10 +1341,12 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		}
 	}
 
-	// Call the stream complete callback before the final response is emitted.
-	m.handleStreamCompleteCallback(ctx, chatRequest, acc, stream.Err())
+	streamErr := normalizeStreamingError(stream.Err(), acc, lastChunk, sawChunk)
 
-	m.emitStreamingFinalResponse(ctx, stream, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), emit)
+	// Call the stream complete callback before the final response is emitted.
+	m.handleStreamCompleteCallback(ctx, chatRequest, acc, streamErr)
+
+	m.emitStreamingFinalResponse(ctx, streamErr, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), emit)
 }
 
 // sanitizeChunkForAccumulator returns a defensive copy of the given chunk that
@@ -2040,17 +2045,95 @@ func (m *Model) createPartialResponse(chunk openai.ChatCompletionChunk) *model.R
 	return response
 }
 
+// normalizeStreamingError suppresses EOF-like transport errors when the stream
+// has already yielded a terminal completion chunk. Some providers close a
+// chunked HTTP stream without the final terminator, which surfaces as
+// io.ErrUnexpectedEOF in the SDK even though we already accumulated a complete
+// response with finish_reason.
+//
+// We also conservatively recover complete tool-call payloads when the provider
+// delivered a structurally complete function call chunk but dropped the trailing
+// tool_calls finish chunk or HTTP chunk terminator.
+func normalizeStreamingError(
+	streamErr error,
+	acc openai.ChatCompletionAccumulator,
+	lastChunk openai.ChatCompletionChunk,
+	sawChunk bool,
+) error {
+	if streamErr == nil {
+		return nil
+	}
+	if !errors.Is(streamErr, io.EOF) && !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+		return streamErr
+	}
+	for _, choice := range acc.Choices {
+		if choice.FinishReason != "" {
+			return nil
+		}
+	}
+	if hasRecoverableToolCallBoundary(acc, lastChunk, sawChunk) {
+		return nil
+	}
+	return streamErr
+}
+
+func hasRecoverableToolCallBoundary(
+	acc openai.ChatCompletionAccumulator,
+	lastChunk openai.ChatCompletionChunk,
+	sawChunk bool,
+) bool {
+	if !sawChunk || len(lastChunk.Choices) == 0 {
+		return false
+	}
+
+	lastChoice := lastChunk.Choices[0]
+	if len(lastChoice.Delta.ToolCalls) == 0 {
+		return false
+	}
+	if strings.TrimSpace(lastChoice.Delta.Content) != "" {
+		return false
+	}
+
+	return hasRecoverableAccumulatedToolCalls(acc)
+}
+
+func hasRecoverableAccumulatedToolCalls(acc openai.ChatCompletionAccumulator) bool {
+	if len(acc.Choices) == 0 {
+		return false
+	}
+
+	toolCalls := acc.Choices[0].Message.ToolCalls
+	if len(toolCalls) == 0 {
+		return false
+	}
+
+	for _, tc := range toolCalls {
+		if tc.Function.Name == "" {
+			return false
+		}
+		args := tc.Function.Arguments
+		if args == "" {
+			return false
+		}
+		if !json.Valid([]byte(args)) {
+			return false
+		}
+	}
+
+	return true
+}
+
 // emitStreamingFinalResponse emits the final response with accumulated data.
 func (m *Model) emitStreamingFinalResponse(
 	ctx context.Context,
-	stream *ssestream.Stream[openai.ChatCompletionChunk],
+	streamErr error,
 	acc openai.ChatCompletionAccumulator,
 	idToIndexMap map[string]int,
 	extraFieldsMap map[string]map[string]any,
 	aggregatedReasoning string,
 	emit responseEmitter,
 ) {
-	if stream.Err() == nil {
+	if streamErr == nil {
 		// Check accumulated tool calls (batch processing after streaming is complete).
 		var hasToolCall bool
 		var accumulatedToolCalls []model.ToolCall
@@ -2088,7 +2171,7 @@ func (m *Model) emitStreamingFinalResponse(
 	// Send error response.
 	emit(&model.Response{
 		Error: &model.ResponseError{
-			Message: stream.Err().Error(),
+			Message: streamErr.Error(),
 			Type:    model.ErrorTypeStreamError,
 		},
 		Timestamp: time.Now(),

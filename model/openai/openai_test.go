@@ -2492,6 +2492,48 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+func writeTruncatedChunkedSSE(t *testing.T, w http.ResponseWriter, payloads ...string) {
+	t.Helper()
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		t.Errorf("response writer does not support hijacking")
+		return
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		t.Errorf("hijack response writer: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	if _, err := fmt.Fprintf(
+		rw,
+		"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+	); err != nil {
+		t.Errorf("write response headers: %v", err)
+		return
+	}
+	if err := rw.Flush(); err != nil {
+		t.Errorf("flush response headers: %v", err)
+		return
+	}
+
+	writeChunk := func(payload string) error {
+		if _, err := fmt.Fprintf(rw, "%x\r\n%s\r\n", len(payload), payload); err != nil {
+			return err
+		}
+		return rw.Flush()
+	}
+
+	for _, payload := range payloads {
+		if err := writeChunk(payload); err != nil {
+			t.Errorf("write chunk: %v", err)
+			return
+		}
+	}
+}
+
 // TestModel_GenerateContent_StreamingBatchProcessing tests our handleStreamingResponse batch processing logic
 func TestModel_GenerateContent_StreamingBatchProcessing(t *testing.T) {
 	// Test cases covering different streaming scenarios.
@@ -2673,6 +2715,273 @@ func TestModel_GenerateContent_StreamingBatchProcessing(t *testing.T) {
 				assert.Equalf(t, expectedTimeArgs, string(toolCalls[1].Function.Arguments), "Expected second tool args '%s', got '%s'", expectedTimeArgs, string(toolCalls[1].Function.Arguments))
 			}
 		})
+	}
+}
+
+func TestModel_GenerateContent_StreamingUnexpectedEOFAfterTerminalToolCallChunk(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Beijing\"}"}}]},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":""},"finish_reason":"tool_calls"}]}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	require.Nil(t, finalResponse.Error)
+	require.False(t, finalResponse.Done)
+	require.False(t, finalResponse.IsPartial)
+	require.Len(t, finalResponse.Choices, 1)
+	require.NotNil(t, finalResponse.Choices[0].FinishReason)
+	require.Equal(t, "tool_calls", *finalResponse.Choices[0].FinishReason)
+	require.Len(t, finalResponse.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "call_123", finalResponse.Choices[0].Message.ToolCalls[0].ID)
+	require.Equal(t, "get_weather", finalResponse.Choices[0].Message.ToolCalls[0].Function.Name)
+	require.Equal(
+		t,
+		`{"location":"Beijing"}`,
+		string(finalResponse.Choices[0].Message.ToolCalls[0].Function.Arguments),
+	)
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.NoError(t, callbackErr)
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
+	}
+}
+
+func TestModel_GenerateContent_StreamingUnexpectedEOFWithRecoverableToolCallChunkReturnsFinalToolCall(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Beijing\"}"}}]},"finish_reason":null}]}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	require.Nil(t, finalResponse.Error)
+	require.False(t, finalResponse.Done)
+	require.Len(t, finalResponse.Choices, 1)
+	require.Len(t, finalResponse.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "get_weather", finalResponse.Choices[0].Message.ToolCalls[0].Function.Name)
+	require.Equal(
+		t,
+		`{"location":"Beijing"}`,
+		string(finalResponse.Choices[0].Message.ToolCalls[0].Function.Arguments),
+	)
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.NoError(t, callbackErr)
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
+	}
+}
+
+func TestModel_GenerateContent_StreamingUnexpectedEOFWithPartialToolCallArgumentsReturnsError(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\""}}]},"finish_reason":null}]}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	require.NotNil(t, finalResponse.Error)
+	require.Equal(t, model.ErrorTypeStreamError, finalResponse.Error.Type)
+	require.Contains(t, finalResponse.Error.Message, "unexpected EOF")
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.Error(t, callbackErr)
+		require.ErrorContains(t, callbackErr, "unexpected EOF")
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
+	}
+}
+
+func TestModel_GenerateContent_StreamingUnexpectedEOFAfterContentChunkStillReturnsError(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Beijing\"}"}}]},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"content":"extra"},"finish_reason":null}]}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	require.NotNil(t, finalResponse.Error)
+	require.Equal(t, model.ErrorTypeStreamError, finalResponse.Error.Type)
+	require.Contains(t, finalResponse.Error.Message, "unexpected EOF")
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.Error(t, callbackErr)
+		require.ErrorContains(t, callbackErr, "unexpected EOF")
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
 	}
 }
 
