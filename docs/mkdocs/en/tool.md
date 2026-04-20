@@ -10,6 +10,7 @@ The Tool system is a core component of the tRPC-Agent-Go framework, enabling Age
 - **🌊 Streaming Responses**: Supports both real-time streaming responses and normal responses.
 - **⚡ Parallel Execution**: Tool invocations support parallel execution to improve performance.
 - **🔄 MCP Protocol**: Full support for STDIO, SSE, and Streamable HTTP transports.
+- **🔁 Tool Call Retry**: Supports retrying callable tool calls in LLMAgent and Graph ToolsNode.
 - **🛠️ Configuration Support**: Provides configuration options and filter support.
 - **🧹 Arguments Repair**: Optionally enable `agent.WithToolCallArgumentsJSONRepairEnabled(true)` to best-effort repair `tool_calls` `arguments`, improving robustness for tool execution and external parsing.
 
@@ -407,6 +408,102 @@ existing context values you still need.
 
 ## Built-in Tools
 
+### Tool Call Retry
+
+When a tool call may fail because of a transient issue, you can configure retry for it, for example:
+
+- a temporary network issue;
+- a short timeout;
+- an intermittent failure from an external service.
+
+This feature is disabled by default. It currently applies only to `CallableTool`, and `StreamableTool` is not retried yet. When enabled, the framework retries only the current tool call. It does not rerun the whole Agent or the whole Graph workflow.
+
+### Basic Configuration
+
+```go
+policy := &tool.RetryPolicy{
+    MaxAttempts:     3,
+    InitialInterval: 200 * time.Millisecond,
+    BackoffFactor:   2.0,
+    MaxInterval:     2 * time.Second,
+    Jitter:          true,
+}
+```
+
+Common fields:
+
+- `MaxAttempts`: Total attempt count, including the first call.
+- `InitialInterval`: Delay before the second attempt.
+- `BackoffFactor`: Multiplier for backoff growth.
+- `MaxInterval`: Upper bound for the delay.
+- `Jitter`: Whether to enable jitter.
+
+### Default Retry Rules
+
+If you do not provide `RetryOn`, the framework uses `tool.DefaultRetryOn(...)`.
+
+The default rule is conservative and retries only common transient errors, such as:
+
+- `io.EOF`
+- `io.ErrUnexpectedEOF`
+- timeout / temporary errors reported through `net.Error`
+
+It does not retry `context.Canceled`, `context.DeadlineExceeded`, or result-level failures by default.
+
+### Custom Retry Rules
+
+If the default rule is not enough, you can customize the decision with `RetryOn`. A common pattern is to reuse `tool.DefaultRetryOn(...)` first, then add your own conditions:
+
+```go
+policy := &tool.RetryPolicy{
+    MaxAttempts:     2,
+    InitialInterval: 200 * time.Millisecond,
+    BackoffFactor:   2.0,
+    MaxInterval:     time.Second,
+    RetryOn: func(ctx context.Context, info *tool.RetryInfo) (bool, error) {
+        retry, err := tool.DefaultRetryOn(ctx, info)
+        if err != nil || retry {
+            return retry, err
+        }
+        if info.ResultError {
+            return true, nil
+        }
+        return false, nil
+    },
+}
+```
+
+`tool.RetryInfo` carries the current call information, such as tool name, attempt number, raw error, and result-level failure flag, so you can make your retry decision in one place.
+
+### Enable It in LLMAgent
+
+```go
+agent := llmagent.New(
+    "assistant",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithTools([]tool.Tool{myTool}),
+    llmagent.WithToolCallRetryPolicy(policy),
+)
+```
+
+Runnable example:
+
+- [examples/llmagent_tool_call_retry](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/llmagent_tool_call_retry)
+
+### Enable It in Graph
+
+```go
+sg.AddToolsNode(
+    "tools",
+    tools,
+    graph.WithToolCallRetryPolicy(policy),
+)
+```
+
+Runnable example:
+
+- [examples/graph/tool_call_retry](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/graph/tool_call_retry)
+
 ### DuckDuckGo Search Tool
 
 The DuckDuckGo tool is based on the DuckDuckGo Instant Answer API and provides factual and encyclopedia-style information search capabilities.
@@ -642,6 +739,287 @@ Common pitfalls:
   (for example, per-request auth headers or tracing values), the safer
   pattern is usually to call `toolSet.Tools(ctx)` yourself and inject the
   resulting tools via `WithTools(...)`.
+
+### MCP Broker (On-Demand MCP Discovery)
+
+In addition to expanding remote MCP tools into first-class Tools, the
+framework also provides another integration style:
+`tool/mcpbroker`.
+
+The core idea of `mcpbroker` is:
+
+- do not expose every remote MCP tool up front
+- expose only a very small broker surface first
+- let the model discover and call remote MCP tools only when needed
+
+This is a better fit when the remote MCP surface is large, but a single
+request usually needs only a small subset of that surface.
+
+#### When to Use MCP Broker
+
+Use `mcpbroker` when:
+
+- an MCP server exposes many tools and you do not want to send the full
+  tool surface to the model on every turn
+- some tools are long-tail or backup capabilities rather than hot-path tools
+- a Skill, System Prompt, or User Prompt reveals an MCP endpoint that
+  should be connected dynamically
+- you want a smaller and more stable initial tool surface
+
+Keep using `mcp.NewMCPToolSet()` when:
+
+- the capability is high-frequency, stable, and already known
+- you want remote MCP tools to become first-class Tools directly
+- you care more about shorter execution paths and stronger schema-level
+  constraints
+
+The two patterns can be mixed:
+
+- use `MCP ToolSet` for hot-path capabilities
+- use `mcpbroker` for long-tail or dynamically discovered capabilities
+
+#### How It Differs from MCP ToolSet
+
+The main difference is **when** remote MCP tools become visible:
+
+- `MCP ToolSet`
+  - performs `initialize + tools/list`
+  - expands remote MCP tools into model-visible Tools
+- `mcpbroker`
+  - initially exposes only 4 broker tools
+  - the model discovers servers, then tools, then inspects selected schemas, then calls a concrete tool
+
+You can think of them as:
+
+- `MCP ToolSet`: directly mount remote tools
+- `mcpbroker`: discover remote tools on demand
+
+Typical trade-offs:
+
+- `MCP ToolSet`: faster and more strongly constrained, but larger tool surface
+- `mcpbroker`: lighter on context and better for long-tail / dynamic capabilities, but usually slower because discovery adds extra steps
+
+#### Basic Integration
+
+```go
+import (
+    "time"
+
+    "trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
+    "trpc.group/trpc-go/trpc-agent-go/tool/mcp"
+    "trpc.group/trpc-go/trpc-agent-go/tool/mcpbroker"
+)
+
+broker := mcpbroker.New(
+    mcpbroker.WithServers(map[string]mcp.ConnectionConfig{
+        "local_stdio_code": {
+            Transport:   "stdio",
+            Command:     "go",
+            Args:        []string{"run", "./stdio_server/main.go"},
+            Timeout:     10 * time.Second,
+            Description: "Project management, documentation, and calendar tools.",
+        },
+    }),
+    mcpbroker.WithAllowAdHocHTTP(true),
+)
+
+agent := llmagent.New(
+    "assistant",
+    llmagent.WithModel(model),
+    llmagent.WithTools(broker.Tools()),
+)
+```
+
+#### Server Description
+
+The `Description` field on `ConnectionConfig` provides a capability
+summary for the MCP server, helping the model decide which server to
+explore at the `mcp_list_servers` stage. The output includes the
+description:
+
+```json
+{
+  "servers": [
+    {
+      "name": "local_stdio_code",
+      "transport": "stdio",
+      "description": "Project management, documentation, and calendar tools."
+    }
+  ]
+}
+```
+
+This is analogous to the `description` field on an OpenAI tool namespace:
+the model can read it at the `mcp_list_servers` step and decide which
+server to explore next, without needing to `mcp_list_tools` every server
+one by one. The more servers you have, or the less self-explanatory the
+server names are, the more valuable this description becomes.
+
+The field is optional. When omitted, the output simply does not include
+a `description` property, and existing behavior is unchanged.
+
+Today `mcpbroker` is a **tool-layer integration**. Unlike `Skill`, it
+does not automatically inject routing guidance into the system prompt.
+If you want the model to behave more predictably, it is still useful to
+add a small amount of business-level instruction such as:
+
+- when to list named servers first
+- when to use `mcp_list_tools` first
+- when to expand selected tools with `mcp_inspect_tools`
+- when to prefer broker over direct tools
+
+#### The 4 Model-Visible Broker Tools
+
+The model only sees these 4 tools:
+
+- `mcp_list_servers`
+- `mcp_list_tools`
+- `mcp_inspect_tools`
+- `mcp_call`
+
+The recommended flow is usually:
+
+1. `mcp_list_servers()` to inspect named servers already known to the broker
+2. `mcp_list_tools(selector)` to inspect a server or ad-hoc MCP endpoint with lightweight summaries
+3. `mcp_inspect_tools(selector, tools[])` to expand schema for only the selected tools
+4. `mcp_call(selector, arguments)` to call one concrete MCP tool
+
+So instead of seeing the entire remote tool surface immediately, the
+model explores it progressively through the broker.
+
+#### Selector Mental Model
+
+`mcpbroker` intentionally avoids a mixed input model like
+`server_name + tool_name + url`. Instead it uses a unified `selector`:
+
+- In `mcp_list_tools`:
+  - named server: `local_stdio_code`
+  - ad-hoc URL: `https://example.com/mcp`
+- In `mcp_call`:
+  - named tool: `local_stdio_code.add`
+  - ad-hoc URL tool: `https://example.com/mcp.add`
+
+If an ad-hoc HTTP endpoint would make dot-based selectors ambiguous, `mcpbroker`
+also supports:
+
+- `https://example.com/mcp#tool=add`
+
+Remote MCP tool parameters always go into:
+
+- `mcp_call(..., arguments={...})`
+
+and not into top-level wrapper fields.
+
+#### Progressive Discovery Flow
+
+- start with `mcp_list_tools` for lightweight summaries
+- only use `mcp_inspect_tools` when preparing to call a specific tool
+
+Compared with sending every full schema up front, this is usually more
+friendly to tight context budgets.
+
+#### Dynamic URL and Skill Scenarios
+
+`mcpbroker` supports ad-hoc HTTP MCP targets:
+
+```go
+broker := mcpbroker.New(
+    mcpbroker.WithAllowAdHocHTTP(true),
+)
+```
+
+`WithAllowAdHocHTTP(true)` makes `selector` model-controlled input for
+HTTP(S) MCP targets. In production, validate or allowlist the URL, domain, and
+path before treating ad-hoc HTTP as a trusted integration path.
+
+In practice, dynamic connection still requires some **information
+source** to tell the model:
+
+- that this MCP endpoint exists
+- what it roughly does
+- which URL should be used
+
+That source can be:
+
+- a System Prompt
+- a User Prompt
+- a Skill
+- a knowledge source
+
+In other words, `mcpbroker` solves “how to connect / inspect / call”.
+It does not solve “why would the model think of connecting to this MCP
+in the first place”.
+
+This makes `mcpbroker` a natural companion to Skills. Some Skills only
+need a dedicated MCP capability while that Skill is relevant, so those
+MCP tools do not need to stay exposed as global tools for the whole
+conversation. Other Skills may reveal an incremental MCP endpoint that
+is only known after the Skill is loaded. In both cases, the Skill can
+act as the information source, while `mcpbroker` handles the dynamic
+connection and progressive tool/schema disclosure.
+
+See:
+
+- `examples/mcpbroker/basic`
+
+That example includes:
+
+- a named local MCP server
+- a Skill that reveals a remote streamable HTTP MCP endpoint
+- a model flow like `skill_load -> mcp_list_tools -> mcp_inspect_tools -> mcp_call`
+
+#### Auth Hooks (Per-Run Header Injection)
+
+For HTTP MCP targets, `mcpbroker` also provides runtime auth hooks:
+
+- `WithHTTPHeaderInjector(...)`
+- `WithErrorInterceptor(...)`
+
+These hooks are useful when:
+
+- you do not want the model to provide `Authorization` itself
+- you need to inject a user-specific token on every request
+- you want business code to wrap 401/403 responses into clearer errors
+
+Example:
+
+```go
+broker := mcpbroker.New(
+    mcpbroker.WithAllowAdHocHTTP(true),
+    mcpbroker.WithHTTPHeaderInjector(func(ctx context.Context, req *mcpbroker.HeaderInjectRequest) (map[string]string, error) {
+        token, _ := resolveUserTokenFromContext(ctx, req.BaseURL)
+        if token == "" {
+            return nil, nil
+        }
+        return map[string]string{
+            "Authorization": "Bearer " + token,
+        }, nil
+    }),
+    mcpbroker.WithErrorInterceptor(func(ctx context.Context, req *mcpbroker.BrokerErrorRequest) (*mcpbroker.BrokerErrorDecision, error) {
+        if isUnauthorized(req.Err) {
+            return &mcpbroker.BrokerErrorDecision{
+                Handled:   true,
+                WrapError: fmt.Errorf("the current user must authorize this provider in the host application before retrying"),
+            }, nil
+        }
+        return nil, nil
+    }),
+)
+```
+
+The key design point is:
+
+- the model chooses the `selector`
+- business code resolves headers from `ctx`
+- `mcpbroker` does not manage a full OAuth session state machine
+
+When `WithAllowAdHocHTTP(true)` is enabled, URL selectors may come from
+model-visible context. In production, validate `req.IsAdHoc` and `req.BaseURL`
+inside your `HTTPHeaderInjector` before returning sensitive headers.
+
+See:
+
+- `examples/mcpbroker/authhooks`
 
 ## Agent Tool (AgentTool)
 

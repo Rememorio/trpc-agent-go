@@ -38,6 +38,7 @@ import (
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	itool "trpc.group/trpc-go/trpc-agent-go/internal/tool"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolcall"
+	"trpc.group/trpc-go/trpc-agent-go/internal/toolretry"
 	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
@@ -350,6 +351,13 @@ func WithNodeCallbacks(callbacks *NodeCallbacks) Option {
 func WithToolCallbacks(callbacks *tool.Callbacks) Option {
 	return func(node *Node) {
 		node.toolCallbacks = callbacks
+	}
+}
+
+// WithToolCallRetryPolicy sets callable tool-call retry policy for tool nodes.
+func WithToolCallRetryPolicy(policy *tool.RetryPolicy) Option {
+	return func(node *Node) {
+		node.toolCallRetryPolicy = policy
 	}
 }
 
@@ -1854,7 +1862,13 @@ func shouldEmitModelResponseEvent(
 	if invocation != nil && invocation.RunOptions.GraphEmitFinalModelResponses {
 		return shouldEmitModelResponse(rsp)
 	}
-	return !rsp.Done
+	if !rsp.Done {
+		return true
+	}
+	// Emit the final (Done) response when it carries ReasoningContent so
+	// the runner can persist it into the session. Without this, thinking
+	// content from graph LLM nodes is lost across conversation turns.
+	return responseHasReasoningContent(rsp)
 }
 
 // processModelResponse processes a single model response.
@@ -1940,6 +1954,20 @@ func processModelResponse(ctx context.Context, config modelResponseConfig) (cont
 		)
 	}
 	return ctx, llmEvent, nil
+}
+
+// responseHasReasoningContent reports whether any choice in the response
+// carries reasoning/thinking content.
+func responseHasReasoningContent(rsp *model.Response) bool {
+	if rsp == nil {
+		return false
+	}
+	for _, choice := range rsp.Choices {
+		if choice.Message.ReasoningContent != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldEmitModelResponse(rsp *model.Response) bool {
@@ -2140,6 +2168,7 @@ func newToolsNodeRuntime(
 	parallel := node.enableParallelTools
 	// Capture tool callbacks configured on the node.
 	configuredCallbacks := node.toolCallbacks
+	configuredRetryPolicy := node.toolCallRetryPolicy
 
 	return func(ctx context.Context, state State) (any, error) {
 		ctx, span, startedSpan := startNodeSpan(ctx, itelemetry.NewWorkflowSpanName("execute_tools_node"))
@@ -2186,6 +2215,7 @@ func newToolsNodeRuntime(
 			State:          state,
 			EnableParallel: parallel,
 			ToolCallbacks:  toolCallbacks,
+			RetryPolicy:    configuredRetryPolicy,
 		})
 		if err != nil {
 			if workflow != nil {
@@ -2296,6 +2326,13 @@ type subgraphInterruptInfo struct {
 	childTaskID       string
 }
 
+type extractedPregelInterrupt struct {
+	interrupt    *InterruptError
+	lineageID    string
+	checkpointID string
+	checkpointNS string
+}
+
 func subgraphInterruptInfoFromState(
 	state State,
 ) (subgraphInterruptInfo, bool) {
@@ -2332,7 +2369,7 @@ func subgraphInterruptInfoFromState(
 	return info, true
 }
 
-func extractPregelInterrupt(e *event.Event) (*InterruptError, bool) {
+func extractPregelInterruptInfo(e *event.Event) (*extractedPregelInterrupt, bool) {
 	if e == nil {
 		return nil, false
 	}
@@ -2361,7 +2398,20 @@ func extractPregelInterrupt(e *event.Event) (*InterruptError, bool) {
 	}
 	intr.Key = interruptKey
 	intr.TaskID = interruptKey
-	return intr, true
+	return &extractedPregelInterrupt{
+		interrupt:    intr,
+		lineageID:    meta.LineageID,
+		checkpointID: meta.CheckpointID,
+		checkpointNS: meta.CheckpointNS,
+	}, true
+}
+
+func extractPregelInterrupt(e *event.Event) (*InterruptError, bool) {
+	info, ok := extractPregelInterruptInfo(e)
+	if !ok || info == nil || info.interrupt == nil {
+		return nil, false
+	}
+	return info.interrupt, true
 }
 
 func latestInterruptedCheckpointID(
@@ -2600,6 +2650,7 @@ func setSubgraphInterruptState(
 	childState State,
 	invocation *agent.Invocation,
 	childTaskID string,
+	interruptInfo *extractedPregelInterrupt,
 ) {
 	fallbackLineageID := ""
 	if invocation != nil {
@@ -2607,12 +2658,41 @@ func setSubgraphInterruptState(
 	}
 	childLineageID := stateStringOr(childState, CfgKeyLineageID, fallbackLineageID)
 	childNamespace := stateStringOr(childState, CfgKeyCheckpointNS, targetAgent.Info().Name)
-	childCheckpointID, ckptErr := latestInterruptedCheckpointID(
-		ctx, targetAgent, childLineageID, childNamespace,
-	)
-	if ckptErr != nil {
-		log.DebugfContext(ctx, "subgraph: latest checkpoint failed: %v", ckptErr)
+	childCheckpointID := ""
+
+	// Unify local/remote handling: rely on interrupt event metadata rather than
+	// local executor/checkpoint-manager lookups.
+	if interruptInfo != nil {
+		if interruptInfo.lineageID != "" {
+			childLineageID = interruptInfo.lineageID
+		}
+		if interruptInfo.checkpointNS != "" {
+			childNamespace = interruptInfo.checkpointNS
+		}
+		if interruptInfo.checkpointID != "" {
+			childCheckpointID = interruptInfo.checkpointID
+		}
 	}
+
+	// Fallback: when metadata does not carry checkpoint_id, best-effort lookup
+	// from local checkpoint manager for local GraphAgent subgraphs.
+	if childCheckpointID == "" {
+		log.DebugfContext(
+			ctx,
+			"subgraph: fallback to latest interrupted checkpoint lookup: agent=%s node=%s lineage=%s namespace=%s",
+			agentName,
+			nodeID,
+			childLineageID,
+			childNamespace,
+		)
+		latest, ckptErr := latestInterruptedCheckpointID(ctx, targetAgent, childLineageID, childNamespace)
+		if ckptErr != nil {
+			log.DebugfContext(ctx, "subgraph: latest checkpoint failed: %v", ckptErr)
+		} else {
+			childCheckpointID = latest
+		}
+	}
+
 	state[StateKeySubgraphInterrupt] = map[string]any{
 		subgraphInterruptKeyParentNodeID:      nodeID,
 		subgraphInterruptKeyChildAgentName:    agentName,
@@ -2748,6 +2828,7 @@ func NewAgentNodeFunc(agentName string, opts ...Option) NodeFunc {
 				childState,
 				invocation,
 				streamRes.interrupt.TaskID,
+				streamRes.interruptInfo,
 			)
 			intr := NewInterruptError(streamRes.interrupt.Value)
 			intr.TaskID = streamRes.interrupt.TaskID
@@ -2793,6 +2874,7 @@ type agentEventStreamResult struct {
 	fallbackRawDelta map[string][]byte
 	structuredOutput any
 	interrupt        *InterruptError
+	interruptInfo    *extractedPregelInterrupt
 	terminalErr      error
 	terminalErrMeta  agentTerminalErrorMeta
 	finalError       *model.ResponseError
@@ -2944,14 +3026,19 @@ func updateAgentStructuredOutput(res *agentEventStreamResult, ev *event.Event) {
 }
 
 func updateAgentInterrupt(res *agentEventStreamResult, ev *event.Event) {
-	if res == nil || res.interrupt != nil {
+	if res == nil {
 		return
 	}
-	intr, ok := extractPregelInterrupt(ev)
-	if !ok {
+	info, ok := extractPregelInterruptInfo(ev)
+	if !ok || info == nil || info.interrupt == nil {
 		return
 	}
-	res.interrupt = intr
+	// Keep the latest interrupt metadata observed in the stream.
+	// In nested subgraphs, a deeper child interrupt may appear first, followed by
+	// the immediate child interrupt propagated upward. Using the latest metadata
+	// avoids pinning parent resume state to a deeper descendant checkpoint.
+	res.interrupt = info.interrupt
+	res.interruptInfo = info
 }
 
 func clearAgentSuccessResultOnError(res *agentEventStreamResult, ev *event.Event) {
@@ -3763,7 +3850,14 @@ func runTool(
 	t tool.Tool,
 	state State,
 ) (context.Context, any, []byte, error) {
-	_, _, finalCtx, _, result, modifiedArgs, err := runToolWithEventContexts(ctx, toolCall, toolCallbacks, t, state)
+	_, _, finalCtx, _, result, modifiedArgs, err := runToolWithEventContexts(
+		ctx,
+		toolCall,
+		toolCallbacks,
+		t,
+		state,
+		nil,
+	)
 	return finalCtx, result, modifiedArgs, err
 }
 
@@ -3773,6 +3867,7 @@ func runToolWithEventContexts(
 	toolCallbacks *tool.Callbacks,
 	t tool.Tool,
 	state State,
+	retryPolicy *tool.RetryPolicy,
 ) (context.Context, *agent.Invocation, context.Context, *agent.Invocation, any, []byte, error) {
 	ctx = context.WithValue(ctx, tool.ContextKeyToolCallID{}, toolCall.ID)
 	if invocation, ok := agent.InvocationFromContext(ctx); ok && jsonrepair.IsToolCallArgumentsJSONRepairEnabled(invocation) {
@@ -3815,8 +3910,27 @@ func runToolWithEventContexts(
 	if err != nil {
 		return startCtx, startInvocation, ctx, startInvocation, nil, toolCall.Function.Arguments, err
 	}
-
-	result, toolErr := callableTool.Call(ctx, toolCall.Function.Arguments)
+	var result any
+	var toolErr error
+	if retryPolicy == nil {
+		result, toolErr = callableTool.Call(ctx, toolCall.Function.Arguments)
+	} else {
+		runResult := toolretry.Execute(ctx, toolretry.ExecuteInput{
+			ToolName:   toolCall.Function.Name,
+			ToolCallID: toolCall.ID,
+			Arguments:  toolCall.Function.Arguments,
+			Policy:     retryPolicy,
+			Call:       callableTool.Call,
+			ResultError: func(result any) bool {
+				return extractResultError(result)
+			},
+			IsTerminalError: func(err error) bool {
+				return IsInterruptError(err)
+			},
+		})
+		result = runResult.Result
+		toolErr = runResult.Error
+	}
 	completeInvocation := startInvocation
 
 	ctx, customResult, err = runAfterToolPluginCallbacks(
@@ -3873,6 +3987,20 @@ func runToolWithEventContexts(
 			fmt.Errorf("tool %s call failed: %w", toolCall.Function.Name, toolErr)
 	}
 	return startCtx, startInvocation, ctx, completeInvocation, result, toolCall.Function.Arguments, nil
+}
+
+func extractResultError(result any) bool {
+	if result == nil {
+		return false
+	}
+	type resultErrorGetter interface {
+		RetryResultError() bool
+	}
+	rg, ok := result.(resultErrorGetter)
+	if !ok {
+		return false
+	}
+	return rg.RetryResultError()
 }
 
 // extractModelInput extracts the model input from state and instruction.
@@ -4273,7 +4401,7 @@ func emitFastModelResponseEvent(
 		llmEvent = &event.Event{}
 	}
 
-	shouldEmit := !response.Done
+	shouldEmit := !response.Done || responseHasReasoningContent(response)
 	eventID := ""
 	if !response.IsPartial || !partialEventIDsDisabled {
 		eventID = uuid.NewString()
@@ -4793,6 +4921,8 @@ type toolCallsConfig struct {
 	// ToolCallbacks specifies tool callbacks to use.
 	// If nil, callbacks will be extracted from State.
 	ToolCallbacks *tool.Callbacks
+	// RetryPolicy specifies callable tool-call retry policy for this tools node.
+	RetryPolicy *tool.RetryPolicy
 }
 
 // processToolCalls executes all tool calls and returns the resulting messages.
@@ -4814,6 +4944,7 @@ func processToolCalls(ctx context.Context, config toolCallsConfig) ([]model.Mess
 				Span:          config.Span,
 				ToolCallbacks: toolCallbacks,
 				State:         config.State,
+				RetryPolicy:   config.RetryPolicy,
 			})
 			if err != nil {
 				return nil, err
@@ -4851,6 +4982,7 @@ func processToolCalls(ctx context.Context, config toolCallsConfig) ([]model.Mess
 				Span:          config.Span,
 				ToolCallbacks: toolCallbacks,
 				State:         config.State,
+				RetryPolicy:   config.RetryPolicy,
 			})
 			// On error, cancel siblings but still report result so collector can exit cleanly.
 			if err != nil {
@@ -4899,6 +5031,7 @@ type singleToolCallConfig struct {
 	Span          oteltrace.Span
 	ToolCallbacks *tool.Callbacks
 	State         State
+	RetryPolicy   *tool.RetryPolicy
 }
 
 // executeSingleToolCall executes a single tool call with event emission.
@@ -4943,6 +5076,7 @@ func executeSingleToolCall(ctx context.Context, config singleToolCallConfig) (mo
 		config.ToolCallbacks,
 		t,
 		config.State,
+		config.RetryPolicy,
 	)
 	eventInvocation := invocationFromContextOrFallback(
 		finalCtx,

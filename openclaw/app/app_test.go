@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/claudecode"
+	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	meminmemory "trpc.group/trpc-go/trpc-agent-go/memory/inmemory"
@@ -43,6 +45,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/admin"
 	occhannel "trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwclient"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/gwproto"
@@ -61,6 +64,112 @@ import (
 
 type captureRequestModel struct {
 	got *model.Request
+}
+
+type stubRuntimeAgent struct{}
+
+type stubAdminPromptsProvider struct{}
+
+type stubAdminRuntimeLifecycleProvider struct {
+	status admin.RuntimeLifecycleStatus
+}
+
+func (stubRuntimeAgent) Run(
+	context.Context,
+	*agent.Invocation,
+) (<-chan *event.Event, error) {
+	ch := make(chan *event.Event)
+	close(ch)
+	return ch, nil
+}
+
+func (stubRuntimeAgent) Tools() []tool.Tool {
+	return nil
+}
+
+func (stubAdminPromptsProvider) PromptsStatus() (
+	admin.PromptsStatus,
+	error,
+) {
+	return admin.PromptsStatus{}, nil
+}
+
+func (stubAdminPromptsProvider) SavePromptInline(
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) SavePromptRuntime(
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) SavePromptFile(
+	string,
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) CreatePromptFile(
+	string,
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (stubAdminPromptsProvider) DeletePromptFile(
+	string,
+	string,
+) error {
+	return nil
+}
+
+func (p stubAdminRuntimeLifecycleProvider) RuntimeLifecycleStatus() (
+	admin.RuntimeLifecycleStatus,
+	error,
+) {
+	return p.status, nil
+}
+
+func (stubAdminRuntimeLifecycleProvider) RuntimeLifecycleVersions() (
+	admin.RuntimeLifecycleVersionIndex,
+	error,
+) {
+	return admin.RuntimeLifecycleVersionIndex{}, nil
+}
+
+func (stubAdminRuntimeLifecycleProvider) RuntimeLifecycleChangelog(
+	string,
+) (admin.RuntimeLifecycleChangelog, error) {
+	return admin.RuntimeLifecycleChangelog{}, nil
+}
+
+func (p stubAdminRuntimeLifecycleProvider) RequestRuntimeLifecycleAction(
+	admin.RuntimeLifecycleActionRequest,
+) (admin.RuntimeLifecycleActionResult, error) {
+	return admin.RuntimeLifecycleActionResult{
+		Status:  p.status,
+		Started: true,
+	}, nil
+}
+
+func (stubRuntimeAgent) Info() agent.Info {
+	return agent.Info{Name: "stub"}
+}
+
+func (stubRuntimeAgent) SubAgents() []agent.Agent {
+	return nil
+}
+
+func (stubRuntimeAgent) FindSubAgent(string) agent.Agent {
+	return nil
 }
 
 func (m *captureRequestModel) GenerateContent(
@@ -143,6 +252,222 @@ func joinSystemMessages(req *model.Request) string {
 		parts = append(parts, msg.Content)
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func TestRuntimePromptControllerUpdatesAgentPrompts(
+	t *testing.T,
+) {
+	mdl := &captureRequestModel{}
+	agt := llmagent.New(
+		"test",
+		llmagent.WithModel(mdl),
+		llmagent.WithInstruction("old instruction"),
+		llmagent.WithGlobalInstruction("old system"),
+	)
+	ctrl := newRuntimePromptController(
+		agt,
+		"old instruction",
+		"old system",
+	)
+	require.NotNil(t, ctrl)
+
+	ctrl.SetPrompts("new instruction", "new system")
+	snapshot := ctrl.Snapshot()
+	require.Equal(t, "new instruction", snapshot.Instruction)
+	require.Equal(t, "new system", snapshot.SystemPrompt)
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		session.NewSession("app", "user", "sess"),
+	)
+	system := joinSystemMessages(req)
+	require.Contains(t, system, "new instruction")
+	require.Contains(t, system, "new system")
+	require.NotContains(t, system, "old instruction")
+	require.NotContains(t, system, "old system")
+}
+
+func TestRuntimePromptControllerCompatibilityGuards(t *testing.T) {
+	t.Parallel()
+
+	require.Nil(
+		t,
+		newRuntimePromptController(nil, "instruction", "system"),
+	)
+	require.Nil(
+		t,
+		newRuntimePromptController(
+			stubRuntimeAgent{},
+			"instruction",
+			"system",
+		),
+	)
+
+	var nilCtrl *RuntimePromptController
+	nilCtrl.SetInstruction("instruction")
+	nilCtrl.SetSystemPrompt("system")
+	nilCtrl.SetPrompts("instruction", "system")
+	require.Equal(t, PromptSnapshot{}, nilCtrl.Snapshot())
+
+	ctrl := &RuntimePromptController{agent: stubRuntimeAgent{}}
+	ctrl.SetInstruction("instruction")
+	ctrl.SetSystemPrompt("system")
+	ctrl.SetPrompts("instruction", "system")
+	require.Equal(t, PromptSnapshot{}, ctrl.Snapshot())
+}
+
+func TestRuntimePromptControllerIndividualSetters(t *testing.T) {
+	t.Parallel()
+
+	mdl := &captureRequestModel{}
+	agt := llmagent.New(
+		"test",
+		llmagent.WithModel(mdl),
+		llmagent.WithInstruction("old instruction"),
+		llmagent.WithGlobalInstruction("old system"),
+	)
+	ctrl := newRuntimePromptController(
+		agt,
+		"old instruction",
+		"old system",
+	)
+	require.NotNil(t, ctrl)
+
+	ctrl.SetInstruction("new instruction")
+	ctrl.SetSystemPrompt("new system")
+
+	req := runAgentAndCapture(
+		t,
+		agt,
+		mdl,
+		session.NewSession("app", "user", "sess"),
+	)
+	system := joinSystemMessages(req)
+	require.Contains(t, system, "new instruction")
+	require.Contains(t, system, "new system")
+}
+
+func TestRuntimePromptControllerMethod(t *testing.T) {
+	t.Parallel()
+
+	ctrl := &RuntimePromptController{}
+	sessSvc := sessioninmemory.NewSessionService()
+	rt := &Runtime{
+		prompts: ctrl,
+		appName: "openclaw",
+		session: sessSvc,
+	}
+	require.Same(t, ctrl, rt.PromptController())
+	require.Equal(t, "openclaw", rt.AppName())
+	require.Same(t, sessSvc, rt.SessionService())
+
+	var nilRuntime *Runtime
+	require.Nil(t, nilRuntime.PromptController())
+	require.Empty(t, nilRuntime.AppName())
+	require.Nil(t, nilRuntime.SessionService())
+}
+
+func TestRuntimeConfigureAdmin(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		adminCfg: &admin.Config{
+			AdminAddr: "127.0.0.1:8081",
+			AdminURL:  "http://127.0.0.1:8081",
+		},
+	}
+
+	rt.ConfigureAdmin(func(cfg *admin.Config) {
+		cfg.Prompts = stubAdminPromptsProvider{}
+	})
+
+	require.NotNil(t, rt.adminCfg)
+	require.NotNil(t, rt.Admin.Handler)
+	require.Equal(t, "127.0.0.1:8081", rt.Admin.Addr)
+	require.Equal(t, "http://127.0.0.1:8081", rt.Admin.URL)
+	require.NotNil(t, rt.adminCfg.Prompts)
+}
+
+func TestRuntimeConfigureAdminPreservesRuntimeConfigProvider(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeAdminRuntimeConfigTestFile(t, "")
+	opts := adminRuntimeConfigTestOptions(cfgPath)
+	rt := &Runtime{
+		adminCfg: &admin.Config{
+			AdminAddr: "127.0.0.1:8081",
+			AdminURL:  "http://127.0.0.1:8081",
+		},
+	}
+	setRuntimeAdminOptions(rt, buildAdminOptions(opts))
+	t.Cleanup(func() {
+		clearRuntimeAdminOptions(rt)
+	})
+
+	rt.ConfigureAdmin(func(cfg *admin.Config) {
+		cfg.Prompts = stubAdminPromptsProvider{}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rr := httptest.NewRecorder()
+	rt.Admin.Handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Contains(t, rr.Body.String(), cfgPath)
+}
+
+func TestRuntimeAddAdminOptionsPreservesExistingProviders(t *testing.T) {
+	t.Parallel()
+
+	cfgPath := writeAdminRuntimeConfigTestFile(t, "")
+	opts := adminRuntimeConfigTestOptions(cfgPath)
+	rt := &Runtime{
+		adminCfg: &admin.Config{
+			AdminAddr: "127.0.0.1:8081",
+			AdminURL:  "http://127.0.0.1:8081",
+		},
+	}
+	setRuntimeAdminOptions(rt, buildAdminOptions(opts))
+	t.Cleanup(func() {
+		clearRuntimeAdminOptions(rt)
+	})
+
+	rt.AddAdminOptions(admin.WithRuntimeLifecycleProvider(
+		stubAdminRuntimeLifecycleProvider{
+			status: admin.RuntimeLifecycleStatus{
+				CurrentVersion: "v0.0.70",
+			},
+		},
+	))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	rr := httptest.NewRecorder()
+	rt.Admin.Handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Contains(t, rr.Body.String(), cfgPath)
+
+	req = httptest.NewRequest(http.MethodGet, "/runtime-control", nil)
+	rr = httptest.NewRecorder()
+	rt.Admin.Handler.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.Contains(t, rr.Body.String(), "Runtime Control")
+	require.Contains(t, rr.Body.String(), "v0.0.70")
+}
+
+func TestRuntimeConfigureAdminNoAdminConfig(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{}
+	rt.ConfigureAdmin(func(cfg *admin.Config) {
+		cfg.AppName = "ignored"
+	})
+	rt.AddAdminOptions(nil)
+	require.Nil(t, rt.adminCfg)
+	require.Empty(t, rt.Admin)
+
+	var nilRuntime *Runtime
+	nilRuntime.applyAdminConfig(admin.Config{})
 }
 
 func findToolDeclaration(
@@ -3504,6 +3829,71 @@ func TestInProcGatewayClient_ForgetUser_DeleteMemoryFilesError(t *testing.T) {
 	err = c.ForgetUser(ctx, "telegram", "u1")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "forget: delete user memory files")
+}
+
+func TestInProcGatewayClient_ForgetUser_DeleteMemoryFilesErrorPreservesStorageScopeIndex(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based delete failure is unreliable on windows")
+	}
+
+	ctx := context.Background()
+	srv, err := gateway.New(&inProcGWTestRunner{})
+	require.NoError(t, err)
+
+	const (
+		canonicalUserID = "u1"
+		storageUserID   = "chat-scope"
+	)
+
+	sessSvc := sessioninmemory.NewSessionService()
+	require.NoError(
+		t,
+		conversationscope.RememberIndexedStorageUser(
+			ctx,
+			sessSvc,
+			appName,
+			canonicalUserID,
+			storageUserID,
+		),
+	)
+
+	root, err := memoryfile.DefaultRoot(t.TempDir())
+	require.NoError(t, err)
+	store, err := memoryfile.NewStore(root)
+	require.NoError(t, err)
+	_, err = store.EnsureMemory(ctx, appName, storageUserID)
+	require.NoError(t, err)
+
+	scopedDir, err := store.MemoryDir(appName, storageUserID)
+	require.NoError(t, err)
+	scopedParent := filepath.Dir(scopedDir)
+	parentInfo, err := os.Stat(scopedParent)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(scopedParent, 0o500))
+	defer func() {
+		require.NoError(t, os.Chmod(scopedParent, parentInfo.Mode().Perm()))
+	}()
+
+	c := newInProcGatewayClient(srv, appName, sessSvc, nil, "")
+	c.SetMemoryFileStore(store)
+
+	err = c.ForgetUser(ctx, "telegram", canonicalUserID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "forget: delete user memory files")
+
+	indexedStorageUsers, err := conversationscope.ListIndexedStorageUsers(
+		ctx,
+		sessSvc,
+		appName,
+		canonicalUserID,
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{storageUserID}, indexedStorageUsers)
+
+	_, err = os.Stat(scopedDir)
+	require.NoError(t, err)
 }
 
 func TestInProcGatewayClient_ScheduledJobs(t *testing.T) {

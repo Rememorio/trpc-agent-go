@@ -137,6 +137,40 @@ func TestMessagesSnapshotHappyPath(t *testing.T) {
 	require.IsType(t, (*aguievents.RunFinishedEvent)(nil), collected[2])
 }
 
+func TestMessagesSnapshotUsesResolvedAppName(t *testing.T) {
+	svc := &testSessionService{
+		trackEvents: []session.TrackEvent{
+			newTrackEvent(t, aguievents.NewTextMessageStartEvent("assistant-1", aguievents.WithRole("assistant"))),
+			newTrackEvent(t, aguievents.NewTextMessageContentEvent("assistant-1", "hello")),
+			newTrackEvent(t, aguievents.NewTextMessageEndEvent("assistant-1")),
+		},
+	}
+	tracker, err := track.New(svc)
+	require.NoError(t, err)
+	r := &runner{
+		runner:            noopBaseRunner{},
+		userIDResolver:    NewOptions().UserIDResolver,
+		appNameResolver:   forwardedPropsAppNameResolver,
+		runAgentInputHook: NewOptions().RunAgentInputHook,
+		appName:           "static-app",
+		tracker:           tracker,
+	}
+	stream, err := r.MessagesSnapshot(context.Background(), &adapter.RunAgentInput{
+		ThreadID:       "thread",
+		RunID:          "run",
+		ForwardedProps: map[string]any{"appName": "dynamic-app"},
+	})
+	require.NoError(t, err)
+	collected := collectAGUIEvents(t, stream)
+	require.Len(t, collected, 3)
+	snapshot, ok := collected[1].(*aguievents.MessagesSnapshotEvent)
+	require.True(t, ok)
+	require.Len(t, snapshot.Messages, 1)
+	assert.Equal(t, "dynamic-app", svc.lastGetKey.AppName)
+	assert.Equal(t, types.RoleAssistant, snapshot.Messages[0].Role)
+	assert.Equal(t, "dynamic-app", snapshot.Messages[0].Name)
+}
+
 func TestMessagesSnapshotPreservesDistinctCanonicalToolCallIDsAcrossTurns(t *testing.T) {
 	firstToolCallID := "trpc-agent-go-toolcall:inv-1:rsp-1:call-1:c0:t0"
 	secondToolCallID := "trpc-agent-go-toolcall:inv-2:rsp-2:call-1:c0:t0"
@@ -442,6 +476,27 @@ func TestMessagesSnapshotUserIDResolverError(t *testing.T) {
 	assert.Contains(t, err.Error(), "resolve user ID")
 }
 
+func TestMessagesSnapshotAppNameResolverError(t *testing.T) {
+	svc := &testSessionService{}
+	tracker, err := track.New(svc)
+	require.NoError(t, err)
+	r := &runner{
+		runner: noopBaseRunner{},
+		appNameResolver: func(context.Context, *adapter.RunAgentInput) (string, error) {
+			return "", errors.New("boom")
+		},
+		userIDResolver:    NewOptions().UserIDResolver,
+		runAgentInputHook: NewOptions().RunAgentInputHook,
+		tracker:           tracker,
+	}
+	stream, err := r.MessagesSnapshot(
+		context.Background(),
+		&adapter.RunAgentInput{ThreadID: "thread", RunID: "run"},
+	)
+	assert.Nil(t, stream)
+	assert.ErrorContains(t, err, "resolve app name")
+}
+
 func TestMessagesSnapshotRunAgentInputHookError(t *testing.T) {
 	svc := &testSessionService{}
 	tracker, err := track.New(svc)
@@ -578,7 +633,7 @@ func TestMessagesSnapshotFollowContinuesOpenReasoningFromSnapshot(t *testing.T) 
 	initial := &session.TrackEvents{
 		Track: track.TrackAGUI,
 		Events: []session.TrackEvent{
-			newTrackEventAt(t, aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "assistant"), base),
+			newTrackEventAt(t, aguievents.NewReasoningMessageStartEvent("reasoning-msg-1", "reasoning"), base),
 		},
 	}
 	follow := &session.TrackEvents{
@@ -1021,6 +1076,7 @@ type testSessionService struct {
 	trackEvents   []session.TrackEvent
 	getErr        error
 	returnNil     bool
+	lastGetKey    session.Key
 	appendTrackFn func(ctx context.Context, sess *session.Session,
 		evt *session.TrackEvent, opts ...session.Option) error
 }
@@ -1038,6 +1094,7 @@ func (s *testSessionService) GetSession(ctx context.Context, key session.Key,
 	if s.returnNil {
 		return nil, nil
 	}
+	s.lastGetKey = key
 	sess := &session.Session{AppName: key.AppName, UserID: key.UserID, ID: key.SessionID}
 	if len(s.trackEvents) > 0 {
 		sess.Tracks = map[session.Track]*session.TrackEvents{

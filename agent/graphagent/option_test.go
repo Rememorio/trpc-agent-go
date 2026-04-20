@@ -136,6 +136,15 @@ func TestWithAddSessionSummary(t *testing.T) {
 	require.False(t, opts.AddSessionSummary)
 }
 
+func TestWithSessionSummaryInjectionMode(t *testing.T) {
+	opts := &Options{}
+	WithSessionSummaryInjectionMode(SessionSummaryInjectionUser)(opts)
+	require.Equal(t, SessionSummaryInjectionUser, opts.SessionSummaryInjectionMode)
+
+	WithSessionSummaryInjectionMode(SessionSummaryInjectionSystem)(opts)
+	require.Equal(t, SessionSummaryInjectionSystem, opts.SessionSummaryInjectionMode)
+}
+
 func TestWithMaxHistoryRuns(t *testing.T) {
 	opts := &Options{}
 	WithMaxHistoryRuns(5)(opts)
@@ -269,6 +278,15 @@ func TestWithEventMessageProjector(t *testing.T) {
 		model.NewUserMessage("hello"),
 	)
 	require.Equal(t, "projected", got.Content)
+}
+
+func TestWithPreserveForeignMessages(t *testing.T) {
+	opts := &Options{}
+	WithPreserveForeignMessages(true)(opts)
+	require.True(t, opts.PreserveForeignMessages)
+
+	WithPreserveForeignMessages(false)(opts)
+	require.False(t, opts.PreserveForeignMessages)
 }
 
 // TestGraphAgent_ReasoningContentMode verifies that

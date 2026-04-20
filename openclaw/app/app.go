@@ -30,6 +30,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,11 +46,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/conversation"
 	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session"
 	sessioninmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/admin"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/admin"
 	ocbrowser "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/browser"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationscope"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/conversationtool"
@@ -177,10 +179,11 @@ const (
 		"OPENCLAW_SESSION_UPLOADS_DIR. Prefer writing derived " +
 		"files under " +
 		"OPENCLAW_SESSION_UPLOADS_DIR when you will send them " +
-		"back to the user. OPENCLAW_MEMORY_FILE is a " +
-		"user-owned file, not hidden internal state. If the " +
-		"user asks what you remember or asks to inspect that " +
-		"file, read it and quote or summarize the relevant " +
+		"back to the user. OPENCLAW_MEMORY_FILE is a visible " +
+		"MEMORY.md file for the current scope, not hidden " +
+		"internal state. If the user asks what you remember or " +
+		"asks to inspect that file, read it and quote or " +
+		"summarize the relevant " +
 		"lines. If the user explicitly says 'remember this' " +
 		"or asks you to remember a durable fact, preference, " +
 		"or workflow rule, update OPENCLAW_MEMORY_FILE with a " +
@@ -466,6 +469,10 @@ type Runtime struct {
 	A2A      A2ASurface
 	Admin    AdminSurface
 	Channels []channel.Channel
+	prompts  *RuntimePromptController
+	adminCfg *admin.Config
+	appName  string
+	session  session.Service
 
 	runner            runner.Runner
 	cronRunner        closeFunc
@@ -490,6 +497,168 @@ type AdminSurface struct {
 	Handler http.Handler
 	Addr    string
 	URL     string
+}
+
+type PromptSnapshot struct {
+	Instruction  string
+	SystemPrompt string
+}
+
+type RuntimePromptController struct {
+	agent agent.Agent
+
+	mu       sync.RWMutex
+	snapshot PromptSnapshot
+}
+
+func newRuntimePromptController(
+	agt agent.Agent,
+	instruction string,
+	systemPrompt string,
+) *RuntimePromptController {
+	if agt == nil {
+		return nil
+	}
+	if _, ok := agt.(*llmagent.LLMAgent); !ok {
+		return nil
+	}
+	return &RuntimePromptController{
+		agent: agt,
+		snapshot: PromptSnapshot{
+			Instruction:  instruction,
+			SystemPrompt: systemPrompt,
+		},
+	}
+}
+
+// PromptController exposes runtime prompt updates without changing
+// Runtime's exported struct layout.
+func (r *Runtime) PromptController() *RuntimePromptController {
+	if r == nil {
+		return nil
+	}
+	return r.prompts
+}
+
+func (r *Runtime) AppName() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.appName)
+}
+
+func (r *Runtime) SessionService() session.Service {
+	if r == nil {
+		return nil
+	}
+	return r.session
+}
+
+func (r *Runtime) ConfigureAdmin(
+	configure func(*admin.Config),
+) {
+	if r == nil || r.adminCfg == nil || configure == nil {
+		return
+	}
+	cfg := *r.adminCfg
+	configure(&cfg)
+	r.applyAdminConfig(cfg)
+}
+
+// AddAdminOptions appends runtime-scoped admin options without changing
+// Runtime's exported struct layout.
+func (r *Runtime) AddAdminOptions(opts ...admin.Option) {
+	if r == nil || len(opts) == 0 {
+		return
+	}
+
+	filtered := make([]admin.Option, 0, len(opts))
+	filtered = append(filtered, runtimeAdminOptions(r)...)
+	for _, opt := range opts {
+		if opt != nil {
+			filtered = append(filtered, opt)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+
+	setRuntimeAdminOptions(r, filtered)
+	if r.adminCfg == nil {
+		return
+	}
+	r.applyAdminConfig(*r.adminCfg)
+}
+
+func (r *Runtime) applyAdminConfig(cfg admin.Config) {
+	if r == nil {
+		return
+	}
+	r.adminCfg = &cfg
+	r.Admin.Handler = admin.New(cfg, runtimeAdminOptions(r)...).Handler()
+	r.Admin.Addr = strings.TrimSpace(cfg.AdminAddr)
+	r.Admin.URL = strings.TrimSpace(cfg.AdminURL)
+}
+
+func (c *RuntimePromptController) Snapshot() PromptSnapshot {
+	if c == nil {
+		return PromptSnapshot{}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshot
+}
+
+func (c *RuntimePromptController) SetInstruction(
+	instruction string,
+) {
+	if c == nil {
+		return
+	}
+	llm, ok := c.agent.(*llmagent.LLMAgent)
+	if !ok {
+		return
+	}
+	llm.SetInstruction(instruction)
+	c.mu.Lock()
+	c.snapshot.Instruction = instruction
+	c.mu.Unlock()
+}
+
+func (c *RuntimePromptController) SetSystemPrompt(
+	systemPrompt string,
+) {
+	if c == nil {
+		return
+	}
+	llm, ok := c.agent.(*llmagent.LLMAgent)
+	if !ok {
+		return
+	}
+	llm.SetGlobalInstruction(systemPrompt)
+	c.mu.Lock()
+	c.snapshot.SystemPrompt = systemPrompt
+	c.mu.Unlock()
+}
+
+func (c *RuntimePromptController) SetPrompts(
+	instruction string,
+	systemPrompt string,
+) {
+	if c == nil {
+		return
+	}
+	llm, ok := c.agent.(*llmagent.LLMAgent)
+	if !ok {
+		return
+	}
+	llm.SetPrompts(instruction, systemPrompt)
+	c.mu.Lock()
+	c.snapshot = PromptSnapshot{
+		Instruction:  instruction,
+		SystemPrompt: systemPrompt,
+	}
+	c.mu.Unlock()
 }
 
 // NewRuntime constructs an OpenClaw runtime based on CLI args / config file,
@@ -580,6 +749,7 @@ func NewRuntime(
 		resolvedStateDir,
 	)
 	log.Infof("Instance: %s", instanceID)
+	rt.appName = opts.AppName
 
 	sessionSvc, err := newSessionService(mdl, opts)
 	if err != nil {
@@ -711,10 +881,16 @@ func NewRuntime(
 			Err:  fmt.Errorf("create agent failed: %w", err),
 		}
 	}
+	rt.prompts = newRuntimePromptController(
+		ag,
+		prompts.Instruction,
+		prompts.SystemPrompt,
+	)
 	rt.toolSets = toolSets
 	rt.skillsWatch = skillsWatch
 
 	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
+	rt.session = bridgedSessionSvc
 	runnerOpts := []runner.Option{
 		runner.WithSessionService(bridgedSessionSvc),
 		runner.WithPlugins(conversation.Plugin{}),
@@ -870,7 +1046,7 @@ func NewRuntime(
 
 	if opts.AdminEnabled {
 		adminURL := listenURL(opts.AdminAddr)
-		adminSvc := admin.New(buildAdminConfig(
+		adminCfg := buildAdminConfig(
 			opts,
 			agentType,
 			instanceID,
@@ -887,18 +1063,17 @@ func NewRuntime(
 			},
 			cronSvc,
 			openClawTools.execMgr,
+			rt.prompts,
 			nil,
 			opts.AdminAddr,
 			adminURL,
 			skillsRepo,
 			skillsWatch,
 			fileMemoryStore,
-		))
-		rt.Admin = AdminSurface{
-			Handler: adminSvc.Handler(),
-			Addr:    opts.AdminAddr,
-			URL:     adminURL,
-		}
+			rt.SessionService(),
+		)
+		setRuntimeAdminOptions(rt, buildAdminOptions(opts))
+		rt.applyAdminConfig(adminCfg)
 	}
 
 	return rt, nil
@@ -934,6 +1109,7 @@ func (r *Runtime) Close() error {
 	if err := shutdownTelemetry(r.telemetryShutdown); err != nil {
 		errs = append(errs, err)
 	}
+	clearRuntimeAdminOptions(r)
 	return errors.Join(errs...)
 }
 
@@ -1175,6 +1351,11 @@ func run(ctx context.Context, args []string) error {
 			Err:  fmt.Errorf("create agent failed: %w", err),
 		}
 	}
+	promptController := newRuntimePromptController(
+		ag,
+		prompts.Instruction,
+		prompts.SystemPrompt,
+	)
 
 	bridgedSessionSvc := conversationscope.WrapSessionService(sessionSvc)
 	runnerOpts := []runner.Option{
@@ -1352,30 +1533,35 @@ func run(ctx context.Context, args []string) error {
 				Err:  err,
 			}
 		}
-		adminSvc := admin.New(buildAdminConfig(
-			opts,
-			agentType,
-			instanceID,
-			langfuseStatus,
-			resolvedStateDir,
-			debugDir,
-			startedAt,
-			channels,
-			admin.Routes{
-				HealthPath:   gwSrv.HealthPath(),
-				MessagesPath: gwSrv.MessagesPath(),
-				StatusPath:   gwSrv.StatusPath(),
-				CancelPath:   gwSrv.CancelPath(),
-			},
-			cronSvc,
-			openClawTools.execMgr,
-			browserServerSup,
-			adminBinding.addr,
-			adminBinding.url,
-			skillsRepo,
-			skillsWatch,
-			fileMemoryStore,
-		))
+		adminSvc := admin.New(
+			buildAdminConfig(
+				opts,
+				agentType,
+				instanceID,
+				langfuseStatus,
+				resolvedStateDir,
+				debugDir,
+				startedAt,
+				channels,
+				admin.Routes{
+					HealthPath:   gwSrv.HealthPath(),
+					MessagesPath: gwSrv.MessagesPath(),
+					StatusPath:   gwSrv.StatusPath(),
+					CancelPath:   gwSrv.CancelPath(),
+				},
+				cronSvc,
+				openClawTools.execMgr,
+				promptController,
+				browserServerSup,
+				adminBinding.addr,
+				adminBinding.url,
+				skillsRepo,
+				skillsWatch,
+				fileMemoryStore,
+				bridgedSessionSvc,
+			),
+			buildAdminOptions(opts)...,
+		)
 		adminSrv = &http.Server{
 			Handler:           adminSvc.Handler(),
 			ReadHeaderTimeout: 5 * time.Second,

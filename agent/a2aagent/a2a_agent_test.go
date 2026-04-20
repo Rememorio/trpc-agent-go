@@ -25,6 +25,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -37,7 +39,10 @@ import (
 	ia2a "trpc.group/trpc-go/trpc-agent-go/internal/a2a"
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	sessionmemory "trpc.group/trpc-go/trpc-agent-go/session/inmemory"
+	"trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/metrics"
 	semconvtrace "trpc.group/trpc-go/trpc-agent-go/telemetry/semconv/trace"
 	teletrace "trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -442,6 +447,107 @@ func TestWrapEventChannelWithTelemetry_AccumulatesTokenUsage(t *testing.T) {
 	}
 }
 
+func TestWrapEventChannelWithTelemetry_PreservesFallbackErrorTypeWithoutFinalResponse(t *testing.T) {
+	reader := setupInvokeAgentMetricCapture(t)
+	invocation := &agent.Invocation{InvocationID: "inv-fallback", AgentName: "a2a"}
+	var trackerErr error
+	tracker := itelemetry.NewInvokeAgentTracker(context.Background(), invocation, false, &trackerErr)
+	originalChan := make(chan *event.Event, 1)
+	code := "429"
+	partialErrorEvent := &event.Event{
+		Response: &model.Response{
+			IsPartial: true,
+			Error: &model.ResponseError{
+				Type:    "rate_limit",
+				Code:    &code,
+				Message: "rate limited",
+			},
+		},
+	}
+	originalChan <- partialErrorEvent
+	close(originalChan)
+
+	wrappedChan := (&A2AAgent{}).wrapEventChannelWithTelemetry(
+		context.Background(),
+		invocation,
+		originalChan,
+		oteltrace.SpanFromContext(context.Background()),
+		tracker,
+		false,
+	)
+
+	var received []*event.Event
+	for evt := range wrappedChan {
+		received = append(received, evt)
+	}
+	require.Len(t, received, 1)
+	require.Same(t, partialErrorEvent, received[0])
+
+	rm := collectInvokeAgentMetrics(t, reader)
+	require.True(t, hasInvokeAgentMetricStringAttribute(
+		rm,
+		"gen_ai.client.request.cnt",
+		semconvtrace.KeyErrorType,
+		"rate_limit_429",
+	))
+}
+
+func TestWrapEventChannelWithTelemetry_ClearsFallbackErrorTypeOnFinalSuccess(t *testing.T) {
+	reader := setupInvokeAgentMetricCapture(t)
+	invocation := &agent.Invocation{InvocationID: "inv-success", AgentName: "a2a"}
+	var trackerErr error
+	tracker := itelemetry.NewInvokeAgentTracker(context.Background(), invocation, false, &trackerErr)
+	originalChan := make(chan *event.Event, 2)
+	code := "429"
+	partialErrorEvent := &event.Event{
+		Response: &model.Response{
+			IsPartial: true,
+			Error: &model.ResponseError{
+				Type:    "rate_limit",
+				Code:    &code,
+				Message: "rate limited",
+			},
+		},
+	}
+	finalSuccessEvent := event.NewResponseEvent(
+		"inv-success",
+		"a2a",
+		&model.Response{
+			IsPartial: false,
+			Choices: []model.Choice{{
+				Message: model.NewAssistantMessage("ok"),
+			}},
+		},
+	)
+	originalChan <- partialErrorEvent
+	originalChan <- finalSuccessEvent
+	close(originalChan)
+
+	wrappedChan := (&A2AAgent{}).wrapEventChannelWithTelemetry(
+		context.Background(),
+		invocation,
+		originalChan,
+		oteltrace.SpanFromContext(context.Background()),
+		tracker,
+		false,
+	)
+
+	var received []*event.Event
+	for evt := range wrappedChan {
+		received = append(received, evt)
+	}
+	require.Len(t, received, 2)
+	require.Same(t, partialErrorEvent, received[0])
+	require.Same(t, finalSuccessEvent, received[1])
+
+	rm := collectInvokeAgentMetrics(t, reader)
+	require.False(t, hasInvokeAgentMetricAttributeKey(
+		rm,
+		"gen_ai.client.request.cnt",
+		semconvtrace.KeyErrorType,
+	))
+}
+
 func useSpanRecorder(t *testing.T) *tracetest.SpanRecorder {
 	recorder := tracetest.NewSpanRecorder()
 	provider := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(recorder))
@@ -807,6 +913,172 @@ func TestWithTransferStateKey(t *testing.T) {
 		if _, exists := msg.Metadata["other_key"]; exists {
 			t.Error("other_key should not be transferred")
 		}
+	})
+}
+
+func TestMatchStateKeys(t *testing.T) {
+	src := map[string]any{
+		"user.name":    "alice",
+		"user.id":      42,
+		"order.id":     100,
+		"order.status": "pending",
+		"trace_id":     "abc",
+		"simple":       "value",
+	}
+
+	t.Run("wildcard star transfers all keys", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("*", src, dst)
+		require.Len(t, dst, len(src))
+		for k, v := range src {
+			require.Equal(t, v, dst[k])
+		}
+	})
+
+	t.Run("prefix.* transfers matching keys", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("user.*", src, dst)
+		require.Len(t, dst, 2)
+		require.Equal(t, "alice", dst["user.name"])
+		require.Equal(t, 42, dst["user.id"])
+	})
+
+	t.Run("*.suffix transfers matching keys", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("*.id", src, dst)
+		require.Len(t, dst, 2)
+		require.Equal(t, 42, dst["user.id"])
+		require.Equal(t, 100, dst["order.id"])
+	})
+
+	t.Run("exact key transfers single key", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("trace_id", src, dst)
+		require.Len(t, dst, 1)
+		require.Equal(t, "abc", dst["trace_id"])
+	})
+
+	t.Run("no match produces empty dst", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("nonexistent", src, dst)
+		require.Empty(t, dst)
+	})
+
+	t.Run("prefix.* no match", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("foo.*", src, dst)
+		require.Empty(t, dst)
+	})
+
+	t.Run("*.suffix no match", func(t *testing.T) {
+		dst := make(map[string]any)
+		matchStateKeys("*.bar", src, dst)
+		require.Empty(t, dst)
+	})
+}
+
+func TestTransferStateKeyWildcardInBuild(t *testing.T) {
+	t.Run("wildcard * transfers all state keys", func(t *testing.T) {
+		a2aAgent := &A2AAgent{
+			a2aMessageConverter: &defaultEventA2AConverter{},
+			transferStateKey:    []string{"*"},
+		}
+		invocation := &agent.Invocation{
+			Message: model.Message{
+				Role:    model.RoleUser,
+				Content: "hello",
+			},
+			RunOptions: agent.RunOptions{
+				RuntimeState: map[string]any{
+					"key1": "v1",
+					"key2": "v2",
+				},
+			},
+		}
+		msg, err := a2aAgent.buildA2AMessage(invocation, false)
+		require.NoError(t, err)
+		require.Equal(t, "v1", msg.Metadata["key1"])
+		require.Equal(t, "v2", msg.Metadata["key2"])
+	})
+
+	t.Run("prefix.* pattern in buildA2AMessage", func(t *testing.T) {
+		a2aAgent := &A2AAgent{
+			a2aMessageConverter: &defaultEventA2AConverter{},
+			transferStateKey:    []string{"user.*"},
+		}
+		invocation := &agent.Invocation{
+			Message: model.Message{
+				Role:    model.RoleUser,
+				Content: "hello",
+			},
+			RunOptions: agent.RunOptions{
+				RuntimeState: map[string]any{
+					"user.name": "alice",
+					"user.age":  30,
+					"order.id":  100,
+				},
+			},
+		}
+		msg, err := a2aAgent.buildA2AMessage(invocation, false)
+		require.NoError(t, err)
+		require.Equal(t, "alice", msg.Metadata["user.name"])
+		require.Equal(t, 30, msg.Metadata["user.age"])
+		_, exists := msg.Metadata["order.id"]
+		require.False(t, exists)
+	})
+
+	t.Run("*.suffix pattern in buildA2AMessage", func(t *testing.T) {
+		a2aAgent := &A2AAgent{
+			a2aMessageConverter: &defaultEventA2AConverter{},
+			transferStateKey:    []string{"*.id"},
+		}
+		invocation := &agent.Invocation{
+			Message: model.Message{
+				Role:    model.RoleUser,
+				Content: "hello",
+			},
+			RunOptions: agent.RunOptions{
+				RuntimeState: map[string]any{
+					"user.id":   42,
+					"order.id":  100,
+					"user.name": "alice",
+				},
+			},
+		}
+		msg, err := a2aAgent.buildA2AMessage(invocation, false)
+		require.NoError(t, err)
+		require.Equal(t, 42, msg.Metadata["user.id"])
+		require.Equal(t, 100, msg.Metadata["order.id"])
+		_, exists := msg.Metadata["user.name"]
+		require.False(t, exists)
+	})
+
+	t.Run("mixed patterns", func(t *testing.T) {
+		a2aAgent := &A2AAgent{
+			a2aMessageConverter: &defaultEventA2AConverter{},
+			transferStateKey:    []string{"user.*", "trace_id"},
+		}
+		invocation := &agent.Invocation{
+			Message: model.Message{
+				Role:    model.RoleUser,
+				Content: "hello",
+			},
+			RunOptions: agent.RunOptions{
+				RuntimeState: map[string]any{
+					"user.name": "alice",
+					"user.id":   42,
+					"trace_id":  "t-123",
+					"order.id":  100,
+				},
+			},
+		}
+		msg, err := a2aAgent.buildA2AMessage(invocation, false)
+		require.NoError(t, err)
+		require.Equal(t, "alice", msg.Metadata["user.name"])
+		require.Equal(t, 42, msg.Metadata["user.id"])
+		require.Equal(t, "t-123", msg.Metadata["trace_id"])
+		_, exists := msg.Metadata["order.id"]
+		require.False(t, exists)
 	})
 }
 
@@ -1981,6 +2253,110 @@ func TestA2AAgentRunStreamingPreservesResponseID(t *testing.T) {
 			t.Fatalf("expected aggregated content 'partial response', got %q", finalResponse.Choices[0].Message.Content)
 		}
 	})
+
+	t.Run("uses_current_event_response_id_when_flushing_buffered_text", func(t *testing.T) {
+		sseBody := mustBuildSSEBody(t, []sseEvent{
+			{
+				eventType: protocol.EventArtifactUpdate,
+				payload: protocol.TaskArtifactUpdateEvent{
+					Kind:      protocol.KindTaskArtifactUpdate,
+					TaskID:    "task-1",
+					ContextID: "ctx-1",
+					Artifact: protocol.Artifact{
+						ArtifactID: "",
+						Parts: []protocol.Part{
+							&protocol.TextPart{Kind: protocol.KindText, Text: "preface"},
+						},
+					},
+				},
+			},
+			{
+				eventType: protocol.EventArtifactUpdate,
+				payload: protocol.TaskArtifactUpdateEvent{
+					Kind:      protocol.KindTaskArtifactUpdate,
+					TaskID:    "task-1",
+					ContextID: "ctx-1",
+					Artifact: protocol.Artifact{
+						ArtifactID: "resp-1",
+						Parts: []protocol.Part{
+							buildToolCallDataPart("call-1", "tool-1", `{"a":1}`),
+						},
+					},
+				},
+			},
+			{
+				eventType: protocol.EventStatusUpdate,
+				payload: protocol.TaskStatusUpdateEvent{
+					Kind:      protocol.KindTaskStatusUpdate,
+					TaskID:    "task-1",
+					ContextID: "ctx-1",
+					Final:     true,
+					Status: protocol.TaskStatus{
+						State: protocol.TaskStateCompleted,
+					},
+				},
+			},
+		})
+
+		testClient := newTestStreamClient(t, sseBody)
+		a := &A2AAgent{
+			name:                "test-agent",
+			agentCard:           &server.AgentCard{URL: "http://stream.test/"},
+			eventConverter:      &defaultA2AEventConverter{},
+			a2aMessageConverter: stubInvocationConverter{},
+			streamingBufSize:    4,
+			a2aClient:           testClient,
+		}
+		invocation := &agent.Invocation{
+			InvocationID: "inv-test",
+			Message:      model.Message{Role: model.RoleUser, Content: "hello"},
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		eventCh, err := a.runStreaming(ctx, invocation)
+		if err != nil {
+			t.Fatalf("runStreaming() error = %v", err)
+		}
+
+		var (
+			bufferedResponse *model.Response
+			toolCallResponse *model.Response
+		)
+		for evt := range eventCh {
+			if evt.Response == nil || len(evt.Response.Choices) == 0 {
+				continue
+			}
+			msg := evt.Response.Choices[0].Message
+			switch {
+			case !evt.Response.Done &&
+				!evt.Response.IsPartial &&
+				msg.Role == model.RoleAssistant &&
+				msg.Content == "preface" &&
+				len(msg.ToolCalls) == 0:
+				bufferedResponse = evt.Response
+			case !evt.Response.Done &&
+				!evt.Response.IsPartial &&
+				msg.Role == model.RoleAssistant &&
+				len(msg.ToolCalls) == 1:
+				toolCallResponse = evt.Response
+			}
+		}
+
+		if bufferedResponse == nil {
+			t.Fatal("expected flushed buffered assistant response, got nil")
+		}
+		if bufferedResponse.ID != "resp-1" {
+			t.Fatalf("expected flushed buffered response ID 'resp-1', got %q", bufferedResponse.ID)
+		}
+		if toolCallResponse == nil {
+			t.Fatal("expected tool call response, got nil")
+		}
+		if toolCallResponse.ID != "resp-1" {
+			t.Fatalf("expected tool call response ID 'resp-1', got %q", toolCallResponse.ID)
+		}
+	})
 }
 
 func TestA2AAgentRunStreaming_SkipsSyntheticFinalOnTaskError(
@@ -2036,6 +2412,212 @@ func TestA2AAgentRunStreaming_SkipsSyntheticFinalOnTaskError(
 	require.NotNil(t, events[0].Response.Error)
 	require.Equal(t, model.ObjectTypeError, events[0].Response.Object)
 	require.True(t, events[0].Response.Done)
+}
+
+func TestA2AAgentRunStreaming_PersistsBufferedTextBeforeToolEvents(
+	t *testing.T,
+) {
+	sseBody := mustBuildSSEBody(t, []sseEvent{
+		{
+			eventType: protocol.EventStatusUpdate,
+			payload: protocol.TaskStatusUpdateEvent{
+				Kind:      protocol.KindTaskStatusUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Status: protocol.TaskStatus{
+					State: protocol.TaskStateSubmitted,
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						&protocol.TextPart{Kind: protocol.KindText, Text: "preface before tool-1"},
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						buildToolCallDataPart("call-1", "tool-1", `{"a":1}`),
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						buildToolResponseDataPart("call-1", "tool-1", "result-1"),
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						&protocol.TextPart{Kind: protocol.KindText, Text: "preface before tool-2"},
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						buildToolCallDataPart("call-2", "tool-2", `{"b":2}`),
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						buildToolResponseDataPart("call-2", "tool-2", "result-2"),
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+					Parts: []protocol.Part{
+						&protocol.TextPart{Kind: protocol.KindText, Text: "final answer"},
+					},
+				},
+			},
+		},
+		{
+			eventType: protocol.EventArtifactUpdate,
+			payload: protocol.TaskArtifactUpdateEvent{
+				Kind:      protocol.KindTaskArtifactUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				LastChunk: boolPtr(true),
+				Artifact: protocol.Artifact{
+					ArtifactID: "resp-1",
+				},
+			},
+		},
+		{
+			eventType: protocol.EventStatusUpdate,
+			payload: protocol.TaskStatusUpdateEvent{
+				Kind:      protocol.KindTaskStatusUpdate,
+				TaskID:    "task-1",
+				ContextID: "ctx-1",
+				Final:     true,
+				Status: protocol.TaskStatus{
+					State: protocol.TaskStateCompleted,
+				},
+			},
+		},
+	})
+
+	testClient := newTestStreamClient(t, sseBody)
+	a := &A2AAgent{
+		name:                "test-agent",
+		agentCard:           &server.AgentCard{URL: "http://stream.test/", Capabilities: server.AgentCapabilities{Streaming: boolPtr(true)}},
+		eventConverter:      &defaultA2AEventConverter{},
+		a2aMessageConverter: stubInvocationConverter{},
+		streamingBufSize:    16,
+		a2aClient:           testClient,
+	}
+	sessionService := sessionmemory.NewSessionService()
+	run := runner.NewRunner("test-app", a, runner.WithSessionService(sessionService))
+	t.Cleanup(func() { _ = run.Close() })
+	t.Cleanup(func() { _ = sessionService.Close() })
+
+	eventCh, err := run.Run(
+		context.Background(),
+		"user-1",
+		"session-1",
+		model.NewUserMessage("hello"),
+		agent.WithStream(true),
+	)
+	require.NoError(t, err)
+	for range eventCh {
+	}
+
+	sess, err := sessionService.GetSession(context.Background(), session.Key{
+		AppName:   "test-app",
+		UserID:    "user-1",
+		SessionID: "session-1",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+
+	events := sess.GetEvents()
+	require.Len(t, events, 8)
+	require.Equal(t, model.RoleUser, events[0].Response.Choices[0].Message.Role)
+	require.Equal(t, "preface before tool-1", events[1].Response.Choices[0].Message.Content)
+	require.Len(t, events[2].Response.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "call-1", events[2].Response.Choices[0].Message.ToolCalls[0].ID)
+	require.True(
+		t,
+		events[1].Timestamp.Before(events[2].Timestamp),
+		"flushed buffered text event timestamp should be earlier than following tool call event",
+	)
+	require.True(
+		t,
+		events[1].Response.Timestamp.Before(events[2].Response.Timestamp),
+		"flushed buffered text response timestamp should be earlier than following tool call response timestamp",
+	)
+	require.Equal(t, "result-1", events[3].Response.Choices[0].Message.Content)
+	require.Equal(t, "preface before tool-2", events[4].Response.Choices[0].Message.Content)
+	require.Len(t, events[5].Response.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "call-2", events[5].Response.Choices[0].Message.ToolCalls[0].ID)
+	require.True(
+		t,
+		events[4].Timestamp.Before(events[5].Timestamp),
+		"second flushed buffered text event timestamp should be earlier than following tool call event",
+	)
+	require.True(
+		t,
+		events[4].Response.Timestamp.Before(events[5].Response.Timestamp),
+		"second flushed buffered text response timestamp should be earlier than following tool call response timestamp",
+	)
+	require.Equal(t, "result-2", events[6].Response.Choices[0].Message.Content)
+	require.Equal(t, "final answer", events[7].Response.Choices[0].Message.Content)
 }
 
 func TestA2AAgent_sendErrorEvent_UsesRunErrorType(t *testing.T) {
@@ -2196,6 +2778,31 @@ type sseEvent struct {
 	payload   any
 }
 
+func buildToolCallDataPart(id, name, args string) *protocol.DataPart {
+	dataPart := protocol.NewDataPart(map[string]any{
+		ia2a.ToolCallFieldID:   id,
+		ia2a.ToolCallFieldType: "function",
+		ia2a.ToolCallFieldName: name,
+		ia2a.ToolCallFieldArgs: args,
+	})
+	dataPart.Metadata = map[string]any{
+		ia2a.DataPartMetadataTypeKey: ia2a.DataPartMetadataTypeFunctionCall,
+	}
+	return &dataPart
+}
+
+func buildToolResponseDataPart(id, name, response string) *protocol.DataPart {
+	dataPart := protocol.NewDataPart(map[string]any{
+		ia2a.ToolCallFieldID:       id,
+		ia2a.ToolCallFieldName:     name,
+		ia2a.ToolCallFieldResponse: response,
+	})
+	dataPart.Metadata = map[string]any{
+		ia2a.DataPartMetadataTypeKey: ia2a.DataPartMetadataTypeFunctionResp,
+	}
+	return &dataPart
+}
+
 func mustBuildSSEBody(t *testing.T, events []sseEvent) string {
 	t.Helper()
 	var builder strings.Builder
@@ -2232,6 +2839,95 @@ func hasAttr(attrs []attribute.KeyValue, target attribute.KeyValue) bool {
 	for _, attr := range attrs {
 		if attr.Key == target.Key && attr.Value == target.Value {
 			return true
+		}
+	}
+	return false
+}
+
+func setupInvokeAgentMetricCapture(t *testing.T) *sdkmetric.ManualReader {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	originalProvider := itelemetry.MeterProvider
+	originalMeter := itelemetry.InvokeAgentMeter
+	originalRequestCnt := itelemetry.InvokeAgentMetricGenAIRequestCnt
+	originalTokenUsage := itelemetry.InvokeAgentMetricGenAIClientTokenUsage
+	originalTimeToFirstToken := itelemetry.InvokeAgentMetricGenAIClientTimeToFirstToken
+	originalDuration := itelemetry.InvokeAgentMetricGenAIClientOperationDuration
+	t.Cleanup(func() {
+		itelemetry.MeterProvider = originalProvider
+		itelemetry.InvokeAgentMeter = originalMeter
+		itelemetry.InvokeAgentMetricGenAIRequestCnt = originalRequestCnt
+		itelemetry.InvokeAgentMetricGenAIClientTokenUsage = originalTokenUsage
+		itelemetry.InvokeAgentMetricGenAIClientTimeToFirstToken = originalTimeToFirstToken
+		itelemetry.InvokeAgentMetricGenAIClientOperationDuration = originalDuration
+	})
+
+	itelemetry.MeterProvider = provider
+	itelemetry.InvokeAgentMeter = provider.Meter(metrics.MeterNameInvokeAgent)
+	var err error
+	itelemetry.InvokeAgentMetricGenAIRequestCnt, err = itelemetry.InvokeAgentMeter.Int64Counter("gen_ai.client.request.cnt")
+	require.NoError(t, err)
+	itelemetry.InvokeAgentMetricGenAIClientTokenUsage = nil
+	itelemetry.InvokeAgentMetricGenAIClientTimeToFirstToken = nil
+	itelemetry.InvokeAgentMetricGenAIClientOperationDuration = nil
+	return reader
+}
+
+func collectInvokeAgentMetrics(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	return rm
+}
+
+func hasInvokeAgentMetricStringAttribute(
+	rm metricdata.ResourceMetrics,
+	metricName string,
+	key string,
+	value string,
+) bool {
+	for _, scopeMetric := range rm.ScopeMetrics {
+		for _, metric := range scopeMetric.Metrics {
+			if metric.Name != metricName {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, point := range sum.DataPoints {
+				for _, attr := range point.Attributes.ToSlice() {
+					if string(attr.Key) == key && attr.Value.AsString() == value {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasInvokeAgentMetricAttributeKey(
+	rm metricdata.ResourceMetrics,
+	metricName string,
+	key string,
+) bool {
+	for _, scopeMetric := range rm.ScopeMetrics {
+		for _, metric := range scopeMetric.Metrics {
+			if metric.Name != metricName {
+				continue
+			}
+			sum, ok := metric.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, point := range sum.DataPoints {
+				for _, attr := range point.Attributes.ToSlice() {
+					if string(attr.Key) == key {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false

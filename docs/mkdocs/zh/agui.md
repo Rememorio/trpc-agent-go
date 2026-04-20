@@ -203,11 +203,12 @@ curl -X POST http://localhost:8080/cancel \
 
 - `agui.WithMessagesSnapshotEnabled(true)` 启用消息快照功能；
 - `agui.WithMessagesSnapshotPath` 设置消息快照路由的自定义路径，默认为 `/history`；
-- `agui.WithAppName(name)` 指定应用名；
+- `agui.WithAppName(name)` 指定应用名，作为默认 `AppName`；
+- `agui.WithAppNameResolver(resolver)` 可选，用于按请求覆盖 `AppName`；
 - `agui.WithSessionService(service)` 注入 `session.Service` 用于查询历史事件；
 - `aguirunner.WithUserIDResolver(resolver)` 自定义 `userID` 解析逻辑，默认恒为 `"user"`。
 
-框架在处理消息快照请求时会从 AG-UI 请求体 `RunAgentInput` 中解析 `threadId` 作为 `SessionID`，结合自定义 `UserIDResolver` 得到 `userID`，再与 `appName` 组装得到 `session.Key`，并从会话存储中读取已持久化的事件，将其还原为 `MessagesSnapshot` 所需的消息列表，封装成 `MESSAGES_SNAPSHOT` 事件，同时发送配套的 `RUN_STARTED`、`RUN_FINISHED` 事件。
+框架在处理消息快照请求时会从 AG-UI 请求体 `RunAgentInput` 中解析 `threadId` 作为 `SessionID`，结合自定义 `UserIDResolver` 得到 `userID`，再优先使用 `AppNameResolver` 返回的 `appName`；若未返回值，则回退到 `agui.WithAppName(name)`。三者共同组装得到 `session.Key`，并从会话存储中读取已持久化的事件，将其还原为 `MessagesSnapshot` 所需的消息列表，封装成 `MESSAGES_SNAPSHOT` 事件，同时发送配套的 `RUN_STARTED`、`RUN_FINISHED` 事件。
 
 代码示例如下：
 
@@ -430,6 +431,43 @@ resolver := func(ctx context.Context, input *adapter.RunAgentInput) (string, err
 
 runner := runner.NewRunner(agent.Info().Name, agent)
 server, _ := agui.New(runner, agui.WithAGUIRunnerOptions(aguirunner.WithUserIDResolver(resolver)))
+```
+
+### 自定义 `AppNameResolver`
+
+默认情况下，AG-UI 使用 `agui.WithAppName(name)` 作为静态 `AppName`，并将其与 `userID`、`threadId` 一起组成 `SessionKey`。
+
+如果希望按请求动态切换 `AppName`，可以实现 `AppNameResolver` 并通过 `agui.WithAppNameResolver` 注入。`AppNameResolver` 返回非空字符串时，会覆盖本次请求的 `AppName`；若返回空字符串，则继续回退到 `agui.WithAppName(name)`。
+
+实时对话路由、取消路由和消息快照路由会复用同一套 `AppName` 解析逻辑，因此，同一会话的 `/agui`、`/cancel`、`/history` 请求应传入一致的业务标识。
+
+需要注意的是，若开启了消息快照功能，服务启动时仍然需要显式配置 `agui.WithAppName(name)` 作为默认值；`AppNameResolver` 只负责请求级覆盖。
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+    "trpc.group/trpc-go/trpc-agent-go/server/agui"
+    "trpc.group/trpc-go/trpc-agent-go/server/agui/adapter"
+)
+
+resolver := func(ctx context.Context, input *adapter.RunAgentInput) (string, error) {
+    forwardedProps, ok := input.ForwardedProps.(map[string]any)
+    if !ok || forwardedProps == nil {
+        return "", nil
+    }
+    appName, ok := forwardedProps["appName"].(string)
+    if !ok || appName == "" {
+        return "", nil
+    }
+    return appName, nil
+}
+
+runner := runner.NewRunner(agent.Info().Name, agent)
+server, _ := agui.New(
+    runner,
+    agui.WithAppName("default-app"),
+    agui.WithAppNameResolver(resolver),
+)
 ```
 
 ### 自定义 `RunOptionResolver`
@@ -1064,3 +1102,28 @@ server, err := agui.New(
 实际效果如下图所示，完整示例可参考 [examples/agui/server/report](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/report)，前端实现可参考 [examples/agui/client/tdesign-chat](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/client/tdesign-chat)。
 
 ![report](../assets/gif/agui/report.gif)
+
+### 流式工具执行结果
+
+当工具在服务端执行，且前端需要持续展示执行中的状态时，可以将事件流分成三层来组织。`TOOL_CALL_START`、`TOOL_CALL_ARGS`、`TOOL_CALL_END` 用于描述工具调用本身，`ACTIVITY_SNAPSHOT`、`ACTIVITY_DELTA` 用于承载执行过程中的进度、阶段或日志，`TOOL_CALL_RESULT` 则保留给最终工具结果。这样前端可以分别渲染执行中的状态和最终结果，消息快照回放时也能继续依赖标准的工具结果语义。
+
+推荐的事件流大致如下：
+
+```text
+RUN_STARTED
+→ TOOL_CALL_START
+→ TOOL_CALL_ARGS
+→ TOOL_CALL_END
+→ ACTIVITY_SNAPSHOT
+→ ACTIVITY_DELTA
+→ ACTIVITY_DELTA
+→ ...
+→ ACTIVITY_DELTA   # completed
+→ TOOL_CALL_RESULT
+→ TEXT_MESSAGE_*
+→ RUN_FINISHED
+```
+
+在实现上，通常可以通过自定义 Translator 包装默认 Translator。默认 Translator 继续负责标准 `TOOL_CALL_*` 与最终 `TOOL_CALL_RESULT` 的翻译，自定义部分只处理工具执行过程中的中间结果。比较稳妥的写法是遍历默认 Translator 返回的 `innerEvents`，逐个判断事件类型，并仅对目标 `ToolCallResultEvent` 做改写。partial 结果可以改写为 `ACTIVITY_SNAPSHOT` 或 `ACTIVITY_DELTA`，final 结果则在原始 `TOOL_CALL_RESULT` 之前插入一条 completed 的 `ACTIVITY_DELTA`。其余事件保持原样透传，这样可以保留文本、Graph 活动和其他工具事件的既有行为。
+
+完整示例可参考 [examples/agui/server/streamtool](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/streamtool)。该示例使用一个最小 `StreamableTool` 持续输出递增数字，并通过自定义 Translator 将 partial `tool.response` 转为 `tool.execution` 活动事件，同时保留标准 `TOOL_CALL_RESULT` 作为最终结果。

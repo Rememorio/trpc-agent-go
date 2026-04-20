@@ -78,7 +78,21 @@ const (
 	// SkillLoadModeSession keeps loaded skill content available across
 	// invocations until cleared or the session expires.
 	SkillLoadModeSession = processor.SkillLoadModeSession
+
+	// SessionSummaryInjectionSystem injects the session summary as a system
+	// message (default behavior).
+	SessionSummaryInjectionSystem = processor.SessionSummaryInjectionSystem
+	// SessionSummaryInjectionUser injects the session summary as a user
+	// message that participates in token-budget trimming for sliding-window
+	// behavior. The processor prefers merging it into the first user
+	// history/current message and only falls back to a trailing prefix user
+	// message when needed.
+	SessionSummaryInjectionUser = processor.SessionSummaryInjectionUser
 )
+
+// SessionSummaryInjectionMode controls how the session summary is injected
+// into the model request.
+type SessionSummaryInjectionMode = processor.SessionSummaryInjectionMode
 
 // MessageFilterMode is the mode for filtering messages.
 type MessageFilterMode int
@@ -207,6 +221,8 @@ type Options struct {
 	ModelCallbacks *model.Callbacks
 	// ToolCallbacks contains callbacks for tool operations.
 	ToolCallbacks *tool.Callbacks
+	// ToolCallRetryPolicy configures retry behavior for callable tool calls.
+	ToolCallRetryPolicy *tool.RetryPolicy
 	// Knowledge is the knowledge base for the agent.
 	// If provided, the knowledge search tool will be automatically added.
 	Knowledge knowledge.Knowledge
@@ -246,6 +262,11 @@ type Options struct {
 	// AddSessionSummary controls whether to prepend the current branch summary
 	// as a system message when available (default: false).
 	AddSessionSummary bool
+	// SessionSummaryInjectionMode controls how the session summary is injected
+	// into the model request. Default is "system" (SessionSummaryInjectionSystem).
+	// Set to "user" (SessionSummaryInjectionUser) to inject as a user message
+	// that participates in token-budget trimming for sliding-window behavior.
+	SessionSummaryInjectionMode processor.SessionSummaryInjectionMode
 	// SyncSummaryIntraRun controls whether to refresh session summary
 	// synchronously between LLM loop iterations inside the same run.
 	// When false (default), summary refresh happens asynchronously and
@@ -303,6 +324,10 @@ type Options struct {
 	// Default is false, so same-branch events are merged into user context
 	// unless explicitly opted into preserving roles.
 	PreserveSameBranch bool
+	// PreserveForeignMessages keeps messages authored by other agents in their
+	// original roles/order instead of rewriting them into user-context messages.
+	// Default is false to preserve current handoff behavior.
+	PreserveForeignMessages bool
 	// EventMessageProjector rewrites one event-derived message before it
 	// is appended to the model request.
 	EventMessageProjector EventMessageProjector
@@ -822,6 +847,13 @@ func WithToolCallbacks(callbacks *tool.Callbacks) Option {
 	}
 }
 
+// WithToolCallRetryPolicy sets the retry policy for callable tool calls.
+func WithToolCallRetryPolicy(policy *tool.RetryPolicy) Option {
+	return func(opts *Options) {
+		opts.ToolCallRetryPolicy = policy
+	}
+}
+
 // WithKnowledge sets the knowledge base for the agent.
 // If provided, the knowledge search tool will be automatically added to the agent's tools.
 func WithKnowledge(kb knowledge.Knowledge) Option {
@@ -984,6 +1016,20 @@ func WithAddSessionSummary(addSummary bool) Option {
 	}
 }
 
+// WithSessionSummaryInjectionMode sets the injection mode for session summaries.
+//
+// Available modes:
+//   - processor.SessionSummaryInjectionSystem (default): injects as system message.
+//   - processor.SessionSummaryInjectionUser: injects as a user message that
+//     participates in token-budget trimming for sliding-window behavior.
+//     If the first history message is also a user message, the summary is
+//     merged into it to avoid consecutive user messages.
+func WithSessionSummaryInjectionMode(mode processor.SessionSummaryInjectionMode) Option {
+	return func(opts *Options) {
+		opts.SessionSummaryInjectionMode = mode
+	}
+}
+
 // WithSyncSummaryIntraRun enables synchronous summary refresh between LLM loop
 // iterations in the same run. When enabled, the summary is updated before each
 // LLM call within a run, ensuring the model sees the most recent summary.
@@ -1064,6 +1110,15 @@ func WithContextCompactionOversizedToolResultMaxTokens(tokens int) Option {
 func WithPreserveSameBranch(preserve bool) Option {
 	return func(opts *Options) {
 		opts.PreserveSameBranch = preserve
+	}
+}
+
+// WithPreserveForeignMessages controls whether messages authored by other
+// agents should preserve their original assistant/tool roles and order instead
+// of being rewritten into user context when used as history. Default is false.
+func WithPreserveForeignMessages(preserve bool) Option {
+	return func(opts *Options) {
+		opts.PreserveForeignMessages = preserve
 	}
 }
 

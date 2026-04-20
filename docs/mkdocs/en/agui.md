@@ -205,11 +205,12 @@ To enable message snapshots, configure the following options:
 
 - `agui.WithMessagesSnapshotEnabled(true)` enables message snapshots;
 - `agui.WithMessagesSnapshotPath` sets the custom message snapshot route, defaulting to `/history`;
-- `agui.WithAppName(name)` specifies the application name;
+- `agui.WithAppName(name)` specifies the application name as the default `AppName`;
+- `agui.WithAppNameResolver(resolver)` is optional and overrides `AppName` per request;
 - `agui.WithSessionService(service)` injects the `session.Service` used to look up historical events;
 - `aguirunner.WithUserIDResolver(resolver)` customises how `userID` is resolved, defaulting to `"user"`.
 
-When handling a message snapshot request, the framework extracts `threadId` as the `SessionID` from the AG-UI request body `RunAgentInput`, resolves `userID` using the custom `UserIDResolver`, builds `session.Key` with `appName`, reads the persisted events from session storage, reconstructs the message list required by `MessagesSnapshot`, wraps it into a `MESSAGES_SNAPSHOT` event, and sends matching `RUN_STARTED` and `RUN_FINISHED` events.
+When handling a message snapshot request, the framework extracts `threadId` as the `SessionID` from the AG-UI request body `RunAgentInput`, resolves `userID` using the custom `UserIDResolver`, prefers the `appName` returned by `AppNameResolver`, and falls back to `agui.WithAppName(name)` when the resolver returns an empty value. These values are used to build `session.Key`, read the persisted events from session storage, reconstruct the message list required by `MessagesSnapshot`, wrap it into a `MESSAGES_SNAPSHOT` event, and send matching `RUN_STARTED` and `RUN_FINISHED` events.
 
 Example:
 
@@ -433,6 +434,43 @@ resolver := func(ctx context.Context, input *adapter.RunAgentInput) (string, err
 
 runner := runner.NewRunner(agent.Info().Name, agent)
 server, _ := agui.New(runner, agui.WithAGUIRunnerOptions(aguirunner.WithUserIDResolver(resolver)))
+```
+
+### Custom `AppNameResolver`
+
+By default, AG-UI uses `agui.WithAppName(name)` as the static `AppName` and combines it with `userID` and `threadId` to form the `SessionKey`.
+
+If you need to switch `AppName` per request, implement `AppNameResolver` and inject it with `agui.WithAppNameResolver`. When `AppNameResolver` returns a non-empty string, it overrides `AppName` for that request. When it returns an empty string, the framework falls back to `agui.WithAppName(name)`.
+
+The real-time conversation route, cancel route, and message snapshot route all share the same `AppName` resolution logic. Requests to `/agui`, `/cancel`, and `/history` for the same session should therefore carry the same business identifier.
+
+When message snapshots are enabled, you still need to configure `agui.WithAppName(name)` at startup as the default value. `AppNameResolver` only provides request-level overrides.
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/runner"
+    "trpc.group/trpc-go/trpc-agent-go/server/agui"
+    "trpc.group/trpc-go/trpc-agent-go/server/agui/adapter"
+)
+
+resolver := func(ctx context.Context, input *adapter.RunAgentInput) (string, error) {
+    forwardedProps, ok := input.ForwardedProps.(map[string]any)
+    if !ok || forwardedProps == nil {
+        return "", nil
+    }
+    appName, ok := forwardedProps["appName"].(string)
+    if !ok || appName == "" {
+        return "", nil
+    }
+    return appName, nil
+}
+
+runner := runner.NewRunner(agent.Info().Name, agent)
+server, _ := agui.New(
+    runner,
+    agui.WithAppName("default-app"),
+    agui.WithAppNameResolver(resolver),
+)
 ```
 
 ### Custom `RunOptionResolver`
@@ -1055,3 +1093,28 @@ The effect is shown below. For a full example, refer to
 [examples/agui/server/report](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/report). The corresponding client implementation lives in [examples/agui/client/tdesign-chat](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/client/tdesign-chat).
 
 ![report](../assets/gif/agui/report.gif)
+
+### Streaming Tool Execution Results
+
+When a tool runs on the server and the frontend needs to show execution progress continuously, it is helpful to separate the event stream into three layers. `TOOL_CALL_START`, `TOOL_CALL_ARGS`, and `TOOL_CALL_END` describe the tool invocation itself. `ACTIVITY_SNAPSHOT` and `ACTIVITY_DELTA` carry progress, phases, or intermediate status during execution. `TOOL_CALL_RESULT` remains the final tool result. This gives the frontend a clear boundary between in-progress state and the completed result, while keeping Message Snapshot replay aligned with the standard tool-result semantics.
+
+A typical event stream looks like this:
+
+```text
+RUN_STARTED
+→ TOOL_CALL_START
+→ TOOL_CALL_ARGS
+→ TOOL_CALL_END
+→ ACTIVITY_SNAPSHOT
+→ ACTIVITY_DELTA
+→ ACTIVITY_DELTA
+→ ...
+→ ACTIVITY_DELTA   # completed
+→ TOOL_CALL_RESULT
+→ TEXT_MESSAGE_*
+→ RUN_FINISHED
+```
+
+In practice, this is usually implemented by wrapping the default Translator. The default Translator continues to handle the standard `TOOL_CALL_*` events and the final `TOOL_CALL_RESULT`. The custom layer only rewrites intermediate tool-result updates. A robust approach is to iterate over the `innerEvents` returned by the default Translator and examine each event in order. Non-target events pass through unchanged. A target `ToolCallResultEvent` can be rewritten into `ACTIVITY_SNAPSHOT` or `ACTIVITY_DELTA` while the tool is still running. When the tool finishes, a completed `ACTIVITY_DELTA` can be inserted immediately before the original `TOOL_CALL_RESULT`. This keeps the default behavior intact for text events, graph activity events, and other tool events.
+
+For a complete example, see [examples/agui/server/streamtool](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/agui/server/streamtool). The example uses a minimal `StreamableTool` that emits incrementing numbers and a custom Translator that turns partial `tool.response` updates into `tool.execution` activity events while preserving the final `TOOL_CALL_RESULT`.

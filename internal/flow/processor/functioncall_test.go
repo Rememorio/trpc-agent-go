@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"sync"
@@ -33,10 +34,12 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/plugin"
 	"trpc.group/trpc-go/trpc-agent-go/session"
+	skillstate "trpc.group/trpc-go/trpc-agent-go/skill"
 	"trpc.group/trpc-go/trpc-agent-go/telemetry/trace"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 	agenttool "trpc.group/trpc-go/trpc-agent-go/tool/agent"
 	"trpc.group/trpc-go/trpc-agent-go/tool/function"
+	skilltool "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 	"trpc.group/trpc-go/trpc-agent-go/tool/transfer"
 )
 
@@ -100,6 +103,29 @@ func (m *mockCallableTool) Call(ctx context.Context, args []byte) (any, error) {
 	return m.callFn(ctx, args)
 }
 
+type delayedLoadTool struct {
+	*skilltool.LoadTool
+	delays map[string]time.Duration
+}
+
+func (t *delayedLoadTool) Call(
+	ctx context.Context,
+	args []byte,
+) (any, error) {
+	var in struct {
+		Skill string `json:"skill"`
+	}
+	_ = json.Unmarshal(args, &in)
+	if delay := t.delays[in.Skill]; delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return t.LoadTool.Call(ctx, args)
+}
+
 type mockCallbackCompatibleResult struct {
 	callbackResult any
 	meta           map[string]any
@@ -111,6 +137,15 @@ func (m *mockCallbackCompatibleResult) GetCallbackResult() any {
 
 func (m *mockCallbackCompatibleResult) GetMeta() map[string]any {
 	return m.meta
+}
+
+type mockRetryResult struct {
+	value string
+	fail  bool
+}
+
+func (m *mockRetryResult) RetryResultError() bool {
+	return m.fail
 }
 
 func TestExecuteSingleToolCallSequential_DisableTracingSkipsSpanCreation(t *testing.T) {
@@ -194,6 +229,7 @@ func TestExecuteToolCallsInParallel_DisableTracingSkipsSpanCreation(t *testing.T
 
 type mockInvocationStateDeltaTool struct {
 	declaration *tool.Declaration
+	callFn      func(context.Context, []byte) (any, error)
 	delta       map[string][]byte
 }
 
@@ -204,6 +240,16 @@ func (m *mockInvocationStateDeltaTool) Declaration() *tool.Declaration {
 	return &tool.Declaration{Name: "mock"}
 }
 
+func (m *mockInvocationStateDeltaTool) Call(
+	ctx context.Context,
+	args []byte,
+) (any, error) {
+	if m.callFn != nil {
+		return m.callFn(ctx, args)
+	}
+	return map[string]any{"ok": true}, nil
+}
+
 func (m *mockInvocationStateDeltaTool) StateDeltaForInvocation(
 	_ *agent.Invocation,
 	_ string,
@@ -211,6 +257,44 @@ func (m *mockInvocationStateDeltaTool) StateDeltaForInvocation(
 	_ []byte,
 ) map[string][]byte {
 	return m.delta
+}
+
+type sessionReadingStateDeltaTool struct {
+	declaration *tool.Declaration
+	readKey     string
+	writeKey    string
+}
+
+func (t *sessionReadingStateDeltaTool) Declaration() *tool.Declaration {
+	if t.declaration != nil {
+		return t.declaration
+	}
+	return &tool.Declaration{Name: "session-reading"}
+}
+
+func (t *sessionReadingStateDeltaTool) Call(
+	context.Context,
+	[]byte,
+) (any, error) {
+	return map[string]any{"ok": true}, nil
+}
+
+func (t *sessionReadingStateDeltaTool) StateDeltaForInvocation(
+	inv *agent.Invocation,
+	_ string,
+	_ []byte,
+	_ []byte,
+) map[string][]byte {
+	if inv == nil || inv.Session == nil {
+		return nil
+	}
+	value, ok := inv.Session.GetState(t.readKey)
+	if !ok {
+		return nil
+	}
+	return map[string][]byte{
+		t.writeKey: append([]byte(nil), value...),
+	}
 }
 
 type mockStateDeltaTool struct {
@@ -284,6 +368,64 @@ func TestExecuteToolCall_MapsSubAgentToTransfer(t *testing.T) {
 	assert.Equal(t, "What's the weather like in Tokyo?", got.Message)
 }
 
+func TestExecuteSingleToolCallSequential_AttachesMappedToolStateDelta(
+	t *testing.T,
+) {
+	ctx := context.Background()
+	p := NewFunctionCallResponseProcessor(false, nil)
+	inv := &agent.Invocation{
+		InvocationID: "inv-map-delta",
+		AgentName:    "coordinator",
+		Agent: &mockTransferAgent{
+			subAgents: []agent.Agent{
+				&mockTransferSubAgent{
+					info: &mockTransferAgentInfo{name: "weather-agent"},
+				},
+			},
+		},
+	}
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "weather-agent",
+			Arguments: []byte(`{"message":"weather"}`),
+		},
+	}
+	rsp := &model.Response{
+		Model: "mock-model",
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role:      model.RoleAssistant,
+				ToolCalls: []model.ToolCall{tc},
+			},
+		}},
+	}
+	const mappedStateKey = "mapped-state"
+	tools := map[string]tool.Tool{
+		transfer.TransferToolName: &mockInvocationStateDeltaTool{
+			declaration: &tool.Declaration{
+				Name: transfer.TransferToolName,
+			},
+			delta: map[string][]byte{
+				mappedStateKey: []byte("1"),
+			},
+		},
+	}
+
+	ev, err := p.executeSingleToolCallSequential(
+		ctx,
+		inv,
+		rsp,
+		tools,
+		nil,
+		0,
+		tc,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ev)
+	require.Equal(t, []byte("1"), ev.StateDelta[mappedStateKey])
+}
+
 func TestFunctionCallResponseProcessor_AttachStateDelta(t *testing.T) {
 	const (
 		deltaKey1 = "k1"
@@ -323,6 +465,183 @@ func TestFunctionCallResponseProcessor_AttachStateDelta(t *testing.T) {
 	}
 	p.attachStateDelta(inv, tl2, args, choice, ev2)
 	require.Equal(t, []byte(deltaVal2), ev2.StateDelta[deltaKey2])
+}
+
+func TestAttachStateDeltaToToolResults_ReplaysPendingStateDeltas(
+	t *testing.T,
+) {
+	const (
+		readKey  = "existing"
+		writeKey = "copied"
+	)
+	p := &FunctionCallResponseProcessor{}
+	inv := &agent.Invocation{
+		AgentName: "tester",
+		Session:   &session.Session{State: session.StateMap{}},
+	}
+	choice := model.Choice{
+		Message: model.Message{
+			ToolID:  "call-2",
+			Content: `{"ok":true}`,
+			Role:    model.RoleTool,
+		},
+	}
+	results := []toolResult{
+		{
+			index: 0,
+			event: &event.Event{
+				StateDelta: map[string][]byte{
+					readKey: []byte("v1"),
+				},
+			},
+		},
+		{
+			index: 1,
+			event: &event.Event{},
+			stateDelta: &toolEventStateDelta{
+				tool: &sessionReadingStateDeltaTool{
+					readKey:  readKey,
+					writeKey: writeKey,
+				},
+				args:   []byte(`{}`),
+				choice: choice,
+			},
+		},
+	}
+
+	events := p.attachStateDeltaToToolResults(inv, results)
+	require.Len(t, events, 2)
+	require.Equal(t, []byte("v1"), events[1].StateDelta[writeKey])
+}
+
+func marshalSkillLoadArgs(
+	t *testing.T,
+	skillName string,
+) []byte {
+	t.Helper()
+	args, err := json.Marshal(map[string]string{
+		"skill": skillName,
+	})
+	require.NoError(t, err)
+	return args
+}
+
+func newSkillLoadToolCall(
+	t *testing.T,
+	id string,
+	skillName string,
+) model.ToolCall {
+	t.Helper()
+	return model.ToolCall{
+		ID: id,
+		Function: model.FunctionDefinitionParam{
+			Name:      "skill_load",
+			Arguments: marshalSkillLoadArgs(t, skillName),
+		},
+	}
+}
+
+func newToolCallResponseWithCalls(
+	toolCalls []model.ToolCall,
+) *model.Response {
+	return &model.Response{
+		Model: "mock-model",
+		Choices: []model.Choice{{
+			Message: model.Message{
+				Role:      model.RoleAssistant,
+				ToolCalls: toolCalls,
+			},
+		}},
+	}
+}
+
+func TestHandleFunctionCalls_SequentialUsesMergedInvocationStateDelta(
+	t *testing.T,
+) {
+	const agentName = "tester"
+	loadTool := skilltool.NewLoadTool(nil)
+	tools := map[string]tool.Tool{
+		loadTool.Declaration().Name: loadTool,
+	}
+	inv := &agent.Invocation{
+		AgentName: agentName,
+		Session: &session.Session{
+			State: session.StateMap{
+				skillstate.LoadedOrderKey(agentName): []byte(
+					`["a","b","c","d"]`,
+				),
+			},
+		},
+	}
+	toolCalls := []model.ToolCall{
+		newSkillLoadToolCall(t, "call-1", "a"),
+		newSkillLoadToolCall(t, "call-2", "b"),
+	}
+
+	ev, err := NewFunctionCallResponseProcessor(
+		false,
+		nil,
+	).handleFunctionCalls(
+		context.Background(),
+		inv,
+		newToolCallResponseWithCalls(toolCalls),
+		tools,
+		nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ev)
+	require.Equal(
+		t,
+		`["c","d","a","b"]`,
+		string(ev.StateDelta[skillstate.LoadedOrderKey(agentName)]),
+	)
+}
+
+func TestHandleFunctionCalls_ParallelUsesMergedInvocationStateDelta(
+	t *testing.T,
+) {
+	const agentName = "tester"
+	loadTool := &delayedLoadTool{
+		LoadTool: skilltool.NewLoadTool(nil),
+		delays: map[string]time.Duration{
+			"a": 50 * time.Millisecond,
+		},
+	}
+	tools := map[string]tool.Tool{
+		loadTool.Declaration().Name: loadTool,
+	}
+	inv := &agent.Invocation{
+		AgentName: agentName,
+		Session: &session.Session{
+			State: session.StateMap{
+				skillstate.LoadedOrderKey(agentName): []byte(
+					`["a","b","c","d"]`,
+				),
+			},
+		},
+	}
+	toolCalls := []model.ToolCall{
+		newSkillLoadToolCall(t, "call-1", "a"),
+		newSkillLoadToolCall(t, "call-2", "b"),
+	}
+
+	ev, err := NewFunctionCallResponseProcessor(
+		true,
+		nil,
+	).handleFunctionCalls(
+		context.Background(),
+		inv,
+		newToolCallResponseWithCalls(toolCalls),
+		tools,
+		nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, ev)
+	require.Equal(
+		t,
+		`["c","d","a","b"]`,
+		string(ev.StateDelta[skillstate.LoadedOrderKey(agentName)]),
+	)
 }
 
 func TestExecuteToolCall(t *testing.T) {
@@ -2676,6 +2995,47 @@ func TestExecuteCallableTool_ErrorWrap(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), ErrorCallableToolExecution)
+}
+
+func TestExecuteCallableTool_ErrorWrapDropsPartialResult(t *testing.T) {
+	p := NewFunctionCallResponseProcessor(false, nil)
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "t"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return map[string]any{"partial": true}, errors.New("e")
+		},
+	}
+	_, result, err := p.executeCallableTool(context.Background(),
+		model.ToolCall{Function: model.FunctionDefinitionParam{
+			Name: "t",
+		}}, tl,
+	)
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), ErrorCallableToolExecution)
+}
+
+func TestExecuteCallableTool_NoRetryPolicyCallsToolOnCanceledContext(t *testing.T) {
+	p := NewFunctionCallResponseProcessor(false, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var toolCalls int
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "t"},
+		callFn: func(callCtx context.Context, _ []byte) (any, error) {
+			toolCalls++
+			require.ErrorIs(t, callCtx.Err(), context.Canceled)
+			return "ok", nil
+		},
+	}
+	_, result, err := p.executeCallableTool(ctx,
+		model.ToolCall{Function: model.FunctionDefinitionParam{
+			Name: "t",
+		}}, tl,
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, toolCalls)
+	require.Equal(t, "ok", result)
 }
 
 func TestConvertToolArguments_InvalidJSON(t *testing.T) {
@@ -5149,7 +5509,7 @@ func TestExecuteToolWithCallbacks_PluginAfterToolError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestExecuteToolWithCallbacks_PluginAfterToolOverridePreservesErr(
+func TestExecuteToolWithCallbacks_PluginAfterToolOverrideClearsErr(
 	t *testing.T,
 ) {
 	localAfterCalled := false
@@ -5203,9 +5563,180 @@ func TestExecuteToolWithCallbacks_PluginAfterToolOverridePreservesErr(
 		tl,
 		nil,
 	)
-	require.ErrorIs(t, err, toolErr)
+	// When a plugin AfterTool callback replaces the failed tool result with
+	// a CustomResult, the original tool error should be cleared so that the
+	// framework sends the replacement as the tool response message.
+	require.NoError(t, err)
 	require.False(t, localAfterCalled)
 	require.Equal(t, map[string]any{"p": true}, res)
+}
+
+// TestExecuteToolWithCallbacks_LocalAfterToolCustomResultReplacesFailedResult
+// verifies that when a tool execution fails and the local AfterTool callback
+// returns a non-nil CustomResult, the original error is cleared and the
+// CustomResult is used as the tool response message to the model.
+// This is the exact scenario reported by users: MCP tool fails, AfterTool
+// callback formats a friendly error message via CustomResult, but the model
+// still sees the original failure.
+func TestExecuteToolWithCallbacks_LocalAfterToolCustomResultReplacesFailedResult(
+	t *testing.T,
+) {
+	replacementResult := map[string]string{
+		"status":  "error",
+		"message": "The tool encountered an issue, please try a different approach.",
+	}
+
+	local := tool.NewCallbacks()
+	local.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		// Simulate the user's scenario: detect tool failure and provide
+		// a formatted custom result.
+		if args.Error != nil {
+			return &tool.AfterToolResult{
+				CustomResult: replacementResult,
+			}, nil
+		}
+		return nil, nil
+	})
+
+	proc := NewFunctionCallResponseProcessor(false, local)
+	inv := &agent.Invocation{AgentName: "test-agent"}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "mcp_tool"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return nil, errors.New("Tool Exec Failed: connection timeout")
+		},
+	}
+	toolCall := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "mcp_tool",
+			Arguments: []byte(`{"query":"test"}`),
+		},
+	}
+
+	_, res, _, _, _, err := proc.executeToolWithCallbacks(
+		context.Background(),
+		inv,
+		toolCall,
+		tl,
+		nil,
+	)
+	// The original tool error should be cleared because the callback
+	// replaced the result.
+	require.NoError(t, err)
+	require.Equal(t, replacementResult, res)
+}
+
+// TestExecuteToolCall_LocalAfterToolCustomResultProducesToolMessage verifies
+// the end-to-end flow: a failed tool + AfterTool CustomResult produces a
+// proper RoleTool message with the custom content.
+func TestExecuteToolCall_LocalAfterToolCustomResultProducesToolMessage(
+	t *testing.T,
+) {
+	replacementResult := "Formatted error: tool timed out, please retry."
+
+	local := tool.NewCallbacks()
+	local.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		if args.Error != nil {
+			return &tool.AfterToolResult{
+				CustomResult: replacementResult,
+			}, nil
+		}
+		return nil, nil
+	})
+
+	proc := NewFunctionCallResponseProcessor(false, local)
+	inv := &agent.Invocation{
+		AgentName: "test-agent",
+		Model:     &mockModel{},
+	}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "mcp_tool"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return nil, errors.New("Tool Exec Failed")
+		},
+	}
+	toolCall := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "mcp_tool",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tools := map[string]tool.Tool{"mcp_tool": tl}
+
+	_, choices, _, _, _, err := proc.executeToolCall(
+		context.Background(),
+		inv,
+		toolCall,
+		tools,
+		0,
+		nil,
+	)
+	// choices should not be nil; the custom result should appear as a
+	// RoleTool message.
+	require.NoError(t, err)
+	require.NotNil(t, choices)
+	require.Len(t, choices, 1)
+	require.Equal(t, model.RoleTool, choices[0].Message.Role)
+	require.Equal(t, "call-1", choices[0].Message.ToolID)
+	require.Contains(t, choices[0].Message.Content, "Formatted error")
+}
+
+// TestExecuteToolWithCallbacks_StopErrorPreservedWithCustomResult verifies that
+// when a tool returns a StopError, the error is NOT cleared even if the
+// AfterTool callback provides a CustomResult. StopError is a control-flow
+// signal that must propagate so the agent can stop execution.
+func TestExecuteToolWithCallbacks_StopErrorPreservedWithCustomResult(
+	t *testing.T,
+) {
+	local := tool.NewCallbacks()
+	local.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		if args.Error != nil {
+			return &tool.AfterToolResult{
+				CustomResult: "friendly stop message",
+			}, nil
+		}
+		return nil, nil
+	})
+
+	proc := NewFunctionCallResponseProcessor(false, local)
+	inv := &agent.Invocation{AgentName: "test-agent"}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "stop_tool"},
+		callFn: func(_ context.Context, _ []byte) (any, error) {
+			return nil, agent.NewStopError("max iterations reached")
+		},
+	}
+	toolCall := model.ToolCall{
+		ID: "call-stop",
+		Function: model.FunctionDefinitionParam{
+			Name:      "stop_tool",
+			Arguments: []byte(`{}`),
+		},
+	}
+
+	_, _, _, _, _, err := proc.executeToolWithCallbacks(
+		context.Background(),
+		inv,
+		toolCall,
+		tl,
+		nil,
+	)
+	// StopError must be preserved even though the callback returned a
+	// CustomResult.
+	require.Error(t, err)
+	_, ok := agent.AsStopError(err)
+	require.True(t, ok, "expected StopError to be preserved")
 }
 
 func TestExecuteToolWithCallbacks_BeforeError(t *testing.T) {
@@ -5951,4 +6482,139 @@ func TestExtractMetaFromResult_WithEmptyMeta(t *testing.T) {
 	meta := extractMetaFromResult(result)
 	assert.NotNil(t, meta)
 	assert.Empty(t, meta)
+}
+
+func TestExecuteToolWithCallbacks_RetryDoesNotReplayCallbacks(t *testing.T) {
+	var beforeCalls int
+	var afterCalls int
+	var toolCalls int
+	callbacks := tool.NewCallbacks()
+	callbacks.RegisterBeforeTool(func(
+		ctx context.Context,
+		args *tool.BeforeToolArgs,
+	) (*tool.BeforeToolResult, error) {
+		beforeCalls++
+		return &tool.BeforeToolResult{}, nil
+	})
+	callbacks.RegisterAfterTool(func(
+		ctx context.Context,
+		args *tool.AfterToolArgs,
+	) (*tool.AfterToolResult, error) {
+		afterCalls++
+		require.NoError(t, args.Error)
+		return &tool.AfterToolResult{}, nil
+	})
+	p := NewFunctionCallResponseProcessor(
+		false,
+		callbacks,
+		WithToolCallRetryPolicy(&tool.RetryPolicy{
+			MaxAttempts:     2,
+			InitialInterval: 0,
+		}),
+	)
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "retry-tool",
+			Arguments: []byte(`{"x":1}`),
+		},
+	}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "retry-tool"},
+		callFn: func(ctx context.Context, args []byte) (any, error) {
+			toolCalls++
+			if toolCalls == 1 {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return map[string]any{"ok": true}, nil
+		},
+	}
+	gotCtx, result, modifiedArgs, suppressDefaultToolMessage, skipSummarization, err := p.executeToolWithCallbacks(
+		context.Background(),
+		nil,
+		tc,
+		tl,
+		nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, gotCtx)
+	require.Equal(t, 1, beforeCalls)
+	require.Equal(t, 1, afterCalls)
+	require.Equal(t, 2, toolCalls)
+	require.Equal(t, tc.Function.Arguments, modifiedArgs)
+	require.False(t, suppressDefaultToolMessage)
+	require.False(t, skipSummarization)
+	require.Equal(t, map[string]any{"ok": true}, result)
+}
+
+func TestExecuteCallableTool_RetryOnResultError(t *testing.T) {
+	var toolCalls int
+	p := NewFunctionCallResponseProcessor(
+		false,
+		nil,
+		WithToolCallRetryPolicy(&tool.RetryPolicy{
+			MaxAttempts:     2,
+			InitialInterval: 0,
+			RetryOn: func(ctx context.Context, info *tool.RetryInfo) (bool, error) {
+				return info.ResultError, nil
+			},
+		}),
+	)
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "retry-tool",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "retry-tool"},
+		callFn: func(ctx context.Context, args []byte) (any, error) {
+			toolCalls++
+			if toolCalls == 1 {
+				return &mockRetryResult{value: "first", fail: true}, nil
+			}
+			return &mockRetryResult{value: "second"}, nil
+		},
+	}
+	_, result, err := p.executeCallableTool(context.Background(), tc, tl)
+	require.NoError(t, err)
+	require.Equal(t, 2, toolCalls)
+	got, ok := result.(*mockRetryResult)
+	require.True(t, ok)
+	require.Equal(t, "second", got.value)
+}
+
+func TestExecuteCallableTool_DoesNotRetryStopError(t *testing.T) {
+	var toolCalls int
+	p := NewFunctionCallResponseProcessor(
+		false,
+		nil,
+		WithToolCallRetryPolicy(&tool.RetryPolicy{
+			MaxAttempts:     3,
+			InitialInterval: 0,
+			RetryOn: func(ctx context.Context, info *tool.RetryInfo) (bool, error) {
+				return true, nil
+			},
+		}),
+	)
+	tc := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name:      "stop-tool",
+			Arguments: []byte(`{}`),
+		},
+	}
+	tl := &mockCallableTool{
+		declaration: &tool.Declaration{Name: "stop-tool"},
+		callFn: func(ctx context.Context, args []byte) (any, error) {
+			toolCalls++
+			return nil, agent.NewStopError("stop")
+		},
+	}
+	_, _, err := p.executeCallableTool(context.Background(), tc, tl)
+	require.Error(t, err)
+	_, ok := agent.AsStopError(err)
+	require.True(t, ok)
+	require.Equal(t, 1, toolCalls)
 }

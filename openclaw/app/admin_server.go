@@ -21,8 +21,10 @@ import (
 	"syscall"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/session"
+
+	"trpc.group/trpc-go/trpc-agent-go/openclaw/admin"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/channel"
-	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/admin"
 	ocbrowser "trpc.group/trpc-go/trpc-agent-go/openclaw/internal/browser"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/cron"
 	"trpc.group/trpc-go/trpc-agent-go/openclaw/internal/octool"
@@ -119,13 +121,19 @@ func buildAdminConfig(
 	routes admin.Routes,
 	cronSvc *cron.Service,
 	execMgr *octool.Manager,
+	promptController *RuntimePromptController,
 	browserManaged admin.BrowserManagedStatusProvider,
 	adminAddr string,
 	adminURL string,
 	skillsRepo *ocskills.Repository,
 	skillsWatch *ocskills.WatchService,
 	memoryFiles admin.MemoryFileStore,
+	sessionSvc session.Service,
 ) admin.Config {
+	identity := buildAdminIdentityProvider(
+		stateDir,
+		opts.AppName,
+	)
 	return admin.Config{
 		AppName:        opts.AppName,
 		InstanceID:     instanceID,
@@ -153,6 +161,16 @@ func buildAdminConfig(
 			stateDir,
 			skillsRepo,
 			skillsWatch,
+		),
+		Prompts: buildAdminPromptProvider(
+			opts,
+			promptController,
+		),
+		Identity: identity,
+		Chats: buildAdminChatsProvider(
+			identity,
+			opts.AppName,
+			sessionSvc,
 		),
 		MemoryFiles: memoryFiles,
 		Browser: buildBrowserAdminConfig(
@@ -289,7 +307,7 @@ func buildAdminSkillsProvider(
 		StateDir:        stateDir,
 	}
 	return &adminSkillsProvider{
-		configPath:   strings.TrimSpace(opts.ConfigPath),
+		configPath:   adminWritableConfigPath(opts.ConfigPath),
 		repo:         repo,
 		watch:        watch,
 		roots:        resolveSkillRoots(cwd, cfg),

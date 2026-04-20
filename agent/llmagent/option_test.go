@@ -20,6 +20,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
+	"trpc.group/trpc-go/trpc-agent-go/tool"
 	toolskill "trpc.group/trpc-go/trpc-agent-go/tool/skill"
 )
 
@@ -78,6 +79,18 @@ func TestWithSyncSummaryIntraRun(t *testing.T) {
 
 	WithSyncSummaryIntraRun(false)(opts)
 	require.False(t, opts.SyncSummaryIntraRun)
+}
+
+func TestWithSessionSummaryInjectionMode(t *testing.T) {
+	opts := &Options{}
+	// Default should be zero value (empty string, treated as system).
+	require.Equal(t, processor.SessionSummaryInjectionMode(""), opts.SessionSummaryInjectionMode)
+
+	WithSessionSummaryInjectionMode(SessionSummaryInjectionUser)(opts)
+	require.Equal(t, processor.SessionSummaryInjectionUser, opts.SessionSummaryInjectionMode)
+
+	WithSessionSummaryInjectionMode(SessionSummaryInjectionSystem)(opts)
+	require.Equal(t, processor.SessionSummaryInjectionSystem, opts.SessionSummaryInjectionMode)
 }
 
 func TestWithContextCompactionOptions(t *testing.T) {
@@ -354,6 +367,13 @@ func TestWithMaxLimits_OnOptions(t *testing.T) {
 	if opts.MaxToolIterations != 4 {
 		t.Fatalf("expected MaxToolIterations=4, got %d", opts.MaxToolIterations)
 	}
+}
+
+func TestWithToolCallRetryPolicy_OnOptions(t *testing.T) {
+	opts := &Options{}
+	policy := &tool.RetryPolicy{MaxAttempts: 2}
+	WithToolCallRetryPolicy(policy)(opts)
+	require.Same(t, policy, opts.ToolCallRetryPolicy)
 }
 
 func TestWithPreloadMemory(t *testing.T) {

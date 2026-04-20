@@ -169,7 +169,11 @@ func New(name string, opts ...Option) *LLMAgent {
 		)
 	}
 
-	toolcallProcessor := processor.NewFunctionCallResponseProcessor(options.EnableParallelTools, options.ToolCallbacks)
+	toolcallProcessor := processor.NewFunctionCallResponseProcessor(
+		options.EnableParallelTools,
+		options.ToolCallbacks,
+		processor.WithToolCallRetryPolicy(options.ToolCallRetryPolicy),
+	)
 	// Configure default transfer message for direct sub-agent calls.
 	// Default behavior (when not configured): enabled with built-in default message.
 	if options.DefaultTransferMessage != nil {
@@ -272,6 +276,9 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 		),
 		processor.WithSkillLoadMode(options.SkillLoadMode),
 		processor.WithSkillToolFlags(skillFlags),
+		processor.WithSkillToolFlagsResolver(
+			a.skillToolFlagsForInvocation,
+		),
 	)
 	if options.MaxLoadedSkills > 0 {
 		skillsOpts = append(
@@ -294,31 +301,28 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 	requestProcessors = append(requestProcessors, skillsProcessor)
 
 	// 6. Workspace exec processor - injects executor/workspace guidance
-	// whenever workspace_exec is registered, even without a skills repo.
-	if executorSupportsWorkspaceExec(options) {
-		var workspaceOpts []processor.WorkspaceExecRequestProcessorOption
-		if executorSupportsWorkspaceExecSessions(options) {
-			workspaceOpts = append(
-				workspaceOpts,
-				processor.WithWorkspaceExecSessionsEnabled(),
-			)
-		}
-		workspaceOpts = append(
-			workspaceOpts,
-			processor.WithWorkspaceExecSkillsRepositoryResolver(
-				a.skillRepositoryForInvocation,
-			),
-		)
-		requestProcessors = append(
-			requestProcessors,
-			processor.NewWorkspaceExecRequestProcessor(workspaceOpts...),
-		)
+	// when the current invocation exposes workspace_exec capability.
+	workspaceOpts := []processor.WorkspaceExecRequestProcessorOption{
+		processor.WithWorkspaceExecEnabledResolver(
+			a.supportsWorkspaceExecForInvocation,
+		),
+		processor.WithWorkspaceExecSessionsResolver(
+			a.supportsWorkspaceExecSessionsForInvocation,
+		),
+		processor.WithWorkspaceExecSkillsRepositoryResolver(
+			a.skillRepositoryForInvocation,
+		),
 	}
+	requestProcessors = append(
+		requestProcessors,
+		processor.NewWorkspaceExecRequestProcessor(workspaceOpts...),
+	)
 
 	// 7. Content processor - appends conversation/context history.
 	contentOpts := []processor.ContentOption{
 		processor.WithAddContextPrefix(options.AddContextPrefix),
 		processor.WithAddSessionSummary(options.AddSessionSummary),
+		processor.WithSessionSummaryInjectionMode(options.SessionSummaryInjectionMode),
 		processor.WithMaxHistoryRuns(options.MaxHistoryRuns),
 		processor.WithEnableContextCompaction(options.EnableContextCompaction),
 		processor.WithContextCompactionKeepRecentRequests(
@@ -331,6 +335,7 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 			options.ContextCompactionOversizedToolResultMaxTokens,
 		),
 		processor.WithPreserveSameBranch(options.PreserveSameBranch),
+		processor.WithPreserveForeignMessages(options.PreserveForeignMessages),
 		processor.WithTimelineFilterMode(options.messageTimelineFilterMode),
 		processor.WithBranchFilterMode(options.messageBranchFilterMode),
 		processor.WithPreloadMemory(options.PreloadMemory),
@@ -615,12 +620,18 @@ func appendSkillTools(
 	options *Options,
 	runTool *toolskill.RunTool,
 ) []tool.Tool {
-	return appendSkillToolsWithRepo(
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
+	return appendSkillToolsWithRepoAndFlags(
 		allTools,
 		options,
 		options.skillsRepository,
 		nil,
 		runTool,
+		exec,
+		mustResolveSkillToolFlags(options),
 	)
 }
 
@@ -631,11 +642,33 @@ func appendSkillToolsWithRepo(
 	reg *codeexecutor.WorkspaceRegistry,
 	runTool *toolskill.RunTool,
 ) []tool.Tool {
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
+	return appendSkillToolsWithRepoAndFlags(
+		allTools,
+		options,
+		repo,
+		reg,
+		runTool,
+		exec,
+		mustResolveSkillToolFlags(options),
+	)
+}
+
+func appendSkillToolsWithRepoAndFlags(
+	allTools []tool.Tool,
+	options *Options,
+	repo skill.Repository,
+	reg *codeexecutor.WorkspaceRegistry,
+	runTool *toolskill.RunTool,
+	exec codeexecutor.CodeExecutor,
+	skillFlags skillprofile.Flags,
+) []tool.Tool {
 	if repo == nil {
 		return allTools
 	}
-
-	skillFlags := mustResolveSkillToolFlags(options)
 	if skillFlags.Load {
 		allTools = append(
 			allTools,
@@ -659,7 +692,7 @@ func appendSkillToolsWithRepo(
 	}
 
 	if runTool == nil {
-		runTool = buildSkillRunToolWithRepo(options, repo, reg)
+		runTool = buildSkillRunToolWithRepo(options, repo, reg, exec)
 	}
 	if skillFlags.Run {
 		allTools = append(allTools, runTool)
@@ -667,10 +700,6 @@ func appendSkillToolsWithRepo(
 	if !skillFlags.RequiresExecSessionTools() {
 		return allTools
 	}
-	if !executorSupportsInteractive(options) {
-		return allTools
-	}
-
 	execTool := toolskill.NewExecTool(runTool)
 	if skillFlags.Exec {
 		allTools = append(allTools, execTool)
@@ -697,6 +726,20 @@ func appendSkillToolsWithRepo(
 }
 
 func mustResolveSkillToolFlags(options *Options) skillprofile.Flags {
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
+	return mustResolveSkillToolFlagsWithExecutor(options, exec)
+}
+
+func mustResolveSkillToolFlagsWithExecutor(
+	options *Options,
+	exec codeexecutor.CodeExecutor,
+) skillprofile.Flags {
+	if options == nil {
+		return skillprofile.Flags{}
+	}
 	flags, err := skillprofile.ResolveFlags(
 		options.skillToolProfile,
 		options.allowedSkillTools,
@@ -715,8 +758,7 @@ func mustResolveSkillToolFlags(options *Options) skillprofile.Flags {
 			"skill_run and skill_exec require skill_load when " +
 			"WithSkillRunRequireSkillLoaded is enabled")
 	}
-
-	if !executorSupportsInteractive(options) {
+	if !codeExecutorSupportsInteractive(exec) {
 		flags = flags.WithoutInteractiveExecution()
 	}
 	return flags
@@ -728,11 +770,33 @@ func appendWorkspaceExecTool(
 	reg *codeexecutor.WorkspaceRegistry,
 	inv *agent.Invocation,
 ) []tool.Tool {
-	if !executorSupportsWorkspaceExec(options) {
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
+	return appendWorkspaceExecToolWithExecutor(
+		allTools,
+		exec,
+		codeExecutorSupportsWorkspaceExec(exec),
+		codeExecutorSupportsWorkspaceExecSessions(exec),
+		reg,
+		inv,
+	)
+}
+
+func appendWorkspaceExecToolWithExecutor(
+	allTools []tool.Tool,
+	exec codeexecutor.CodeExecutor,
+	enabled bool,
+	sessional bool,
+	reg *codeexecutor.WorkspaceRegistry,
+	inv *agent.Invocation,
+) []tool.Tool {
+	if !enabled {
 		return allTools
 	}
 	execTool := toolworkspaceexec.NewExecTool(
-		options.codeExecutor,
+		exec,
 		toolworkspaceexec.WithWorkspaceRegistry(reg),
 	)
 	allTools = append(
@@ -745,7 +809,7 @@ func appendWorkspaceExecTool(
 			toolworkspaceexec.NewSaveArtifactTool(execTool),
 		)
 	}
-	if executorSupportsWorkspaceExecSessions(options) {
+	if sessional {
 		allTools = append(
 			allTools,
 			toolworkspaceexec.NewWriteStdinTool(execTool),
@@ -767,6 +831,7 @@ func buildSkillRunTool(
 		options,
 		options.skillsRepository,
 		reg,
+		nil,
 	)
 }
 
@@ -774,8 +839,11 @@ func buildSkillRunToolWithRepo(
 	options *Options,
 	repo skill.Repository,
 	reg *codeexecutor.WorkspaceRegistry,
+	exec codeexecutor.CodeExecutor,
 ) *toolskill.RunTool {
-	exec := options.codeExecutor
+	if exec == nil && options != nil {
+		exec = options.codeExecutor
+	}
 	if exec == nil {
 		exec = defaultCodeExecutor()
 	}
@@ -837,7 +905,14 @@ func buildSkillRunToolWithRepo(
 // a local engine which does support interactive sessions, so we
 // return true in those cases.
 func executorSupportsInteractive(options *Options) bool {
-	exec := options.codeExecutor
+	var exec codeexecutor.CodeExecutor
+	if options != nil {
+		exec = options.codeExecutor
+	}
+	return codeExecutorSupportsInteractive(exec)
+}
+
+func codeExecutorSupportsInteractive(exec codeexecutor.CodeExecutor) bool {
 	if exec == nil {
 		exec = defaultCodeExecutor()
 	}
@@ -860,10 +935,17 @@ func executorSupportsInteractive(options *Options) bool {
 // not fall back to the local engine because that would silently move
 // commands onto the agent host instead of the configured executor.
 func executorSupportsWorkspaceExec(options *Options) bool {
-	if options == nil || options.codeExecutor == nil {
+	if options == nil {
 		return false
 	}
-	ep, ok := options.codeExecutor.(codeexecutor.EngineProvider)
+	return codeExecutorSupportsWorkspaceExec(options.codeExecutor)
+}
+
+func codeExecutorSupportsWorkspaceExec(exec codeexecutor.CodeExecutor) bool {
+	if exec == nil {
+		return false
+	}
+	ep, ok := exec.(codeexecutor.EngineProvider)
 	if !ok || ep == nil {
 		return false
 	}
@@ -877,10 +959,19 @@ func executorSupportsWorkspaceExec(options *Options) bool {
 // executorSupportsWorkspaceExecSessions reports whether workspace_exec can
 // expose interactive session helpers such as workspace_write_stdin.
 func executorSupportsWorkspaceExecSessions(options *Options) bool {
-	if !executorSupportsWorkspaceExec(options) {
+	if options == nil {
 		return false
 	}
-	ep := options.codeExecutor.(codeexecutor.EngineProvider)
+	return codeExecutorSupportsWorkspaceExecSessions(options.codeExecutor)
+}
+
+func codeExecutorSupportsWorkspaceExecSessions(
+	exec codeexecutor.CodeExecutor,
+) bool {
+	if !codeExecutorSupportsWorkspaceExec(exec) {
+		return false
+	}
+	ep := exec.(codeexecutor.EngineProvider)
 	eng := ep.Engine()
 	if eng == nil || eng.Runner() == nil {
 		return false
@@ -1056,74 +1147,172 @@ func (a *LLMAgent) wrapEventChannelWithTelemetry(
 		var responseErrorType string
 		tokenUsage := &itelemetry.TokenUsage{}
 		defer func() {
-			if startedSpan && fullRespEvent != nil {
-				itelemetry.TraceAfterInvokeAgent(span, fullRespEvent, tokenUsage, tracker.FirstTokenTimeDuration())
-			}
-			tracker.SetResponseErrorType(responseErrorType)
-			tracker.RecordMetrics()()
-			if startedSpan {
-				span.End()
-			}
-			close(wrappedChan)
+			finalizeWrappedTelemetry(
+				span,
+				tracker,
+				fullRespEvent,
+				responseErrorType,
+				tokenUsage,
+				startedSpan,
+				wrappedChan,
+			)
 		}()
 		// Forward all events from the original channel
 		for evt := range originalChan {
-			if evt != nil && evt.Response != nil {
-				tracker.TrackResponse(evt.Response)
-				if !evt.Response.IsPartial {
-					if evt.Response.Usage != nil {
-						tokenUsage.PromptTokens += evt.Response.Usage.PromptTokens
-						tokenUsage.CompletionTokens += evt.Response.Usage.CompletionTokens
-						tokenUsage.TotalTokens += evt.Response.Usage.TotalTokens
-					}
-					fullRespEvent = evt
-				}
+			if trackedEvent := recordWrappedEventTelemetry(
+				evt,
+				tracker,
+				tokenUsage,
+				&responseErrorType,
+			); trackedEvent != nil {
+				fullRespEvent = trackedEvent
 			}
 			if err := event.EmitEvent(ctx, wrappedChan, evt); err != nil {
 				return
 			}
 		}
-		// Collect error from the final response event.
-		var agentErr error
-		if fullRespEvent != nil && fullRespEvent.Response != nil && fullRespEvent.Response.Error != nil {
-			responseErrorType = fullRespEvent.Response.Error.Type
-			agentErr = fmt.Errorf("%s: %s", fullRespEvent.Response.Error.Type, fullRespEvent.Response.Error.Message)
-		}
-
-		// After all events are processed, run after agent callbacks
-		if a.agentCallbacks != nil {
-			result, err := a.agentCallbacks.RunAfterAgent(ctx, &agent.AfterAgentArgs{
-				Invocation:        invocation,
-				Error:             agentErr,
-				FullResponseEvent: fullRespEvent,
-			})
-			// Use the context from result if provided.
-			if result != nil && result.Context != nil {
-				ctx = result.Context
-			}
-			var evt *event.Event
-			if err != nil {
-				// Send error event.
-				evt = event.NewErrorEvent(
-					invocation.InvocationID,
-					invocation.AgentName,
-					agent.ErrorTypeAgentCallbackError,
-					err.Error(),
-				)
-				responseErrorType = agent.ErrorTypeAgentCallbackError
-			} else if result != nil && result.CustomResponse != nil {
-				// Create an event from the custom response.
-				evt = event.NewResponseEvent(invocation.InvocationID, invocation.AgentName, result.CustomResponse)
-			}
-			if evt != nil {
-				fullRespEvent = evt
-			}
-
+		if ctx, evt := a.runAfterAgentCallback(ctx, invocation, fullRespEvent); evt != nil {
+			fullRespEvent = evt
 			agent.EmitEvent(ctx, invocation, wrappedChan, evt)
 		}
 	}(runCtx)
 
 	return wrappedChan
+}
+
+func finalizeWrappedTelemetry(
+	span sdktrace.Span,
+	tracker *itelemetry.InvokeAgentTracker,
+	fullRespEvent *event.Event,
+	responseErrorType string,
+	tokenUsage *itelemetry.TokenUsage,
+	startedSpan bool,
+	wrappedChan chan *event.Event,
+) {
+	responseErrorType = resolveWrappedResponseErrorType(fullRespEvent, responseErrorType)
+	if startedSpan {
+		if fullRespEvent != nil {
+			itelemetry.TraceAfterInvokeAgent(
+				span,
+				fullRespEvent,
+				tokenUsage,
+				tracker.FirstTokenTimeDuration(),
+				model.ErrorTypeRunError,
+			)
+		} else if responseErrorType != "" {
+			span.SetStatus(codes.Error, responseErrorType)
+			span.SetAttributes(
+				attribute.String(semconvtrace.KeyErrorType, responseErrorType),
+			)
+		}
+	}
+	tracker.SetResponseErrorType(responseErrorType)
+	tracker.RecordMetrics()()
+	if startedSpan {
+		span.End()
+	}
+	close(wrappedChan)
+}
+
+func resolveWrappedResponseErrorType(fullRespEvent *event.Event, responseErrorType string) string {
+	if fullRespEvent == nil || fullRespEvent.Response == nil {
+		return responseErrorType
+	}
+	if fullRespEvent.Response.Error == nil {
+		return ""
+	}
+	return itelemetry.FormatResponseErrorLabel(
+		fullRespEvent.Response.Error,
+		model.ErrorTypeRunError,
+	)
+}
+
+func recordWrappedEventTelemetry(
+	evt *event.Event,
+	tracker *itelemetry.InvokeAgentTracker,
+	tokenUsage *itelemetry.TokenUsage,
+	responseErrorType *string,
+) *event.Event {
+	if evt == nil {
+		return nil
+	}
+	var fullRespEvent *event.Event
+	if evt.Response != nil {
+		tracker.TrackResponse(evt.Response)
+		if !evt.Response.IsPartial {
+			addWrappedTokenUsage(tokenUsage, evt.Response.Usage)
+			fullRespEvent = evt
+		}
+	}
+	if evt.Error != nil {
+		*responseErrorType = itelemetry.FormatResponseErrorLabel(
+			evt.Error,
+			model.ErrorTypeRunError,
+		)
+	}
+	return fullRespEvent
+}
+
+func addWrappedTokenUsage(tokenUsage *itelemetry.TokenUsage, usage *model.Usage) {
+	if usage == nil {
+		return
+	}
+	tokenUsage.PromptTokens += usage.PromptTokens
+	tokenUsage.CompletionTokens += usage.CompletionTokens
+	tokenUsage.TotalTokens += usage.TotalTokens
+}
+
+func (a *LLMAgent) runAfterAgentCallback(
+	ctx context.Context,
+	invocation *agent.Invocation,
+	fullRespEvent *event.Event,
+) (context.Context, *event.Event) {
+	if a.agentCallbacks == nil {
+		return ctx, nil
+	}
+	result, err := a.agentCallbacks.RunAfterAgent(ctx, &agent.AfterAgentArgs{
+		Invocation:        invocation,
+		Error:             wrappedAgentError(fullRespEvent),
+		FullResponseEvent: fullRespEvent,
+	})
+	if result != nil && result.Context != nil {
+		ctx = result.Context
+	}
+	return ctx, wrappedAfterAgentEvent(invocation, result, err)
+}
+
+func wrappedAgentError(fullRespEvent *event.Event) error {
+	if fullRespEvent == nil || fullRespEvent.Response == nil || fullRespEvent.Response.Error == nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: %s",
+		fullRespEvent.Response.Error.Type,
+		fullRespEvent.Response.Error.Message,
+	)
+}
+
+func wrappedAfterAgentEvent(
+	invocation *agent.Invocation,
+	result *agent.AfterAgentResult,
+	callbackErr error,
+) *event.Event {
+	if callbackErr != nil {
+		return event.NewErrorEvent(
+			invocation.InvocationID,
+			invocation.AgentName,
+			agent.ErrorTypeAgentCallbackError,
+			callbackErr.Error(),
+		)
+	}
+	if result == nil || result.CustomResponse == nil {
+		return nil
+	}
+	return event.NewResponseEvent(
+		invocation.InvocationID,
+		invocation.AgentName,
+		result.CustomResponse,
+	)
 }
 
 // Info implements the agent.Agent interface.
@@ -1460,6 +1649,18 @@ func (a *LLMAgent) SetInstruction(instruction string) {
 // This affects the system-level prompt prepended to requests.
 func (a *LLMAgent) SetGlobalInstruction(systemPrompt string) {
 	a.mu.Lock()
+	a.systemPrompt = newTextPrompt(systemPrompt)
+	a.mu.Unlock()
+}
+
+// SetPrompts updates the instruction and global system prompt together.
+// Subsequent requests observe the pair from a single agent lock.
+func (a *LLMAgent) SetPrompts(
+	instruction string,
+	systemPrompt string,
+) {
+	a.mu.Lock()
+	a.instruction = newTextPrompt(instruction)
 	a.systemPrompt = newTextPrompt(systemPrompt)
 	a.mu.Unlock()
 }

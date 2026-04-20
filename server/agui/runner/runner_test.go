@@ -26,6 +26,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	agentevent "trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/graph"
+	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	toolcallidplugin "trpc.group/trpc-go/trpc-agent-go/plugin/toolcallid"
 	baserunner "trpc.group/trpc-go/trpc-agent-go/runner"
@@ -887,6 +888,94 @@ func TestRecordUserMessageTracksCustomEvent(t *testing.T) {
 	content, ok := userMessage.ContentString()
 	require.True(t, ok)
 	assert.Equal(t, "hi", content)
+}
+
+func TestRunUsesResolvedAppNameForTrackKey(t *testing.T) {
+	tracker := &recordingTracker{}
+	underlying := &fakeRunner{
+		run: func(ctx context.Context, userID, sessionID string, message model.Message,
+			_ ...agent.RunOption) (<-chan *agentevent.Event, error) {
+			ch := make(chan *agentevent.Event)
+			close(ch)
+			return ch, nil
+		},
+	}
+	r := &runner{
+		appName:            "static-app",
+		appNameResolver:    forwardedPropsAppNameResolver,
+		runner:             underlying,
+		translatorFactory:  defaultTranslatorFactory,
+		userIDResolver:     func(context.Context, *adapter.RunAgentInput) (string, error) { return "demo-user", nil },
+		stateResolver:      defaultStateResolver,
+		runOptionResolver:  defaultRunOptionResolver,
+		tracker:            tracker,
+		startSpan:          defaultStartSpan,
+		translateCallbacks: nil,
+	}
+	input := &adapter.RunAgentInput{
+		ThreadID:       "thread",
+		RunID:          "run",
+		ForwardedProps: map[string]any{"appName": "dynamic-app"},
+		Messages:       []types.Message{{ID: "user-msg-1", Role: types.RoleUser, Content: "hi"}},
+	}
+	ch, err := r.Run(context.Background(), input)
+	require.NoError(t, err)
+	collectEvents(t, ch)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	require.NotEmpty(t, tracker.keys)
+	for _, key := range tracker.keys {
+		assert.Equal(t, "dynamic-app", key.AppName)
+		assert.Equal(t, "demo-user", key.UserID)
+		assert.Equal(t, "thread", key.SessionID)
+	}
+}
+
+func TestRunAppNameResolverError(t *testing.T) {
+	underlying := &fakeRunner{}
+	r := &runner{
+		runner:            underlying,
+		appNameResolver:   func(context.Context, *adapter.RunAgentInput) (string, error) { return "", errors.New("boom") },
+		translatorFactory: defaultTranslatorFactory,
+		userIDResolver:    func(context.Context, *adapter.RunAgentInput) (string, error) { return "demo-user", nil },
+		stateResolver:     defaultStateResolver,
+		runOptionResolver: defaultRunOptionResolver,
+		startSpan:         defaultStartSpan,
+	}
+	input := &adapter.RunAgentInput{
+		ThreadID: "thread",
+		RunID:    "run",
+		Messages: []types.Message{{Role: types.RoleUser, Content: "hi"}},
+	}
+	ch, err := r.Run(context.Background(), input)
+	assert.Nil(t, ch)
+	assert.ErrorContains(t, err, "resolve app name")
+	assert.Equal(t, 0, underlying.calls)
+}
+
+func TestResolveAppNameFallsBackToStaticAppName(t *testing.T) {
+	r := &runner{appName: "static-app"}
+	appName, err := r.resolveAppName(context.Background(), &adapter.RunAgentInput{})
+	assert.NoError(t, err)
+	assert.Equal(t, "static-app", appName)
+	r.appNameResolver = func(context.Context, *adapter.RunAgentInput) (string, error) {
+		return "", nil
+	}
+	appName, err = r.resolveAppName(context.Background(), &adapter.RunAgentInput{})
+	assert.NoError(t, err)
+	assert.Equal(t, "static-app", appName)
+}
+
+func TestResolveAppNameReturnsResolverError(t *testing.T) {
+	r := &runner{
+		appName: "static-app",
+		appNameResolver: func(context.Context, *adapter.RunAgentInput) (string, error) {
+			return "", errors.New("boom")
+		},
+	}
+	appName, err := r.resolveAppName(context.Background(), &adapter.RunAgentInput{})
+	assert.Empty(t, appName)
+	assert.EqualError(t, err, "boom")
 }
 
 func TestRecordUserMessageRejectsNilAndNonUserRole(t *testing.T) {
@@ -2069,12 +2158,14 @@ func (f *flushRecorder) Flush(ctx context.Context, key session.Key) error {
 type recordingTracker struct {
 	mu         sync.Mutex
 	events     []aguievents.Event
+	keys       []session.Key
 	flushCount int
 }
 
 func (r *recordingTracker) AppendEvent(ctx context.Context, key session.Key, event aguievents.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.keys = append(r.keys, key)
 	r.events = append(r.events, event)
 	return nil
 }
@@ -2108,6 +2199,15 @@ func (e *errorTracker) GetEvents(ctx context.Context,
 func (e *errorTracker) Flush(ctx context.Context,
 	_ session.Key) error {
 	return e.flushErr
+}
+
+func forwardedPropsAppNameResolver(_ context.Context, input *adapter.RunAgentInput) (string, error) {
+	props, ok := input.ForwardedProps.(map[string]any)
+	if !ok || props == nil {
+		return "", nil
+	}
+	appName, _ := props["appName"].(string)
+	return appName, nil
 }
 
 type spySpan struct {
@@ -2514,20 +2614,16 @@ func TestTranslateCallbackError(t *testing.T) {
 func TestEmitEventStopsWhenContextDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
 	r := &runner{}
 	events := make(chan aguievents.Event)
 	input := &runInput{threadID: "thread", runID: "run"}
-
 	ok := r.emitEvent(ctx, events, aguievents.NewRunStartedEvent("thread", "run"), input)
-
 	assert.False(t, ok)
 }
 
 func TestEmitEventStopsWhenAfterTranslateFailsAndContextDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
 	r := &runner{
 		translateCallbacks: translator.NewCallbacks().RegisterAfterTranslate(
 			func(context.Context, aguievents.Event) (aguievents.Event, error) {
@@ -2537,16 +2633,41 @@ func TestEmitEventStopsWhenAfterTranslateFailsAndContextDone(t *testing.T) {
 	}
 	events := make(chan aguievents.Event)
 	input := &runInput{threadID: "thread", runID: "run"}
-
 	ok := r.emitEvent(ctx, events, aguievents.NewRunStartedEvent("thread", "run"), input)
-
 	assert.False(t, ok)
+}
+
+func TestEmitEventLogsAtTraceLevel(t *testing.T) {
+	originalTracefContext := log.TracefContext
+	originalDebugfContext := log.DebugfContext
+	traceCalls := 0
+	debugCalls := 0
+	log.TracefContext = func(_ context.Context, format string, args ...any) {
+		traceCalls++
+		assert.Equal(t, "agui emit event: emitted event: %v, threadID: %s, runID: %s", format)
+		require.Len(t, args, 3)
+		assert.Equal(t, "thread", args[1])
+		assert.Equal(t, "run", args[2])
+	}
+	log.DebugfContext = func(_ context.Context, _ string, _ ...any) {
+		debugCalls++
+	}
+	t.Cleanup(func() {
+		log.TracefContext = originalTracefContext
+		log.DebugfContext = originalDebugfContext
+	})
+	r := &runner{}
+	events := make(chan aguievents.Event, 1)
+	input := &runInput{threadID: "thread", runID: "run"}
+	ok := r.emitEvent(context.Background(), events, aguievents.NewRunStartedEvent("thread", "run"), input)
+	assert.True(t, ok)
+	assert.Equal(t, 1, traceCalls)
+	assert.Zero(t, debugCalls)
 }
 
 func TestHandleAgentEventStopsWhenEmitCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
 	r := &runner{}
 	events := make(chan aguievents.Event)
 	input := &runInput{
@@ -2554,8 +2675,6 @@ func TestHandleAgentEventStopsWhenEmitCanceled(t *testing.T) {
 		runID:      "run",
 		translator: &fakeTranslator{events: [][]aguievents.Event{{aguievents.NewRunFinishedEvent("thread", "run")}}},
 	}
-
 	ok := r.handleAgentEvent(ctx, events, input, agentevent.New("inv", "assistant"))
-
 	assert.False(t, ok)
 }

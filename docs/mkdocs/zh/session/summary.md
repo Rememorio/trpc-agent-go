@@ -632,6 +632,75 @@ llmagent.WithAddSessionSummary(true)
 - 保证完整上下文：浓缩历史 + 完整新对话
 - **`WithMaxHistoryRuns` 参数被忽略**
 
+#### 摘要注入模式
+
+默认情况下，摘要以 **system message** 的方式注入（合并到已有 system prompt 中）。这种方式下，摘要会被 token tailoring 的 preserved head 保护，不会被滑动窗口裁剪掉。
+
+如果希望摘要能参与 token 预算裁剪，形成真正的**滑动窗口**效果，可以将注入模式切换为 `user`：
+
+```go
+agent := llmagent.New(
+    "my-agent",
+    llmagent.WithModel(modelInstance),
+    llmagent.WithAddSessionSummary(true),
+    llmagent.WithSessionSummaryInjectionMode(llmagent.SessionSummaryInjectionUser),
+)
+```
+
+**两种注入模式的区别**：
+
+| 模式 | 注入位置 | Token Tailoring 行为 | 适用场景 |
+| --- | --- | --- | --- |
+| `SessionSummaryInjectionSystem`（默认） | 合并到 system message | 摘要在 preserved head 中，不会被裁剪 | 需要摘要始终存在的场景 |
+| `SessionSummaryInjectionUser` | 优先合并到第一条 user history/current message；否则在靠近 history 的位置注入 | 摘要参与普通轮次裁剪，可被滑动窗口淘汰 | 超长对话的滑动窗口场景 |
+
+**User 模式的消息结构**：
+
+当 history 第一条消息为 user role 时，摘要会自动合并进去：
+
+```text
+┌─────────────────────────────────────────┐
+│ System Prompt                           │ ← 不包含摘要
+├─────────────────────────────────────────┤
+│ [Few-shot examples, if any]             │
+├─────────────────────────────────────────┤
+│ User: [summary context] + [original    │
+│        first user message]              │ ← 摘要合并到第一条 user history
+├─────────────────────────────────────────┤
+│ Assistant: ...                          │
+│ User: ...                               │
+│ ...                                     │
+│ User: current message                   │
+└─────────────────────────────────────────┘
+```
+
+当 history 第一条消息不是 user role 时，摘要作为独立 user message 插入：
+
+```text
+┌─────────────────────────────────────────┐
+│ System Prompt                           │ ← 不包含摘要
+├─────────────────────────────────────────┤
+│ [Few-shot examples, if any]             │
+├─────────────────────────────────────────┤
+│ User: Context from previous             │
+│ interactions: <summary>...</summary>    │ ← 独立的摘要 user message
+├─────────────────────────────────────────┤
+│ Assistant/Tool history events           │
+│ ...                                     │
+│ User: current message                   │
+└─────────────────────────────────────────┘
+```
+
+**注意事项**：
+
+- User 模式下，processor 会优先把摘要合并到第一条 user history/current message，让摘要贴近当前生效的 user 轮次
+- 如果没有可合并的 user history/current message，但 prompt 前缀最后一条已经是 user message（例如 injected context），则会回退合并到那条 user message，避免额外再插入一条相邻的 user block
+- User 模式使用更中性的默认文案（"Context from previous interactions"），避免以系统指令的语气出现在 user role 中
+- 自定义的 `WithSummaryFormatter` 同样对 user 模式生效
+- 摘要的**生成链路不受影响**——注入模式只影响 prompt assembly 层，不影响 summarizer 本身
+
+> **提示**：如果你的场景是超长对话（数百轮），且希望旧摘要能被自然淘汰（被新的摘要替代），建议使用 `SessionSummaryInjectionUser` 模式。
+
 **可选：Prompt 侧上下文压缩**
 
 当开启 `WithEnableContextCompaction(true)` 时，框架会在真正调用模型前执行两遍压缩：
@@ -941,3 +1010,4 @@ func main() {
 
 - [摘要示例](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary)
 - [FilterKey 示例](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey)
+- [注入模式示例](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/injection)

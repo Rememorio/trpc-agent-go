@@ -405,6 +405,42 @@ tool(result B)
 
 可运行示例：`examples/steer/`
 
+#### 按请求覆盖 AppName（多租户隔离）
+
+默认情况下，Runner 使用构造时传入的 `appName` 作为 session key 和事件过滤 key。
+如果一个 Runner 实例需要同时服务多个项目或租户，可以在每次 `Run` 调用时通过
+`agent.WithAppName` 覆盖 app name：
+
+```go
+// 一个 Runner，两个项目。
+r := runner.NewRunner("default-app", myAgent)
+
+// 项目 A — session 数据存储在 "project-a" 下。
+evA, _ := r.Run(ctx, userID, sessionID, msg,
+    agent.WithAppName("project-a"),
+)
+
+// 项目 B — session 数据存储在 "project-b" 下，与 A 完全隔离。
+evB, _ := r.Run(ctx, userID, sessionID, msg,
+    agent.WithAppName("project-b"),
+)
+```
+
+当 **未传入** `WithAppName`（或值为空字符串）时，Runner 会回退到构造函数提供的
+默认 app name。此覆盖影响的维度如下：
+
+| 维度 | 默认（无覆盖） | 使用 `WithAppName("X")` |
+|---|---|---|
+| `session.Key.AppName` | 构造时 `appName` | `"X"` |
+| 默认 `EventFilterKey` | 构造时 `appName` | `"X"` |
+
+Runner 级别的其他注册（可观测性 `appid`、agent 注册表）仍然绑定到构造时的原始
+`appName`。
+
+!!! note
+    `appName` 不能为空。如果构造函数和 `WithAppName` 都没有提供非空值，
+    session 服务会返回 `session.ErrAppNameRequired`。
+
 #### DetachedCancel（忽略父 ctx cancel）
 
 在 Go 里，`context.Context`（通常命名为 `ctx`）同时承载“取消信号”和“截止时间”。
@@ -467,7 +503,7 @@ eventChan, err := r.Run(
 
 部分模型在生成 `tool_calls` 时，可能产出非严格 JSON 的参数（例如对象 key 未加引号、尾逗号等），从而导致工具执行或外部解析失败。
 
-在 `runner.Run` 中启用 `agent.WithToolCallArgumentsJSONRepairEnabled(true)` 后，框架会对 `toolCall.Function.Arguments` 做一次尽力修复，详细使用方法可参照 [ToolCall参数自动修复](./runner.md#tool-call-参数自动修复)。
+在 `runner.Run` 中启用 `agent.WithToolCallArgumentsJSONRepairEnabled(true)` 后，框架会对 `toolCall.Function.Arguments` 做一次尽力修复，详细使用方法可参照 [ToolCall参数自动修复](./runner.md#tool-call)。
 
 #### 传入对话历史（auto-seed + 复用 Session）
 
@@ -523,7 +559,29 @@ events, err := r.Run(
 推荐先通过 `structure.Export(...)` 获取稳定 `nodeID`，再把它传给
 `WithSurfacePatchForNode(...)`。同一次运行中如果要覆盖多个节点，可以重复传多个
 `WithSurfacePatchForNode(...)`。完整说明与更多示例见
-[Agent 使用文档：按 `nodeID` 覆盖运行时 surface](./agent.md#按-nodeid-覆盖运行时-surface)。
+[Agent 使用文档：按 `nodeID` 覆盖运行时 surface](./agent.md#nodeid-surface)。
+
+#### 按运行临时覆盖 `code executor`
+
+如果需要为会从 `RunOptions.CodeExecutor` 解析执行器的 Agent 在不同请求中指定不同的执行环境，例如 `LLMAgent`，可以在 `runner.Run(...)` 中直接传入 `agent.WithCodeExecutor(exec)`。
+
+```go
+events, err := r.Run(
+    ctx,
+    userID,
+    sessionID,
+    model.NewUserMessage("Run the release checklist skill."),
+    agent.WithCodeExecutor(containerExec),
+)
+```
+
+说明：
+
+- 该选项仅对当前这一次 `runner.Run(...)` 调用生效，不会修改 Agent 的默认配置。
+- 该选项仅对会读取 `RunOptions.CodeExecutor` 的 Agent 生效；如果使用自定义 Agent，请确认其实现会处理该运行参数。
+- 如果创建 Agent 时已经设置 `llmagent.WithCodeExecutor(...)`，则此处传入的执行器会在本次运行中临时覆盖默认值。
+- 本次运行中所有依赖代码执行器的能力，均会使用此处传入的执行器，例如 `workspace_exec`、`skill_run` 和交互式 skill 会话工具。
+- 如果仅需为 `skill_run` 提供运行环境，而不希望模型自动执行回复中的 Markdown 围栏代码，可在创建 Agent 时设置 `llmagent.WithEnableCodeExecutionResponseProcessor(false)`。更多说明见 [Skill 文档](./skill.md)。
 
 ## ✅ 图式流程的“优雅结束”与最终结果读取
 

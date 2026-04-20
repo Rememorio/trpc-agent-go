@@ -266,6 +266,39 @@ func TestBuildRequestProcessors_AddSessionSummaryWiring(t *testing.T) {
 	require.False(t, crp.AddSessionSummary)
 }
 
+// Test that buildRequestProcessors wires SessionSummaryInjectionMode into
+// ContentRequestProcessor correctly.
+func TestBuildRequestProcessors_SessionSummaryInjectionModeWiring(t *testing.T) {
+	// user mode
+	optsUser := &Options{}
+	WithAddSessionSummary(true)(optsUser)
+	WithSessionSummaryInjectionMode(SessionSummaryInjectionUser)(optsUser)
+	procs := buildRequestProcessors("test-agent", optsUser)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.True(t, crp.AddSessionSummary)
+	require.Equal(t, processor.SessionSummaryInjectionUser, crp.SessionSummaryInjectionMode)
+
+	// default (system) mode
+	optsSystem := &Options{}
+	WithAddSessionSummary(true)(optsSystem)
+	procs = buildRequestProcessors("test-agent", optsSystem)
+	crp = nil
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.True(t, crp.AddSessionSummary)
+	require.Equal(t, processor.SessionSummaryInjectionSystem, crp.SessionSummaryInjectionMode)
+}
+
 // Test that buildRequestProcessors wires MaxHistoryRuns into
 // ContentRequestProcessor correctly.
 func TestBuildRequestProcessors_MaxHistoryRunsWiring(t *testing.T) {
@@ -343,6 +376,32 @@ func TestBuildRequestProcessors_PreserveSameBranchWiring(t *testing.T) {
 	}
 	require.NotNil(t, crp)
 	require.False(t, crp.PreserveSameBranch)
+}
+
+func TestBuildRequestProcessors_PreserveForeignMessagesWiring(t *testing.T) {
+	optsTrue := &Options{}
+	WithPreserveForeignMessages(true)(optsTrue)
+	procs := buildRequestProcessors("tester", optsTrue)
+	var crp *processor.ContentRequestProcessor
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.True(t, crp.PreserveForeignMessages)
+
+	optsFalse := &Options{}
+	WithPreserveForeignMessages(false)(optsFalse)
+	procs = buildRequestProcessors("tester", optsFalse)
+	crp = nil
+	for _, p := range procs {
+		if v, ok := p.(*processor.ContentRequestProcessor); ok {
+			crp = v
+		}
+	}
+	require.NotNil(t, crp)
+	require.False(t, crp.PreserveForeignMessages)
 }
 
 func TestBuildRequestProcessors_PreloadSessionRecallWiring(t *testing.T) {
@@ -1134,11 +1193,12 @@ func TestLLMAgent_EnableCodeExecutionResponseProcessor(t *testing.T) {
 		}
 	}
 
-	newInvocation := func() *agent.Invocation {
+	newInvocation := func(opts ...agent.RunOption) *agent.Invocation {
 		return &agent.Invocation{
 			Message:      model.NewUserMessage("hi"),
 			InvocationID: "test-invocation",
 			Session:      &session.Session{ID: "test-session"},
+			RunOptions:   agent.NewRunOptions(opts...),
 		}
 	}
 
@@ -1182,6 +1242,27 @@ func TestLLMAgent_EnableCodeExecutionResponseProcessor(t *testing.T) {
 
 		require.Equal(t, 0, exec.CallCount())
 		require.Equal(t, codeBlock, gotContent)
+	})
+
+	t.Run("run_override_takes_precedence", func(t *testing.T) {
+		staticExec := &countingCodeExecutor{}
+		overrideExec := &countingCodeExecutor{}
+		agt := New(
+			"test",
+			WithModel(newMockModel()),
+			WithCodeExecutor(staticExec),
+		)
+
+		events, err := agt.Run(
+			context.Background(),
+			newInvocation(agent.WithCodeExecutor(overrideExec)),
+		)
+		require.NoError(t, err)
+		for range events {
+		}
+
+		require.Equal(t, 0, staticExec.CallCount())
+		require.Equal(t, 1, overrideExec.CallCount())
 	})
 
 	t.Run("non_executable_markdown_block", func(t *testing.T) {
@@ -1445,6 +1526,20 @@ func TestLLMAgent_SetGlobalInstruction(t *testing.T) {
 	require.Equal(t, "initial global", agt.getSystemPrompt())
 
 	agt.SetGlobalInstruction("updated global")
+	require.Equal(t, "updated global", agt.getSystemPrompt())
+}
+
+func TestLLMAgent_SetPrompts(t *testing.T) {
+	agt := New(
+		"test",
+		WithInstruction("initial instruction"),
+		WithGlobalInstruction("initial global"),
+	)
+	require.Equal(t, "initial instruction", agt.getInstruction())
+	require.Equal(t, "initial global", agt.getSystemPrompt())
+
+	agt.SetPrompts("updated instruction", "updated global")
+	require.Equal(t, "updated instruction", agt.getInstruction())
 	require.Equal(t, "updated global", agt.getSystemPrompt())
 }
 
