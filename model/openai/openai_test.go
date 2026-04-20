@@ -3403,6 +3403,116 @@ func TestNormalizeStreamingError(t *testing.T) {
 	}
 }
 
+func TestSnapshotChunkForEOFRecovery(t *testing.T) {
+	chunk := openai.ChatCompletionChunk{
+		Choices: []openai.ChatCompletionChunkChoice{
+			{
+				Delta: openai.ChatCompletionChunkChoiceDelta{
+					ToolCalls: []openai.ChatCompletionChunkChoiceDeltaToolCall{
+						{
+							Index: 0,
+							ID:    "call_1",
+							Type:  "function",
+							Function: openai.ChatCompletionChunkChoiceDeltaToolCallFunction{
+								Name:      "get_weather",
+								Arguments: `{"location":"Beijing"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	snapshot := snapshotChunkForEOFRecovery(chunk)
+	chunk.Choices[0].Delta.Content = "mutated"
+	chunk.Choices[0].Delta.ToolCalls = nil
+
+	require.Empty(t, snapshot.Choices[0].Delta.Content)
+	require.Len(t, snapshot.Choices[0].Delta.ToolCalls, 1)
+	require.Equal(t, "call_1", snapshot.Choices[0].Delta.ToolCalls[0].ID)
+}
+
+func TestModel_GenerateContent_StreamingUnexpectedEOFWithChunkCallbackMutationStillRecovers(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"truncated-tool","object":"chat.completion.chunk","created":1699200000,"model":"gpt-3.5-turbo","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Beijing\"}"}}]},"finish_reason":null}]}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("gpt-3.5-turbo",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithShowToolCallDelta(true),
+		WithChatChunkCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			chunk *openaigo.ChatCompletionChunk,
+		) {
+			if len(chunk.Choices) == 0 || len(chunk.Choices[0].Delta.ToolCalls) == 0 {
+				return
+			}
+			chunk.Choices[0].Delta.Content = "mutated"
+			chunk.Choices[0].Delta.ToolCalls = nil
+		}),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	require.Nil(t, finalResponse.Error)
+	require.False(t, finalResponse.Done)
+	require.Len(t, finalResponse.Choices, 1)
+	require.Len(t, finalResponse.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "get_weather", finalResponse.Choices[0].Message.ToolCalls[0].Function.Name)
+	require.Equal(
+		t,
+		`{"location":"Beijing"}`,
+		string(finalResponse.Choices[0].Message.ToolCalls[0].Function.Arguments),
+	)
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.NoError(t, callbackErr)
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
+	}
+}
+
 func TestModel_GenerateContent_WithReasoningContent(t *testing.T) {
 	// Create a mock server that returns streaming responses with reasoning_content
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

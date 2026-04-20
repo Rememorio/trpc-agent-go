@@ -1319,7 +1319,7 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		// Accumulate chunk for correctness (tool call deltas are assembled later),
 		// but skip chunks with reasoning content that would cause the SDK accumulator to panic.
 		m.accumulateChunk(chunk, &acc, &reasoningBuf)
-		lastChunk = chunk
+		lastChunk = snapshotChunkForEOFRecovery(chunk)
 		sawChunk = true
 
 		// Suppress chunks that carry no meaningful visible delta (including
@@ -1385,6 +1385,31 @@ func sanitizeChunkForAccumulator(chunk openai.ChatCompletionChunk) openai.ChatCo
 	sanitized.Choices[0].Delta.JSON.ToolCalls = respjson.Field{}
 
 	return sanitized
+}
+
+// snapshotChunkForEOFRecovery captures only the chunk fields needed by
+// normalizeStreamingError. This avoids later callback mutations from changing
+// EOF recovery behavior through shared slice backing arrays.
+func snapshotChunkForEOFRecovery(chunk openai.ChatCompletionChunk) openai.ChatCompletionChunk {
+	if len(chunk.Choices) == 0 {
+		return chunk
+	}
+
+	snapshot := chunk
+	snapshot.Choices = make([]openai.ChatCompletionChunkChoice, len(chunk.Choices))
+	copy(snapshot.Choices, chunk.Choices)
+
+	for i := range chunk.Choices {
+		toolCalls := chunk.Choices[i].Delta.ToolCalls
+		if len(toolCalls) == 0 {
+			continue
+		}
+
+		snapshot.Choices[i].Delta.ToolCalls = make([]openai.ChatCompletionChunkChoiceDeltaToolCall, len(toolCalls))
+		copy(snapshot.Choices[i].Delta.ToolCalls, toolCalls)
+	}
+
+	return snapshot
 }
 
 type toolCallIndexState struct {
