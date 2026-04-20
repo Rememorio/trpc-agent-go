@@ -540,9 +540,13 @@ func segmentCJKTokens(text string, keepSingleCJKRune bool) []string {
 			continue
 		}
 		if isASCIIAlnumToken(token) {
-			if len(token) < minEnglishTokenLen || isStopword(token) {
-				continue
-			}
+			// Latin tokens inside mixed Han/Latin text are emitted by
+			// collectEnglishTokens later in tokenizePrimarySearchText.
+			// Skipping them here prevents double-counting in the
+			// deduplicate=false scoring paths (buildFieldSearchStats),
+			// which would otherwise inflate BM25 term frequencies and
+			// document lengths for mixed-language memories.
+			continue
 		}
 		if isCJKToken(token) {
 			if !keepSingleCJKRune &&

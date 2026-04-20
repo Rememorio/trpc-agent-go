@@ -124,7 +124,7 @@ func TestBuildSearchTokens(t *testing.T) {
 		{"chinese words", "中文测试", []string{"中文", "测试"}},
 		{"chinese with punctuation", "中文，测试！", []string{"中文", "测试"}},
 		{"chinese with spaces", "中文 测试", []string{"中文", "测试"}},
-		{"mixed chinese and english", "hello中文world", []string{"hello", "中文", "world"}},
+		{"mixed chinese and english", "hello中文world", []string{"中文", "hello", "world"}},
 		{"only punctuation", "!@#$%", []string{}},
 		{"only stopwords", "the and or", []string{}},
 	}
@@ -966,6 +966,26 @@ func TestBuildSearchTokens_MixedContent(t *testing.T) {
 	assert.NotNil(t, result)
 	// Should have both English words and CJK lexical tokens.
 	assert.NotEmpty(t, result)
+}
+
+// TestBuildFieldSearchStats_MixedNoDoubleCount guards against a
+// regression where the gse segmenter and collectEnglishTokens both
+// emitted the same Latin tokens for mixed Han/Latin text. Under the
+// non-deduplicating scoring path (buildFieldSearchStats), that caused
+// inflated BM25 term frequencies and document lengths. The helper now
+// relies on collectEnglishTokens alone for Latin tokens, so each
+// distinct token must appear exactly once in the resulting term
+// frequency map.
+func TestBuildFieldSearchStats_MixedNoDoubleCount(t *testing.T) {
+	stats := buildFieldSearchStats("hello中文world")
+	assert.Equal(t, 1, stats.termFreq["hello"],
+		"hello must be counted exactly once in mixed Han/Latin text")
+	assert.Equal(t, 1, stats.termFreq["world"],
+		"world must be counted exactly once in mixed Han/Latin text")
+	assert.Equal(t, 1, stats.termFreq["中文"],
+		"中文 must be counted exactly once in mixed Han/Latin text")
+	assert.Equal(t, 3, stats.length,
+		"document length must equal the number of distinct Latin and CJK tokens")
 }
 
 func TestBuildSearchTokens_OnlyPunctuation(t *testing.T) {
