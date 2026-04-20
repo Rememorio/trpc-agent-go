@@ -1684,11 +1684,14 @@ func jaccardSimilarity(a, b map[string]struct{}) float64 {
 // This is what DeduplicateResults actually needs — the exact ratio
 // is never read — so the helper avoids the full intersection scan
 // in the common "clearly not similar" case.
+//
+// Two empty sets are treated as non-comparable (returns false) for
+// dedup purposes: entryTokenSet yields an empty set for nil /
+// punctuation-only / stopword-only memories, and without this guard
+// a pair of such unrelated entries would be collapsed purely because
+// neither produced any lexical evidence.
 func jaccardAtLeast(a, b map[string]struct{}, threshold float64) bool {
 	la, lb := len(a), len(b)
-	if la == 0 && lb == 0 {
-		return 1.0 >= threshold
-	}
 	if la == 0 || lb == 0 {
 		return false
 	}

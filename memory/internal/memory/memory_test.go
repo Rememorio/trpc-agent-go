@@ -820,6 +820,32 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		}
 		assert.True(t, saw, "live entry should survive alongside nil entries")
 	})
+
+	t.Run("deduplicate does not collapse tokenless entries into one", func(t *testing.T) {
+		// Two distinct memories whose content produces no comparable
+		// tokens (punctuation / stopwords only) must both survive.
+		// Without the tokenless guard, jaccardAtLeast(empty, empty)
+		// trivially returned 1.0 and the second entry got dropped.
+		a := &memory.Entry{
+			ID:    "pa",
+			Score: 0.9,
+			Memory: &memory.Memory{
+				Memory: "!!!",
+				Topics: []string{"punct"},
+			},
+		}
+		b := &memory.Entry{
+			ID:    "pb",
+			Score: 0.8,
+			Memory: &memory.Memory{
+				Memory: "???",
+				Topics: []string{"other"},
+			},
+		}
+		deduped := DeduplicateResults([]*memory.Entry{a, b})
+		assert.Len(t, deduped, 2,
+			"tokenless entries carry no lexical evidence of duplication and must both survive")
+	})
 }
 
 func TestMatchMemoryEntry_FallbackNoTokens(t *testing.T) {
