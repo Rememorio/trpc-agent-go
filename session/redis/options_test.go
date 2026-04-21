@@ -126,6 +126,28 @@ func TestWithSummaryJobTimeout(t *testing.T) {
 	}
 }
 
+func TestWithSummaryFilterAllowlist(t *testing.T) {
+	opts := ServiceOpts{}
+	WithSummaryFilterAllowlist("tool-usage", "user-messages")(&opts)
+	assert.Equal(t, []string{"tool-usage", "user-messages"}, opts.summaryFilterAllowlist)
+}
+
+func TestWithCascadeFullSessionSummary(t *testing.T) {
+	opts := ServiceOpts{cascadeFullSessionSummary: true}
+	WithCascadeFullSessionSummary(false)(&opts)
+	assert.False(t, opts.cascadeFullSessionSummary)
+	assert.True(t, opts.summaryCascadeConfigured)
+}
+
+func TestShouldCascadeFullSessionSummary(t *testing.T) {
+	assert.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
+	assert.True(t, defaultOptions.shouldCascadeFullSessionSummary())
+	assert.False(t, (ServiceOpts{
+		cascadeFullSessionSummary: false,
+		summaryCascadeConfigured:  true,
+	}).shouldCascadeFullSessionSummary())
+}
+
 func TestServiceOptsIntegration(t *testing.T) {
 	redisURL, cleanup := setupTestRedis(t)
 	defer cleanup()

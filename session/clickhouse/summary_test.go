@@ -198,3 +198,68 @@ func TestService_CreateSessionSummary_NoTTL(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, execCalled)
 }
+
+func TestService_CreateSessionSummary_FilterAllowlistSkipsDisallowedKey(t *testing.T) {
+	mockCli := &mockClient{}
+	called := false
+	mockSum := &mockSummarizer{
+		summarizeFunc: func(ctx context.Context, session *session.Session) (string, error) {
+			called = true
+			return "blocked-summary", nil
+		},
+	}
+	s := &Service{
+		chClient: mockCli,
+		opts: ServiceOpts{
+			summarizer:             mockSum,
+			summaryFilterAllowlist: []string{"allowed"},
+		},
+		tableSessionSummaries: "session_summaries",
+	}
+
+	sess := &session.Session{
+		ID:      "sess1",
+		AppName: "app1",
+		UserID:  "user1",
+	}
+
+	err := s.CreateSessionSummary(context.Background(), sess, "blocked", true)
+	assert.NoError(t, err)
+	assert.False(t, called)
+}
+
+func TestService_EnqueueSummaryJob_CascadeDisabled(t *testing.T) {
+	mockCli := &mockClient{}
+	mockSum := &mockSummarizer{
+		summarizeFunc: func(ctx context.Context, session *session.Session) (string, error) {
+			return "branch-summary", nil
+		},
+	}
+	s := &Service{
+		chClient: mockCli,
+		opts: ServiceOpts{
+			summarizer:                mockSum,
+			cascadeFullSessionSummary: false,
+			summaryCascadeConfigured:  true,
+		},
+		tableSessionSummaries: "session_summaries",
+	}
+
+	var persistedKeys []string
+	mockCli.execFunc = func(ctx context.Context, query string, args ...any) error {
+		persistedKeys = append(persistedKeys, args[3].(string))
+		return nil
+	}
+
+	sess := &session.Session{
+		ID:        "sess1",
+		AppName:   "app1",
+		UserID:    "user1",
+		Summaries: make(map[string]*session.Summary),
+		Events:    []event.Event{{ID: "1"}},
+	}
+
+	err := s.EnqueueSummaryJob(context.Background(), sess, "tool-usage", true)
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"tool-usage"}, persistedKeys)
+}

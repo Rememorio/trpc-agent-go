@@ -139,6 +139,28 @@ func TestWithSoftDelete(t *testing.T) {
 	assert.False(t, opts.softDelete)
 }
 
+func TestWithSummaryFilterAllowlist(t *testing.T) {
+	opts := ServiceOpts{}
+	WithSummaryFilterAllowlist("tool-usage", "user-messages")(&opts)
+	assert.Equal(t, []string{"tool-usage", "user-messages"}, opts.summaryFilterAllowlist)
+}
+
+func TestWithCascadeFullSessionSummary(t *testing.T) {
+	opts := ServiceOpts{cascadeFullSessionSummary: true}
+	WithCascadeFullSessionSummary(false)(&opts)
+	assert.False(t, opts.cascadeFullSessionSummary)
+	assert.True(t, opts.summaryCascadeConfigured)
+}
+
+func TestShouldCascadeFullSessionSummary(t *testing.T) {
+	assert.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
+	assert.True(t, defaultOptions.shouldCascadeFullSessionSummary())
+	assert.False(t, (ServiceOpts{
+		cascadeFullSessionSummary: false,
+		summaryCascadeConfigured:  true,
+	}).shouldCascadeFullSessionSummary())
+}
+
 // --- Tests for buildConnString ---
 
 func TestBuildConnString_AllFields(t *testing.T) {

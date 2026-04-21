@@ -884,6 +884,52 @@ func TestSummaryDispatchPolicy_SummaryTargets(t *testing.T) {
 	}
 }
 
+func TestSummaryDispatchPolicy_AllowsFilterKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		policy    SummaryDispatchPolicy
+		filterKey string
+		want      bool
+	}{
+		{
+			name:      "full session always allowed without allowlist",
+			policy:    NewSummaryDispatchPolicy(nil, true),
+			filterKey: "",
+			want:      true,
+		},
+		{
+			name:      "full session always allowed with allowlist",
+			policy:    NewSummaryDispatchPolicy([]string{"app/billing"}, false),
+			filterKey: "",
+			want:      true,
+		},
+		{
+			name:      "non empty key allowed when allowlist disabled",
+			policy:    NewSummaryDispatchPolicy(nil, true),
+			filterKey: "app/billing",
+			want:      true,
+		},
+		{
+			name:      "non empty key allowed when explicitly listed",
+			policy:    NewSummaryDispatchPolicy([]string{"app/billing"}, true),
+			filterKey: "app/billing",
+			want:      true,
+		},
+		{
+			name:      "non empty key blocked when missing from allowlist",
+			policy:    NewSummaryDispatchPolicy([]string{"app/support"}, true),
+			filterKey: "app/billing",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.policy.AllowsFilterKey(tt.filterKey))
+		})
+	}
+}
+
 func TestCreateSessionSummaryWithCascade(t *testing.T) {
 	now := time.Now()
 	// Events with multiple filterKeys to ensure parallel calls are made.

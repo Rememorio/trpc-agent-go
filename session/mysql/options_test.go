@@ -144,6 +144,28 @@ func TestWithSummaryJobTimeout(t *testing.T) {
 	assert.Equal(t, timeout, opts.summaryJobTimeout) // Should keep previous value
 }
 
+func TestWithSummaryFilterAllowlist(t *testing.T) {
+	opts := &ServiceOpts{}
+	WithSummaryFilterAllowlist("tool-usage", "user-messages")(opts)
+	assert.Equal(t, []string{"tool-usage", "user-messages"}, opts.summaryFilterAllowlist)
+}
+
+func TestWithCascadeFullSessionSummary(t *testing.T) {
+	opts := &ServiceOpts{cascadeFullSessionSummary: true}
+	WithCascadeFullSessionSummary(false)(opts)
+	assert.False(t, opts.cascadeFullSessionSummary)
+	assert.True(t, opts.summaryCascadeConfigured)
+}
+
+func TestShouldCascadeFullSessionSummary(t *testing.T) {
+	assert.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
+	assert.True(t, defaultOptions.shouldCascadeFullSessionSummary())
+	assert.False(t, (ServiceOpts{
+		cascadeFullSessionSummary: false,
+		summaryCascadeConfigured:  true,
+	}).shouldCascadeFullSessionSummary())
+}
+
 func TestWithSoftDelete(t *testing.T) {
 	opts := &ServiceOpts{}
 

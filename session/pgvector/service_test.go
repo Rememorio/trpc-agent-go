@@ -301,6 +301,44 @@ func TestNewService_ValidatesEmbedderDimensions(t *testing.T) {
 	require.False(t, builderCalled)
 }
 
+func TestNewService_InitializesAsyncSummaryWorker(t *testing.T) {
+	oldBuilder := storage.GetClientBuilder()
+	t.Cleanup(func() {
+		storage.SetClientBuilder(oldBuilder)
+	})
+
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = db.Close()
+	})
+
+	builderCalled := false
+	storage.SetClientBuilder(func(
+		_ context.Context,
+		_ ...storage.ClientBuilderOpt,
+	) (storage.Client, error) {
+		builderCalled = true
+		return &mockPostgresClient{db: db}, nil
+	})
+
+	svc, err := NewService(
+		WithEmbedder(&mockEmbedder{dimensions: defaultIndexDimension}),
+		WithSummarizer(&mockSummarizer{}),
+		WithAsyncSummaryNum(1),
+		WithSkipDBInit(true),
+		WithCascadeFullSessionSummary(false),
+		WithSummaryFilterAllowlist("tool-usage"),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, svc)
+	require.True(t, builderCalled)
+	require.NotNil(t, svc.asyncWorker)
+	require.Equal(t, []string{"tool-usage"}, svc.opts.summaryFilterAllowlist)
+	require.False(t, svc.opts.shouldCascadeFullSessionSummary())
+	require.NoError(t, svc.Close())
+}
+
 func TestValidateEmbedderDimensions_UnknownDimension(t *testing.T) {
 	err := validateEmbedderDimensions(&ServiceOpts{
 		embedder:       &mockEmbedder{dimensions: 0},

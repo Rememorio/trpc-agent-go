@@ -302,11 +302,24 @@ func TestServiceOptions(t *testing.T) {
 		assert.Equal(t, 512, opts.summaryQueueSize)
 	})
 
+	t.Run("WithSummaryFilterAllowlist", func(t *testing.T) {
+		opts := &ServiceOpts{}
+		WithSummaryFilterAllowlist("tool-usage", "user-messages")(opts)
+		assert.Equal(t, []string{"tool-usage", "user-messages"}, opts.summaryFilterAllowlist)
+	})
+
 	t.Run("WithSummaryJobTimeout", func(t *testing.T) {
 		opts := &ServiceOpts{}
 		timeout := 60 * time.Second
 		WithSummaryJobTimeout(timeout)(opts)
 		assert.Equal(t, timeout, opts.summaryJobTimeout)
+	})
+
+	t.Run("WithCascadeFullSessionSummary", func(t *testing.T) {
+		opts := &ServiceOpts{cascadeFullSessionSummary: true}
+		WithCascadeFullSessionSummary(false)(opts)
+		assert.False(t, opts.cascadeFullSessionSummary)
+		assert.True(t, opts.summaryCascadeConfigured)
 	})
 
 	t.Run("WithPostgresInstance", func(t *testing.T) {
@@ -349,4 +362,13 @@ func TestServiceOptions(t *testing.T) {
 		WithSchema("public")(opts)
 		assert.Equal(t, "public", opts.schema)
 	})
+}
+
+func TestShouldCascadeFullSessionSummary(t *testing.T) {
+	assert.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
+	assert.True(t, defaultOptions.shouldCascadeFullSessionSummary())
+	assert.False(t, (ServiceOpts{
+		cascadeFullSessionSummary: false,
+		summaryCascadeConfigured:  true,
+	}).shouldCascadeFullSessionSummary())
 }
