@@ -1870,7 +1870,7 @@ llmagent.WithAddSessionSummary(true)
 
 **可选：Prompt 侧上下文压缩**
 
-当开启 `WithEnableContextCompaction(true)` 时，框架会在真正调用模型前执行两遍压缩：
+当开启 `WithEnableContextCompaction(true)` 时，框架会在真正调用模型前执行 Pass 1 压缩；如果同时显式配置正数的 `ContextCompactionOversizedToolResultMaxTokens`，还会执行 Pass 2：
 
 - **Pass 1** — 旧 request 中超过 `ContextCompactionToolResultMaxTokens`（默认 1024 tokens）的 tool result 整体替换为占位符，保留 `ToolID` 和 `ToolName`
 - **Pass 2** — 任意 request（包括当前 request）中超过 `ContextCompactionOversizedToolResultMaxTokens` 的单个 tool result，使用首尾保留策略截断，中间插入 `[...N characters truncated...]` 标记。**默认值为 0（关闭）**，需要显式调用 `WithContextCompactionOversizedToolResultMaxTokens(...)` 并保持 `WithEnableContextCompaction(true)` 才会生效（推荐值 8192 tokens）

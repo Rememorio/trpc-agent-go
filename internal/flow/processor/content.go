@@ -1400,7 +1400,8 @@ func (p *ContentRequestProcessor) projectMessagesForEvent(
 func (p *ContentRequestProcessor) truncateOversizedToolResultMessages(
 	messages []model.Message,
 ) []model.Message {
-	if p.ContextCompactionConfig.OversizedToolResultMaxTokens <= 0 {
+	if !p.ContextCompactionConfig.Enabled ||
+		p.ContextCompactionConfig.OversizedToolResultMaxTokens <= 0 {
 		return messages
 	}
 
