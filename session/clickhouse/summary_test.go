@@ -221,6 +221,7 @@ func TestService_CreateSessionSummary_FilterAllowlistSkipsDisallowedKey(t *testi
 		ID:      "sess1",
 		AppName: "app1",
 		UserID:  "user1",
+		Events:  []event.Event{{ID: "1"}},
 	}
 
 	err := s.CreateSessionSummary(context.Background(), sess, "blocked", true)
