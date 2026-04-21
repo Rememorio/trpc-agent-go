@@ -1693,7 +1693,7 @@ mem0Svc, err := memorymem0.NewService(
     memorymem0.WithLoadToolEnabled(true),
 )
 if err != nil {
-    return err
+    panic(err)
 }
 defer mem0Svc.Close()
 
