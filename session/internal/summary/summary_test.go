@@ -844,6 +844,46 @@ func TestGetFilterKeyFromOptions(t *testing.T) {
 	}
 }
 
+func TestSummaryDispatchPolicy_SummaryTargets(t *testing.T) {
+	tests := []struct {
+		name      string
+		policy    SummaryDispatchPolicy
+		filterKey string
+		want      []string
+	}{
+		{
+			name:      "full session request always targets full session",
+			policy:    NewSummaryDispatchPolicy([]string{"app/billing"}, false),
+			filterKey: "",
+			want:      []string{""},
+		},
+		{
+			name:      "branch cascades to full session by default",
+			policy:    NewSummaryDispatchPolicy(nil, true),
+			filterKey: "app/billing",
+			want:      []string{"app/billing", ""},
+		},
+		{
+			name:      "branch only when cascade disabled",
+			policy:    NewSummaryDispatchPolicy(nil, false),
+			filterKey: "app/billing",
+			want:      []string{"app/billing"},
+		},
+		{
+			name:      "allowlist miss returns no targets",
+			policy:    NewSummaryDispatchPolicy([]string{"app/support"}, true),
+			filterKey: "app/billing",
+			want:      nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.policy.SummaryTargets(tt.filterKey))
+		})
+	}
+}
+
 func TestCreateSessionSummaryWithCascade(t *testing.T) {
 	now := time.Now()
 	// Events with multiple filterKeys to ensure parallel calls are made.
@@ -856,6 +896,7 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 		name              string
 		filterKey         string
 		force             bool
+		policy            SummaryDispatchPolicy
 		events            []event.Event
 		expectCalls       []string
 		expectError       bool
@@ -865,6 +906,7 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 			name:        "filterKey is empty, only call once",
 			filterKey:   "",
 			force:       false,
+			policy:      NewSummaryDispatchPolicy(nil, true),
 			events:      multiFilterKeyEvents,
 			expectCalls: []string{""},
 			expectError: false,
@@ -876,6 +918,7 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 			name:        "filterKey is user-messages, call twice (multiple filterKeys in session)",
 			filterKey:   "user-messages",
 			force:       false,
+			policy:      NewSummaryDispatchPolicy(nil, true),
 			events:      multiFilterKeyEvents,
 			expectCalls: []string{"user-messages", ""},
 			expectError: false,
@@ -887,6 +930,7 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 			name:        "first call fails, return error",
 			filterKey:   "user-messages",
 			force:       false,
+			policy:      NewSummaryDispatchPolicy(nil, true),
 			events:      multiFilterKeyEvents,
 			expectCalls: []string{"user-messages", ""},
 			expectError: true,
@@ -901,6 +945,7 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 			name:        "second call fails, return error",
 			filterKey:   "user-messages",
 			force:       false,
+			policy:      NewSummaryDispatchPolicy(nil, true),
 			events:      multiFilterKeyEvents,
 			expectCalls: []string{"user-messages", ""},
 			expectError: true,
@@ -908,6 +953,30 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 				if filterKey == "" {
 					return errors.New("second call failed")
 				}
+				return nil
+			},
+		},
+		{
+			name:        "allowlist miss skips all work",
+			filterKey:   "user-messages",
+			force:       false,
+			policy:      NewSummaryDispatchPolicy([]string{"billing"}, true),
+			events:      multiFilterKeyEvents,
+			expectCalls: nil,
+			expectError: false,
+			createSummaryFunc: func(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
+				return nil
+			},
+		},
+		{
+			name:        "cascade disabled only calls branch summary",
+			filterKey:   "user-messages",
+			force:       false,
+			policy:      NewSummaryDispatchPolicy(nil, false),
+			events:      multiFilterKeyEvents,
+			expectCalls: []string{"user-messages"},
+			expectError: false,
+			createSummaryFunc: func(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
 				return nil
 			},
 		},
@@ -931,7 +1000,14 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 				return tt.createSummaryFunc(ctx, sess, filterKey, force)
 			}
 
-			err := CreateSessionSummaryWithCascade(context.Background(), sess, tt.filterKey, tt.force, mockFunc)
+			err := CreateSessionSummaryWithCascade(
+				context.Background(),
+				sess,
+				tt.filterKey,
+				tt.force,
+				tt.policy,
+				mockFunc,
+			)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -977,7 +1053,14 @@ func TestCreateSessionSummaryWithCascade_MethodValue(t *testing.T) {
 		},
 	}
 
-	err := CreateSessionSummaryWithCascade(context.Background(), sess, "user-messages", false, createFunc)
+	err := CreateSessionSummaryWithCascade(
+		context.Background(),
+		sess,
+		"user-messages",
+		false,
+		NewSummaryDispatchPolicy(nil, true),
+		createFunc,
+	)
 	require.NoError(t, err)
 
 	// Should have created both summaries.
@@ -1420,7 +1503,14 @@ func TestCreateSessionSummaryWithCascade_SingleFilterKeyOptimization(t *testing.
 			return nil
 		}
 
-		err := CreateSessionSummaryWithCascade(context.Background(), sess, "app/math", false, createFunc)
+		err := CreateSessionSummaryWithCascade(
+			context.Background(),
+			sess,
+			"app/math",
+			false,
+			NewSummaryDispatchPolicy(nil, true),
+			createFunc,
+		)
 		require.NoError(t, err)
 
 		// Should call createFunc twice: once for filterKey, once for full-session (persist only).
@@ -1463,7 +1553,14 @@ func TestCreateSessionSummaryWithCascade_SingleFilterKeyOptimization(t *testing.
 			return nil
 		}
 
-		err := CreateSessionSummaryWithCascade(context.Background(), sess, "app/math", false, createFunc)
+		err := CreateSessionSummaryWithCascade(
+			context.Background(),
+			sess,
+			"app/math",
+			false,
+			NewSummaryDispatchPolicy(nil, true),
+			createFunc,
+		)
 		require.NoError(t, err)
 
 		// Should call createFunc twice (no optimization).
@@ -1486,7 +1583,14 @@ func TestCreateSessionSummaryWithCascade_SingleFilterKeyOptimization(t *testing.
 			return errors.New("LLM error")
 		}
 
-		err := CreateSessionSummaryWithCascade(context.Background(), sess, "app/math", false, createFunc)
+		err := CreateSessionSummaryWithCascade(
+			context.Background(),
+			sess,
+			"app/math",
+			false,
+			NewSummaryDispatchPolicy(nil, true),
+			createFunc,
+		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "LLM error")
 	})
@@ -1520,7 +1624,14 @@ func TestCreateSessionSummaryWithCascade_SingleFilterKeyOptimization(t *testing.
 			return nil
 		}
 
-		err := CreateSessionSummaryWithCascade(context.Background(), sess, "app/math", false, createFunc)
+		err := CreateSessionSummaryWithCascade(
+			context.Background(),
+			sess,
+			"app/math",
+			false,
+			NewSummaryDispatchPolicy(nil, true),
+			createFunc,
+		)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "persist full-session summary failed")
 		require.Contains(t, err.Error(), "persist error")
@@ -1544,7 +1655,14 @@ func TestCreateSessionSummaryWithCascade_SingleFilterKeyOptimization(t *testing.
 			return nil
 		}
 
-		err := CreateSessionSummaryWithCascade(context.Background(), sess, "", false, createFunc)
+		err := CreateSessionSummaryWithCascade(
+			context.Background(),
+			sess,
+			"",
+			false,
+			NewSummaryDispatchPolicy(nil, true),
+			createFunc,
+		)
 		require.NoError(t, err)
 		require.Equal(t, 1, callCount)
 	})

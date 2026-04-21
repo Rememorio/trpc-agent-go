@@ -173,6 +173,12 @@ func TestOptions_Coverage(t *testing.T) {
 	WithSummaryJobTimeout(0)(&opts)
 	require.Equal(t, 5*time.Second, opts.summaryJobTimeout)
 
+	WithSummaryFilterAllowlist("app/billing")(&opts)
+	require.Equal(t, []string{"app/billing"}, opts.summaryFilterAllowlist)
+
+	WithCascadeFullSessionSummary(false)(&opts)
+	require.False(t, opts.cascadeFullSessionSummary)
+
 	WithSkipDBInit(true)(&opts)
 	require.True(t, opts.skipDBInit)
 }

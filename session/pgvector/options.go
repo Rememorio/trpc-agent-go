@@ -83,10 +83,13 @@ type ServiceOpts struct {
 	cleanupInterval    time.Duration
 
 	// Summarizer integrates LLM summarization.
-	summarizer        summary.SessionSummarizer
-	asyncSummaryNum   int
-	summaryQueueSize  int
-	summaryJobTimeout time.Duration
+	summarizer                summary.SessionSummarizer
+	asyncSummaryNum           int
+	summaryQueueSize          int
+	summaryJobTimeout         time.Duration
+	summaryFilterAllowlist    []string
+	cascadeFullSessionSummary bool
+	summaryCascadeConfigured  bool
 
 	skipDBInit  bool
 	tablePrefix string
@@ -121,20 +124,29 @@ type ServiceOpts struct {
 type ServiceOpt func(*ServiceOpts)
 
 var defaultOptions = ServiceOpts{
-	sessionEventLimit:  defaultSessionEventLimit,
-	asyncPersisterNum:  defaultAsyncPersisterNum,
-	enableAsyncPersist: false,
-	asyncSummaryNum:    defaultAsyncSummaryNum,
-	summaryQueueSize:   defaultSummaryQueueSize,
-	summaryJobTimeout:  defaultSummaryJobTimeout,
-	softDelete:         true,
-	indexDimension:     defaultIndexDimension,
-	maxResults:         defaultMaxResults,
-	hnswM:              defaultHNSWM,
-	hnswEf:             defaultHNSWEf,
-	hybridRRFK:         defaultHybridRRFK,
-	candidateRatio:     defaultCandidateRatio,
-	embedTimeout:       defaultEmbedTimeout,
+	sessionEventLimit:         defaultSessionEventLimit,
+	asyncPersisterNum:         defaultAsyncPersisterNum,
+	enableAsyncPersist:        false,
+	asyncSummaryNum:           defaultAsyncSummaryNum,
+	summaryQueueSize:          defaultSummaryQueueSize,
+	summaryJobTimeout:         defaultSummaryJobTimeout,
+	cascadeFullSessionSummary: true,
+	summaryCascadeConfigured:  true,
+	softDelete:                true,
+	indexDimension:            defaultIndexDimension,
+	maxResults:                defaultMaxResults,
+	hnswM:                     defaultHNSWM,
+	hnswEf:                    defaultHNSWEf,
+	hybridRRFK:                defaultHybridRRFK,
+	candidateRatio:            defaultCandidateRatio,
+	embedTimeout:              defaultEmbedTimeout,
+}
+
+func (opts ServiceOpts) shouldCascadeFullSessionSummary() bool {
+	if !opts.summaryCascadeConfigured {
+		return true
+	}
+	return opts.cascadeFullSessionSummary
 }
 
 // WithPostgresClientDSN sets the PostgreSQL DSN connection
@@ -268,6 +280,23 @@ func WithSummaryJobTimeout(
 			return
 		}
 		o.summaryJobTimeout = timeout
+	}
+}
+
+// WithSummaryFilterAllowlist restricts which non-empty filterKeys may trigger
+// branch summaries. Keys use the same exact format as event filter keys.
+func WithSummaryFilterAllowlist(filterKeys ...string) ServiceOpt {
+	return func(o *ServiceOpts) {
+		o.summaryFilterAllowlist = append([]string(nil), filterKeys...)
+	}
+}
+
+// WithCascadeFullSessionSummary controls whether an allowed branch summary also
+// refreshes the full-session summary keyed by SummaryFilterKeyAllContents.
+func WithCascadeFullSessionSummary(enable bool) ServiceOpt {
+	return func(o *ServiceOpts) {
+		o.cascadeFullSessionSummary = enable
+		o.summaryCascadeConfigured = true
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/internal/util"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	isummaryscope "trpc.group/trpc-go/trpc-agent-go/session/internal/summaryscope"
@@ -329,21 +328,29 @@ func copySummaryToKey(sess *session.Session, srcKey, dstKey string) {
 	}
 }
 
-// CreateSessionSummaryWithCascade creates a session summary for the specified filterKey
-// and cascades to create a full-session summary if the filterKey is not already the full session.
-// The createSummaryFunc should create a summary for the given filterKey and return an error if failed.
-// When all events match the filterKey (single filterKey scenario), it generates only one summary
-// and copies it to both keys to avoid duplicate LLM calls. The copied summary is then persisted
-// via createSummaryFunc which detects existing in-memory summary and triggers persistence.
+// CreateSessionSummaryWithCascade creates one or more session summaries for the
+// specified filterKey according to the dispatch policy.
+//
+// The createSummaryFunc should create a summary for the given filterKey and
+// return an error if failed. When the policy selects both the branch key and
+// the full-session key and all events match the branch, the helper generates
+// only one summary and copies it to both keys to avoid duplicate LLM calls.
+// The copied summary is then persisted via createSummaryFunc which detects the
+// existing in-memory summary and triggers persistence.
 func CreateSessionSummaryWithCascade(
 	ctx context.Context,
 	sess *session.Session,
 	filterKey string,
 	force bool,
+	policy SummaryDispatchPolicy,
 	createSummaryFunc func(context.Context, *session.Session, string, bool) error,
 ) error {
-	if filterKey == session.SummaryFilterKeyAllContents {
-		return createSummaryFunc(ctx, sess, filterKey, force)
+	targets := policy.SummaryTargets(filterKey)
+	if len(targets) == 0 {
+		return nil
+	}
+	if len(targets) == 1 {
+		return createSummaryFunc(ctx, sess, targets[0], force)
 	}
 
 	// Optimization: when all events match the filterKey, the filterKey summary
@@ -366,9 +373,9 @@ func CreateSessionSummaryWithCascade(
 
 	// Multiple filterKeys detected: generate both summaries in parallel.
 	var summaryWg sync.WaitGroup
-	result := make([]error, 2)
-	summaryWg.Add(2)
-	for i, fk := range []string{filterKey, session.SummaryFilterKeyAllContents} {
+	result := make([]error, len(targets))
+	summaryWg.Add(len(targets))
+	for i, fk := range targets {
 		go func(i int, fk string) {
 			defer summaryWg.Done()
 			err := createSummaryFunc(ctx, sess, fk, force)
@@ -379,5 +386,10 @@ func CreateSessionSummaryWithCascade(
 	}
 	summaryWg.Wait()
 
-	return util.If(result[0] != nil, result[0], result[1])
+	for _, err := range result {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
