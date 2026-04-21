@@ -181,15 +181,16 @@ func TestOptions_Coverage(t *testing.T) {
 	require.Empty(t, opts.summaryFilterAllowlist)
 
 	WithCascadeFullSessionSummary(false)(&opts)
-	require.False(t, opts.cascadeFullSessionSummary)
-	require.True(t, opts.summaryCascadeConfigured)
+	require.NotNil(t, opts.cascadeFullSessionSummary)
+	require.False(t, *opts.cascadeFullSessionSummary)
 	require.False(t, opts.shouldCascadeFullSessionSummary())
 	require.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
 	require.True(t, defaultOptions.shouldCascadeFullSessionSummary())
 
 	explicitTrue := ServiceOpts{}
 	WithCascadeFullSessionSummary(true)(&explicitTrue)
-	require.True(t, explicitTrue.summaryCascadeConfigured)
+	require.NotNil(t, explicitTrue.cascadeFullSessionSummary)
+	require.True(t, *explicitTrue.cascadeFullSessionSummary)
 	require.True(t, explicitTrue.shouldCascadeFullSessionSummary())
 
 	WithSkipDBInit(true)(&opts)

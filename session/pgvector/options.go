@@ -88,8 +88,7 @@ type ServiceOpts struct {
 	summaryQueueSize          int
 	summaryJobTimeout         time.Duration
 	summaryFilterAllowlist    []string
-	cascadeFullSessionSummary bool
-	summaryCascadeConfigured  bool
+	cascadeFullSessionSummary *bool
 
 	skipDBInit  bool
 	tablePrefix string
@@ -124,29 +123,27 @@ type ServiceOpts struct {
 type ServiceOpt func(*ServiceOpts)
 
 var defaultOptions = ServiceOpts{
-	sessionEventLimit:         defaultSessionEventLimit,
-	asyncPersisterNum:         defaultAsyncPersisterNum,
-	enableAsyncPersist:        false,
-	asyncSummaryNum:           defaultAsyncSummaryNum,
-	summaryQueueSize:          defaultSummaryQueueSize,
-	summaryJobTimeout:         defaultSummaryJobTimeout,
-	cascadeFullSessionSummary: true,
-	summaryCascadeConfigured:  true,
-	softDelete:                true,
-	indexDimension:            defaultIndexDimension,
-	maxResults:                defaultMaxResults,
-	hnswM:                     defaultHNSWM,
-	hnswEf:                    defaultHNSWEf,
-	hybridRRFK:                defaultHybridRRFK,
-	candidateRatio:            defaultCandidateRatio,
-	embedTimeout:              defaultEmbedTimeout,
+	sessionEventLimit:  defaultSessionEventLimit,
+	asyncPersisterNum:  defaultAsyncPersisterNum,
+	enableAsyncPersist: false,
+	asyncSummaryNum:    defaultAsyncSummaryNum,
+	summaryQueueSize:   defaultSummaryQueueSize,
+	summaryJobTimeout:  defaultSummaryJobTimeout,
+	softDelete:         true,
+	indexDimension:     defaultIndexDimension,
+	maxResults:         defaultMaxResults,
+	hnswM:              defaultHNSWM,
+	hnswEf:             defaultHNSWEf,
+	hybridRRFK:         defaultHybridRRFK,
+	candidateRatio:     defaultCandidateRatio,
+	embedTimeout:       defaultEmbedTimeout,
 }
 
 func (opts ServiceOpts) shouldCascadeFullSessionSummary() bool {
-	if !opts.summaryCascadeConfigured {
+	if opts.cascadeFullSessionSummary == nil {
 		return true
 	}
-	return opts.cascadeFullSessionSummary
+	return *opts.cascadeFullSessionSummary
 }
 
 // WithPostgresClientDSN sets the PostgreSQL DSN connection
@@ -295,8 +292,8 @@ func WithSummaryFilterAllowlist(filterKeys ...string) ServiceOpt {
 // refreshes the full-session summary keyed by SummaryFilterKeyAllContents.
 func WithCascadeFullSessionSummary(enable bool) ServiceOpt {
 	return func(o *ServiceOpts) {
-		o.cascadeFullSessionSummary = enable
-		o.summaryCascadeConfigured = true
+		enabled := enable
+		o.cascadeFullSessionSummary = &enabled
 	}
 }
 

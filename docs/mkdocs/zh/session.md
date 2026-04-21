@@ -2366,12 +2366,33 @@ evt.FilterKey = "user-messages"
 
 **技术细节：** 框架使用前缀匹配机制（`strings.HasPrefix`）来判断事件是否应该被包含在上下文中。详见 `ContentRequestProcessor` 的过滤逻辑。
 
+#### 限制摘要目标
+
+默认情况下，当某个非空分支 `FilterKey` 触发摘要时，session service 会同时刷新该分支摘要和全量会话摘要（`SummaryFilterKeyAllContents`）。如果某些分支不需要摘要，可以通过 allowlist 控制范围，并按需关闭全量摘要级联：
+
+```go
+sessionService := inmemory.NewSessionService(
+    inmemory.WithSummarizer(summarizer),
+    inmemory.WithSummaryFilterAllowlist(
+        "my-app/user-messages",
+        "my-app/tool-calls",
+    ),
+    inmemory.WithCascadeFullSessionSummary(false),
+)
+```
+
+- `WithSummaryFilterAllowlist(...)` 只作用于非空分支 key。
+- allowlist 使用层级匹配，所以放行 `my-app/tool` 时，也会放行 `my-app/tool/search` 这类子 key。
+- 即使配置了 allowlist，`session.SummaryFilterKeyAllContents` 仍然可以被直接用于生成全量会话摘要。
+- 不配置 allowlist 时会保持兼容行为，所有分支 `FilterKey` 都可以触发摘要。
+- 显式传入空 allowlist 会阻止所有分支摘要，但仍保留直接生成全量摘要的能力。
+
 #### 完整示例
 
 参考以下示例查看完整的 FilterKey 使用场景：
 
 - [examples/session/hook](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook) - Hook 基础用法
-- [examples/summary/filterkey](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey) - 按 FilterKey 生成摘要
+- [examples/summary/filterkey](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey) - 按 FilterKey 生成摘要、allowlist 控制与全量摘要级联开关
 
 ### 性能考虑
 

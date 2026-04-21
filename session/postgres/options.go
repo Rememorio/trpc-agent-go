@@ -70,12 +70,9 @@ type ServiceOpts struct {
 	// branch summaries.
 	summaryFilterAllowlist []string
 	// cascadeFullSessionSummary controls whether allowed branch summaries also
-	// refresh the full-session summary.
-	cascadeFullSessionSummary bool
-	// summaryCascadeConfigured reports whether cascadeFullSessionSummary was
-	// explicitly initialized. Zero-value ServiceOpts should preserve the legacy
-	// default of enabling full-session cascade.
-	summaryCascadeConfigured bool
+	// refresh the full-session summary. Nil preserves the legacy default of
+	// enabling full-session cascade for zero-value options.
+	cascadeFullSessionSummary *bool
 	// skipDBInit skips database initialization (table and index creation).
 	// Useful when user doesn't have DDL permissions or when tables are managed externally.
 	skipDBInit bool
@@ -106,27 +103,25 @@ func WithPostgresClientDSN(dsn string) ServiceOpt {
 
 var (
 	defaultOptions = ServiceOpts{
-		sessionEventLimit:         defaultSessionEventLimit,
-		sessionTTL:                0,
-		appStateTTL:               0,
-		userStateTTL:              0,
-		asyncPersisterNum:         defaultAsyncPersisterNum,
-		enableAsyncPersist:        false,
-		asyncSummaryNum:           defaultAsyncSummaryNum,
-		summaryQueueSize:          defaultSummaryQueueSize,
-		summaryJobTimeout:         defaultSummaryJobTimeout,
-		cascadeFullSessionSummary: true,
-		summaryCascadeConfigured:  true,
-		softDelete:                true, // Enable soft delete by default
-		cleanupInterval:           0,
+		sessionEventLimit:  defaultSessionEventLimit,
+		sessionTTL:         0,
+		appStateTTL:        0,
+		userStateTTL:       0,
+		asyncPersisterNum:  defaultAsyncPersisterNum,
+		enableAsyncPersist: false,
+		asyncSummaryNum:    defaultAsyncSummaryNum,
+		summaryQueueSize:   defaultSummaryQueueSize,
+		summaryJobTimeout:  defaultSummaryJobTimeout,
+		softDelete:         true, // Enable soft delete by default
+		cleanupInterval:    0,
 	}
 )
 
 func (opts ServiceOpts) shouldCascadeFullSessionSummary() bool {
-	if !opts.summaryCascadeConfigured {
+	if opts.cascadeFullSessionSummary == nil {
 		return true
 	}
-	return opts.cascadeFullSessionSummary
+	return *opts.cascadeFullSessionSummary
 }
 
 // WithSessionEventLimit sets the limit of events in a session.
@@ -287,8 +282,8 @@ func WithSummaryFilterAllowlist(filterKeys ...string) ServiceOpt {
 // refreshes the full-session summary keyed by SummaryFilterKeyAllContents.
 func WithCascadeFullSessionSummary(enable bool) ServiceOpt {
 	return func(opts *ServiceOpts) {
-		opts.cascadeFullSessionSummary = enable
-		opts.summaryCascadeConfigured = true
+		enabled := enable
+		opts.cascadeFullSessionSummary = &enabled
 	}
 }
 

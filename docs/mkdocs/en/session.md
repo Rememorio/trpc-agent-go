@@ -2305,12 +2305,33 @@ evt.FilterKey = "user-messages"
 
 **Technical Details:** The framework uses prefix matching (`strings.HasPrefix`) to determine which events should be included in the context. See `ContentRequestProcessor` filtering logic for details.
 
+#### Restricting Summary Targets
+
+By default, when a non-empty branch `FilterKey` triggers summarization, the session service refreshes both that branch summary and the full-session summary (`SummaryFilterKeyAllContents`). If some branches do not need summaries, you can reduce LLM usage with an allowlist and optionally disable the full-session cascade:
+
+```go
+sessionService := inmemory.NewSessionService(
+    inmemory.WithSummarizer(summarizer),
+    inmemory.WithSummaryFilterAllowlist(
+        "my-app/user-messages",
+        "my-app/tool-calls",
+    ),
+    inmemory.WithCascadeFullSessionSummary(false),
+)
+```
+
+- `WithSummaryFilterAllowlist(...)` only applies to non-empty branch keys.
+- Allowlist matching is hierarchical, so allowing `my-app/tool` also allows child keys such as `my-app/tool/search`.
+- `session.SummaryFilterKeyAllContents` remains available for direct full-session summaries even when an allowlist is configured.
+- Leaving the allowlist unset preserves the legacy behavior and allows every branch `FilterKey` to trigger summaries.
+- Passing an explicit empty allowlist blocks all branch summaries while still allowing direct full-session summaries.
+
 #### Complete Examples
 
 See the following examples for complete FilterKey usage scenarios:
 
 - [examples/session/hook](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/session/hook) - Hook basics
-- [examples/summary/filterkey](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey) - Summarizing by FilterKey
+- [examples/summary/filterkey](https://github.com/trpc-group/trpc-agent-go/tree/main/examples/summary/filterkey) - Summarizing by FilterKey, allowlists, and full-session cascade control
 
 ### Performance Considerations
 

@@ -915,6 +915,33 @@ userSummary, found := sessionService.GetSessionSummaryText(
     ctx, sess, session.WithSummaryFilterKey("my-app/user-messages"))
 ```
 
+### 限制摘要目标
+
+默认情况下，当某个非空分支 `FilterKey` 触发摘要时，session service 会同时
+刷新该分支摘要和全量会话摘要（`SummaryFilterKeyAllContents`）。如果某些分支
+不需要摘要，可以通过 allowlist 控制范围，并按需关闭全量摘要级联：
+
+```go
+sessionService := inmemory.NewSessionService(
+    inmemory.WithSummarizer(summarizer),
+    inmemory.WithSummaryFilterAllowlist(
+        "my-app/user-messages",
+        "my-app/tool-calls",
+    ),
+    inmemory.WithCascadeFullSessionSummary(false),
+)
+```
+
+行为说明：
+
+- `WithSummaryFilterAllowlist(...)` 只作用于非空分支 key。
+- allowlist 使用层级匹配，所以放行 `my-app/tool` 时，也会放行
+  `my-app/tool/search` 这类子 key。
+- 即使配置了 allowlist，`session.SummaryFilterKeyAllContents` 仍然可以被直接
+  用于生成全量会话摘要。
+- 不配置 allowlist 时会保持兼容行为，所有分支 `FilterKey` 都可以触发摘要。
+- 显式传入空 allowlist 会阻止所有分支摘要，但仍保留直接生成全量摘要的能力。
+
 ## 工作原理
 
 1. **增量处理**：摘要器跟踪每个会话的上次摘要时间，后续运行只处理上次摘要后发生的事件

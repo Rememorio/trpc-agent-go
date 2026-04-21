@@ -54,8 +54,7 @@ type ServiceOpts struct {
 	summaryQueueSize          int
 	summaryJobTimeout         time.Duration
 	summaryFilterAllowlist    []string
-	cascadeFullSessionSummary bool
-	summaryCascadeConfigured  bool
+	cascadeFullSessionSummary *bool
 
 	// skipDBInit skips database initialization.
 	skipDBInit bool
@@ -71,21 +70,19 @@ type ServiceOpts struct {
 type ServiceOpt func(*ServiceOpts)
 
 var defaultOptions = ServiceOpts{
-	sessionEventLimit:         defaultSessionEventLimit,
-	asyncPersisterNum:         defaultAsyncPersisterNum,
-	asyncSummaryNum:           defaultAsyncSummaryNum,
-	summaryQueueSize:          defaultSummaryQueueSize,
-	summaryJobTimeout:         defaultSummaryJobTimeout,
-	cascadeFullSessionSummary: true,
-	summaryCascadeConfigured:  true,
-	softDelete:                true,
+	sessionEventLimit: defaultSessionEventLimit,
+	asyncPersisterNum: defaultAsyncPersisterNum,
+	asyncSummaryNum:   defaultAsyncSummaryNum,
+	summaryQueueSize:  defaultSummaryQueueSize,
+	summaryJobTimeout: defaultSummaryJobTimeout,
+	softDelete:        true,
 }
 
 func (opts ServiceOpts) shouldCascadeFullSessionSummary() bool {
-	if !opts.summaryCascadeConfigured {
+	if opts.cascadeFullSessionSummary == nil {
 		return true
 	}
-	return opts.cascadeFullSessionSummary
+	return *opts.cascadeFullSessionSummary
 }
 
 // WithSessionEventLimit sets the event limit per session.
@@ -196,8 +193,8 @@ func WithSummaryFilterAllowlist(filterKeys ...string) ServiceOpt {
 // refreshes the full-session summary keyed by SummaryFilterKeyAllContents.
 func WithCascadeFullSessionSummary(enable bool) ServiceOpt {
 	return func(opts *ServiceOpts) {
-		opts.cascadeFullSessionSummary = enable
-		opts.summaryCascadeConfigured = true
+		enabled := enable
+		opts.cascadeFullSessionSummary = &enabled
 	}
 }
 

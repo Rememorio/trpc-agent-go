@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -246,15 +247,15 @@ func TestSummaryOptions(t *testing.T) {
 	assert.Equal(t, []string{"tool-usage", "user-messages"}, opts.summaryFilterAllowlist)
 
 	WithCascadeFullSessionSummary(false)(opts)
-	assert.False(t, opts.cascadeFullSessionSummary)
-	assert.True(t, opts.summaryCascadeConfigured)
+	require.NotNil(t, opts.cascadeFullSessionSummary)
+	assert.False(t, *opts.cascadeFullSessionSummary)
 }
 
 func TestShouldCascadeFullSessionSummary(t *testing.T) {
+	disabled := false
 	assert.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
 	assert.True(t, defaultOptions.shouldCascadeFullSessionSummary())
 	assert.False(t, (ServiceOpts{
-		cascadeFullSessionSummary: false,
-		summaryCascadeConfigured:  true,
+		cascadeFullSessionSummary: &disabled,
 	}).shouldCascadeFullSessionSummary())
 }

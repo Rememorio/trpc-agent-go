@@ -239,12 +239,12 @@ func TestService_EnqueueSummaryJob_CascadeDisabled(t *testing.T) {
 	s := &Service{
 		chClient: mockCli,
 		opts: ServiceOpts{
-			summarizer:                mockSum,
-			cascadeFullSessionSummary: false,
-			summaryCascadeConfigured:  true,
+			summarizer: mockSum,
 		},
 		tableSessionSummaries: "session_summaries",
 	}
+	disabled := false
+	s.opts.cascadeFullSessionSummary = &disabled
 
 	var persistedKeys []string
 	mockCli.execFunc = func(ctx context.Context, query string, args ...any) error {

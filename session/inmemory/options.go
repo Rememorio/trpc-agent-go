@@ -50,12 +50,9 @@ type serviceOpts struct {
 	// branch summaries.
 	summaryFilterAllowlist []string
 	// cascadeFullSessionSummary controls whether allowed branch summaries also
-	// refresh the full-session summary.
-	cascadeFullSessionSummary bool
-	// summaryCascadeConfigured reports whether cascadeFullSessionSummary was
-	// explicitly initialized. Zero-value serviceOpts should preserve the legacy
-	// default of enabling full-session cascade.
-	summaryCascadeConfigured bool
+	// refresh the full-session summary. Nil preserves the legacy default of
+	// enabling full-session cascade for zero-value options.
+	cascadeFullSessionSummary *bool
 	// appendEventHooks are hooks for AppendEvent.
 	appendEventHooks []session.AppendEventHook
 	// getSessionHooks are hooks for GetSession.
@@ -67,21 +64,19 @@ type ServiceOpt func(*serviceOpts)
 
 var (
 	defaultOptions = serviceOpts{
-		sessionEventLimit:         defaultSessionEventLimit,
-		cleanupInterval:           0,
-		asyncSummaryNum:           defaultAsyncSummaryNum,
-		summaryQueueSize:          defaultSummaryQueueSize,
-		summaryJobTimeout:         defaultSummaryJobTimeout,
-		cascadeFullSessionSummary: true,
-		summaryCascadeConfigured:  true,
+		sessionEventLimit: defaultSessionEventLimit,
+		cleanupInterval:   0,
+		asyncSummaryNum:   defaultAsyncSummaryNum,
+		summaryQueueSize:  defaultSummaryQueueSize,
+		summaryJobTimeout: defaultSummaryJobTimeout,
 	}
 )
 
 func (opts serviceOpts) shouldCascadeFullSessionSummary() bool {
-	if !opts.summaryCascadeConfigured {
+	if opts.cascadeFullSessionSummary == nil {
 		return true
 	}
-	return opts.cascadeFullSessionSummary
+	return *opts.cascadeFullSessionSummary
 }
 
 // WithSessionEventLimit sets the limit of events in a session.
@@ -174,8 +169,8 @@ func WithSummaryFilterAllowlist(filterKeys ...string) ServiceOpt {
 // refreshes the full-session summary keyed by SummaryFilterKeyAllContents.
 func WithCascadeFullSessionSummary(enable bool) ServiceOpt {
 	return func(opts *serviceOpts) {
-		opts.cascadeFullSessionSummary = enable
-		opts.summaryCascadeConfigured = true
+		enabled := enable
+		opts.cascadeFullSessionSummary = &enabled
 	}
 }
 

@@ -146,18 +146,18 @@ func TestWithSummaryFilterAllowlist(t *testing.T) {
 }
 
 func TestWithCascadeFullSessionSummary(t *testing.T) {
-	opts := ServiceOpts{cascadeFullSessionSummary: true}
+	opts := ServiceOpts{}
 	WithCascadeFullSessionSummary(false)(&opts)
-	assert.False(t, opts.cascadeFullSessionSummary)
-	assert.True(t, opts.summaryCascadeConfigured)
+	require.NotNil(t, opts.cascadeFullSessionSummary)
+	assert.False(t, *opts.cascadeFullSessionSummary)
 }
 
 func TestShouldCascadeFullSessionSummary(t *testing.T) {
+	disabled := false
 	assert.True(t, (ServiceOpts{}).shouldCascadeFullSessionSummary())
 	assert.True(t, defaultOptions.shouldCascadeFullSessionSummary())
 	assert.False(t, (ServiceOpts{
-		cascadeFullSessionSummary: false,
-		summaryCascadeConfigured:  true,
+		cascadeFullSessionSummary: &disabled,
 	}).shouldCascadeFullSessionSummary())
 }
 

@@ -175,9 +175,11 @@ func TestWithSummaryFilterAllowlist(t *testing.T) {
 }
 
 func TestWithCascadeFullSessionSummary(t *testing.T) {
-	opts := serviceOpts{cascadeFullSessionSummary: true}
+	opts := serviceOpts{}
 	WithCascadeFullSessionSummary(false)(&opts)
-	assert.False(t, opts.cascadeFullSessionSummary)
+	require.NotNil(t, opts.cascadeFullSessionSummary)
+	assert.False(t, *opts.cascadeFullSessionSummary)
+	assert.False(t, opts.shouldCascadeFullSessionSummary())
 }
 
 func TestServiceOptsIntegration(t *testing.T) {
@@ -208,5 +210,7 @@ func TestServiceOptsIntegration(t *testing.T) {
 	assert.Equal(t, 100, service.opts.summaryQueueSize)
 	assert.Equal(t, 5*time.Second, service.opts.summaryJobTimeout)
 	assert.Equal(t, []string{"app/billing"}, service.opts.summaryFilterAllowlist)
-	assert.False(t, service.opts.cascadeFullSessionSummary)
+	require.NotNil(t, service.opts.cascadeFullSessionSummary)
+	assert.False(t, *service.opts.cascadeFullSessionSummary)
+	assert.False(t, service.opts.shouldCascadeFullSessionSummary())
 }

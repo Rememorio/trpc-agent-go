@@ -913,6 +913,37 @@ userSummary, found := sessionService.GetSessionSummaryText(
     ctx, sess, session.WithSummaryFilterKey("my-app/user-messages"))
 ```
 
+### Restricting Summary Targets
+
+By default, when a non-empty branch `FilterKey` triggers summarization, the
+session service refreshes both that branch summary and the full-session summary
+(`SummaryFilterKeyAllContents`). If some branches do not need summaries, you can
+reduce LLM usage with an allowlist and optionally disable the full-session
+cascade:
+
+```go
+sessionService := inmemory.NewSessionService(
+    inmemory.WithSummarizer(summarizer),
+    inmemory.WithSummaryFilterAllowlist(
+        "my-app/user-messages",
+        "my-app/tool-calls",
+    ),
+    inmemory.WithCascadeFullSessionSummary(false),
+)
+```
+
+Behavior notes:
+
+- `WithSummaryFilterAllowlist(...)` only applies to non-empty branch keys.
+- Allowlist matching is hierarchical, so allowing `my-app/tool` also allows
+  child keys such as `my-app/tool/search`.
+- `session.SummaryFilterKeyAllContents` remains available for direct
+  full-session summaries even when an allowlist is configured.
+- Leaving the allowlist unset preserves the legacy behavior and allows every
+  branch `FilterKey` to trigger summaries.
+- Passing an explicit empty allowlist blocks all branch summaries while still
+  allowing direct full-session summaries.
+
 ## How It Works
 
 1. **Incremental processing**: The summarizer tracks the last summary time for each session; subsequent runs only process events after the last summary
