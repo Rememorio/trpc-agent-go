@@ -271,7 +271,7 @@ func WithSummaryJobTimeout(timeout time.Duration) ServiceOpt {
 // branch summaries. Keys use the same exact format as event filter keys.
 func WithSummaryFilterAllowlist(filterKeys ...string) ServiceOpt {
 	return func(opts *ServiceOpts) {
-		opts.summaryFilterAllowlist = append([]string(nil), filterKeys...)
+		opts.summaryFilterAllowlist = append([]string{}, filterKeys...)
 	}
 }
 

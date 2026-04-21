@@ -11,6 +11,7 @@ package summary
 import (
 	"strings"
 
+	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
@@ -61,17 +62,21 @@ func (p SummaryDispatchPolicy) allowsBranch(filterKey string) bool {
 	if filterKey == "" {
 		return true
 	}
-	if len(p.FilterAllowlist) == 0 {
+	if p.FilterAllowlist == nil {
 		return true
 	}
-	_, ok := p.FilterAllowlist[filterKey]
-	return ok
+	for allowKey := range p.FilterAllowlist {
+		if matchSummaryFilterKey(allowKey, filterKey) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSummaryFilterAllowlist(
 	filterAllowlist []string,
 ) map[string]struct{} {
-	if len(filterAllowlist) == 0 {
+	if filterAllowlist == nil {
 		return nil
 	}
 	normalized := make(map[string]struct{}, len(filterAllowlist))
@@ -82,8 +87,15 @@ func normalizeSummaryFilterAllowlist(
 		}
 		normalized[filterKey] = struct{}{}
 	}
-	if len(normalized) == 0 {
-		return nil
-	}
 	return normalized
+}
+
+func matchSummaryFilterKey(allowedKey, filterKey string) bool {
+	if allowedKey == "" || filterKey == "" {
+		return true
+	}
+
+	allowedKey += event.FilterKeyDelimiter
+	filterKey += event.FilterKeyDelimiter
+	return strings.HasPrefix(allowedKey, filterKey) || strings.HasPrefix(filterKey, allowedKey)
 }

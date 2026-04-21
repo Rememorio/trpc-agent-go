@@ -875,6 +875,18 @@ func TestSummaryDispatchPolicy_SummaryTargets(t *testing.T) {
 			filterKey: "app/billing",
 			want:      nil,
 		},
+		{
+			name:      "explicit empty allowlist blocks branch summaries",
+			policy:    NewSummaryDispatchPolicy([]string{}, true),
+			filterKey: "app/billing",
+			want:      nil,
+		},
+		{
+			name:      "allowlist matches hierarchical child keys",
+			policy:    NewSummaryDispatchPolicy([]string{"app/billing"}, true),
+			filterKey: "app/billing/refund",
+			want:      []string{"app/billing/refund", ""},
+		},
 	}
 
 	for _, tt := range tests {
@@ -920,6 +932,24 @@ func TestSummaryDispatchPolicy_AllowsFilterKey(t *testing.T) {
 			policy:    NewSummaryDispatchPolicy([]string{"app/support"}, true),
 			filterKey: "app/billing",
 			want:      false,
+		},
+		{
+			name:      "explicit empty allowlist blocks branch summaries",
+			policy:    NewSummaryDispatchPolicy([]string{}, true),
+			filterKey: "app/billing",
+			want:      false,
+		},
+		{
+			name:      "hierarchical parent key allows child summaries",
+			policy:    NewSummaryDispatchPolicy([]string{"app/billing"}, true),
+			filterKey: "app/billing/refund",
+			want:      true,
+		},
+		{
+			name:      "hierarchical child key allows parent summaries",
+			policy:    NewSummaryDispatchPolicy([]string{"app/billing/refund"}, true),
+			filterKey: "app/billing",
+			want:      true,
 		},
 	}
 

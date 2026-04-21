@@ -178,6 +178,8 @@ func TestOptions_Coverage(t *testing.T) {
 
 	WithCascadeFullSessionSummary(false)(&opts)
 	require.False(t, opts.cascadeFullSessionSummary)
+	require.True(t, opts.summaryCascadeConfigured)
+	require.False(t, opts.shouldCascadeFullSessionSummary())
 
 	WithSkipDBInit(true)(&opts)
 	require.True(t, opts.skipDBInit)
