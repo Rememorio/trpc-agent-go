@@ -429,10 +429,10 @@ func TestNewService_AsyncSummaryWorkerHonorsDispatchPolicy(
 	}
 
 	require.NoError(t, svc.EnqueueSummaryJob(
-		context.Background(), sess, "tool-usage", true,
+		context.Background(), sess, "blocked", true,
 	))
 	require.NoError(t, svc.EnqueueSummaryJob(
-		context.Background(), sess, "blocked", true,
+		context.Background(), sess, "tool-usage", true,
 	))
 	require.NoError(t, svc.Close())
 	require.Equal(t, []string{"tool-usage"},
