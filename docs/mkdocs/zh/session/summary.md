@@ -935,8 +935,14 @@ sessionService := inmemory.NewSessionService(
 行为说明：
 
 - `WithSummaryFilterAllowlist(...)` 只作用于非空分支 key。
-- allowlist 使用层级匹配，所以放行 `my-app/tool` 时，也会放行
-  `my-app/tool/search` 这类子 key。
+- allowlist 使用带分隔符的层级匹配，不是原始字符串前缀匹配。框架内部会先给
+  两边补上 filter key 分隔符（`"/"`），再判断两者是否处于同一条祖先/子孙
+  层级路径上。
+- 例子：
+  - 放行 `my-app/tool` 时，会匹配 `my-app/tool` 和 `my-app/tool/search`。
+  - 放行 `my-app/tool/search` 时，也会匹配 `my-app/tool`。
+  - 放行 `my-app/tool` 时，不会匹配 `my-app/toolbox`。
+  - 放行 `my-app/tool` 时，不会匹配 `other-app/tool`。
 - 即使配置了 allowlist，`session.SummaryFilterKeyAllContents` 仍然可以被直接
   用于生成全量会话摘要。
 - 不配置 allowlist 时会保持兼容行为，所有分支 `FilterKey` 都可以触发摘要。

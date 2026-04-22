@@ -935,8 +935,15 @@ sessionService := inmemory.NewSessionService(
 Behavior notes:
 
 - `WithSummaryFilterAllowlist(...)` only applies to non-empty branch keys.
-- Allowlist matching is hierarchical, so allowing `my-app/tool` also allows
-  child keys such as `my-app/tool/search`.
+- Allowlist matching is hierarchical and segment-aware, not a raw string prefix
+  check. Internally the framework appends the filter-key delimiter (`"/"`) to
+  both sides and then checks whether either key is an ancestor/descendant of
+  the other.
+- Examples:
+  - Allowing `my-app/tool` matches `my-app/tool` and `my-app/tool/search`.
+  - Allowing `my-app/tool/search` also matches `my-app/tool`.
+  - Allowing `my-app/tool` does not match `my-app/toolbox`.
+  - Allowing `my-app/tool` does not match `other-app/tool`.
 - `session.SummaryFilterKeyAllContents` remains available for direct
   full-session summaries even when an allowlist is configured.
 - Leaving the allowlist unset preserves the legacy behavior and allows every
