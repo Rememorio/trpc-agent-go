@@ -3265,6 +3265,78 @@ func TestModel_GenerateContent_Streaming_FinalReasoningAggregated(t *testing.T) 
 	assert.Falsef(t, final.IsPartial, "expected final.IsPartial == false")
 }
 
+func TestModel_GenerateContent_Streaming_FinalContentIncludesReasoningChunks(t *testing.T) {
+	const finalContent = "{\n" +
+		`  "insight_text": "not afraid of scenery",` + "\n" +
+		`  "relief_text": "proof enough",` + "\n" +
+		`  "tiny_actions": ["open the map"]` + "\n" +
+		"}"
+	quote := func(s string) string {
+		b, err := json.Marshal(s)
+		require.NoError(t, err)
+		return string(b)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		chunks := []string{
+			fmt.Sprintf(`data: {"id":"test","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"role":"assistant","content":%s,"reasoning_content":%s},"finish_reason":null}]}`,
+				quote("{"), quote("thinking")),
+			fmt.Sprintf(`data: {"id":"test","object":"chat.completion.chunk","created":1699200001,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":%s},"finish_reason":null}]}`,
+				quote(strings.TrimPrefix(finalContent, "{"))),
+			`data: {"id":"test","object":"chat.completion.chunk","created":1699200002,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+		}
+		for _, c := range chunks {
+			fmt.Fprintf(w, "%s\n\n", c)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	m := New("deepseek-reasoner", WithBaseURL(server.URL), WithAPIKey("test-key"))
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("Test streaming reasoning with content"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	ch, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var partialContent string
+	var final *model.Response
+	for rsp := range ch {
+		require.Nilf(t, rsp.Error, "response error: %v", rsp.Error)
+		if rsp.IsPartial {
+			if len(rsp.Choices) > 0 {
+				partialContent += rsp.Choices[0].Delta.Content
+			}
+			continue
+		}
+		final = rsp
+	}
+
+	require.NotNil(t, final)
+	require.NotEmpty(t, final.Choices)
+	require.Equal(t, finalContent, partialContent)
+	require.Equal(t, finalContent, final.Choices[0].Message.Content)
+	require.Equal(t, "thinking", final.Choices[0].Message.ReasoningContent)
+}
+
 func TestOpenAI_TokenCounterInitialization(t *testing.T) {
 	tests := []struct {
 		name                 string
@@ -6842,6 +6914,31 @@ func TestModel_accumulateChunk(t *testing.T) {
 
 		assert.Equal(t, "First reasoning", reasoningBuf.String())
 		assert.Empty(t, acc.Choices)
+	})
+
+	t.Run("accumulate content from chunk with reasoning content", func(t *testing.T) {
+		chunk := parseChunkWithExtraFields(t, `{
+			"id": "test-id",
+			"object": "chat.completion.chunk",
+			"created": 1699200000,
+			"model": "test-model",
+			"choices": [{
+				"index": 0,
+				"delta": {
+					"role": "assistant",
+					"content": "{",
+					"reasoning_content": "First reasoning"
+				}
+			}]
+		}`)
+		acc := openai.ChatCompletionAccumulator{}
+		var reasoningBuf bytes.Buffer
+
+		m.accumulateChunk(chunk, &acc, &reasoningBuf)
+
+		require.Len(t, acc.Choices, 1)
+		assert.Equal(t, "{", acc.Choices[0].Message.Content)
+		assert.Equal(t, "First reasoning", reasoningBuf.String())
 	})
 
 	t.Run("accumulate with custom usage function", func(t *testing.T) {

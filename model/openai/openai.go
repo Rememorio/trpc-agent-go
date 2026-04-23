@@ -1595,14 +1595,15 @@ func (m *Model) accumulateChunk(
 	acc *openai.ChatCompletionAccumulator,
 	reasoningBuf *bytes.Buffer,
 ) {
-	// Always accumulate for correctness (tool call deltas are assembled later),
-	// but skip chunks with reasoning content that would cause the SDK accumulator to panic.
-	if !m.hasReasoningContent(chunk.Choices) {
+	// Always accumulate visible content/tool-call deltas for correctness, even
+	// when the same chunk also carries provider-specific reasoning_content.
+	if !m.hasReasoningContent(chunk.Choices) || hasAccumulatorPayload(chunk) {
+		chunkForAccumulator := stripReasoningContentForAccumulator(chunk)
 		// Sanitize chunks before feeding them into the upstream accumulator to
 		// avoid known panics when JSON.ToolCalls is marked present but the
 		// typed ToolCalls slice is empty, especially on finish_reason chunks.
-		sanitizedChunk := sanitizeChunkForAccumulator(chunk)
-		if acc.AddChunk(sanitizedChunk) {
+		chunkForAccumulator = sanitizeChunkForAccumulator(chunkForAccumulator)
+		if acc.AddChunk(chunkForAccumulator) {
 			applyOpenAISDKTokenDetailsAccumulationFix(acc, chunk)
 		}
 
@@ -1621,6 +1622,54 @@ func (m *Model) accumulateChunk(
 			reasoningBuf.WriteString(reasoningContent)
 		}
 	}
+}
+
+func hasAccumulatorPayload(chunk openai.ChatCompletionChunk) bool {
+	if chunk.Usage.CompletionTokens > 0 ||
+		chunk.Usage.PromptTokens > 0 ||
+		chunk.Usage.TotalTokens > 0 {
+		return true
+	}
+	for _, choice := range chunk.Choices {
+		delta := choice.Delta
+		if choice.FinishReason != "" ||
+			delta.Content != "" ||
+			delta.JSON.Content.Valid() ||
+			delta.Refusal != "" ||
+			delta.JSON.Refusal.Valid() ||
+			len(delta.ToolCalls) > 0 {
+			return true
+		}
+		if delta.JSON.ToolCalls.Valid() && len(delta.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func stripReasoningContentForAccumulator(chunk openai.ChatCompletionChunk) openai.ChatCompletionChunk {
+	if len(chunk.Choices) == 0 {
+		return chunk
+	}
+	sanitized := chunk
+	sanitized.Choices = make([]openai.ChatCompletionChunkChoice, len(chunk.Choices))
+	copy(sanitized.Choices, chunk.Choices)
+	for i := range sanitized.Choices {
+		extraFields := sanitized.Choices[i].Delta.JSON.ExtraFields
+		if len(extraFields) == 0 {
+			continue
+		}
+		cloned := make(map[string]respjson.Field, len(extraFields))
+		for key, field := range extraFields {
+			if key == model.ReasoningContentKey ||
+				key == model.ReasoningContentKeyAlt {
+				continue
+			}
+			cloned[key] = field
+		}
+		sanitized.Choices[i].Delta.JSON.ExtraFields = cloned
+	}
+	return sanitized
 }
 
 // sendPartialResponse creates and sends a partial response from a chunk.
