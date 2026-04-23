@@ -780,18 +780,27 @@ func (p *SkillsRequestProcessor) injectOverview(
 	sums = prioritizeSummariesForRequest(sums, req.Messages)
 	rendered, truncated := p.applyOverviewCap(sums)
 	flags := p.toolFlagsForInvocation(inv)
-	var b strings.Builder
 	protocol := p.protocolGuidanceText(flags)
+	overview := p.buildOverviewText(ctx, repo, sums, rendered, truncated, flags, protocol)
+	mergeOverviewIntoRequest(req, overview, protocol != "")
+}
+
+// buildOverviewText composes the full skills-overview block that gets
+// injected into the system prompt. It is split out of injectOverview to
+// keep cyclomatic complexity manageable.
+func (p *SkillsRequestProcessor) buildOverviewText(
+	ctx context.Context,
+	repo skill.Repository,
+	sums, rendered, truncated []skill.Summary,
+	flags skillprofile.Flags,
+	protocol string,
+) string {
+	var b strings.Builder
 	if protocol != "" {
 		b.WriteString(protocol)
 		b.WriteString("\n")
 	}
-	b.WriteString(skillsOverviewHeader)
-	if len(truncated) > 0 {
-		fmt.Fprintf(&b, " (showing %d of %d; remaining names listed below)",
-			len(rendered), len(sums))
-	}
-	b.WriteString("\n")
+	writeOverviewHeader(&b, len(rendered), len(sums), len(truncated))
 	if protocol == "" && flags.Load && !flags.Run {
 		b.WriteString("The short lines below are routing summaries only. ")
 		b.WriteString("If one looks relevant, call skill_load before relying on it or repeating domain-specific tool work.\n")
@@ -802,57 +811,75 @@ func (p *SkillsRequestProcessor) injectOverview(
 		}
 	}
 	for _, s := range rendered {
-		line := fmt.Sprintf(
-			"- %s: %s%s\n",
-			s.Name,
-			s.Description,
-			p.skillOverviewSuffix(ctx, repo, s.Name),
-		)
-		b.WriteString(line)
+		fmt.Fprintf(&b, "- %s: %s%s\n", s.Name, s.Description,
+			p.skillOverviewSuffix(ctx, repo, s.Name))
 	}
-	if len(truncated) > 0 {
-		// Render the truncated tail as names only so the agent can
-		// still discover and skill_load them, paying just one
-		// comma-separated line of tokens instead of full descriptions.
-		b.WriteString("Additional skills (use skill_load by name to access): ")
-		names := make([]string, 0, len(truncated))
-		for _, s := range truncated {
-			names = append(names, s.Name)
-		}
-		b.WriteString(strings.Join(names, ", "))
-		b.WriteString("\n")
-	}
+	writeTruncatedTail(&b, truncated)
 	if protocol == "" {
-		if capability := p.capabilityGuidanceText(flags); capability != "" {
-			b.WriteString(capability)
-		}
-		if guidance := p.toolingGuidanceText(flags); guidance != "" {
-			b.WriteString(guidance)
-		}
+		p.appendDefaultGuidance(&b, flags)
 	}
-	overview := b.String()
+	return b.String()
+}
 
-	idx := findSystemMessageIndex(req.Messages)
-	if idx >= 0 {
-		sys := &req.Messages[idx]
-		if !strings.Contains(sys.Content, skillsOverviewHeader) {
-			if p.protocolGuidanceText(flags) != "" {
-				if sys.Content != "" {
-					sys.Content = overview + "\n\n" + sys.Content
-				} else {
-					sys.Content = overview
-				}
-			} else if sys.Content != "" {
-				sys.Content += "\n\n" + overview
-			} else {
-				sys.Content = overview
-			}
-		}
+func (p *SkillsRequestProcessor) appendDefaultGuidance(
+	b *strings.Builder, flags skillprofile.Flags,
+) {
+	if capability := p.capabilityGuidanceText(flags); capability != "" {
+		b.WriteString(capability)
+	}
+	if guidance := p.toolingGuidanceText(flags); guidance != "" {
+		b.WriteString(guidance)
+	}
+}
+
+func writeOverviewHeader(b *strings.Builder, renderedN, totalN, truncatedN int) {
+	b.WriteString(skillsOverviewHeader)
+	if truncatedN > 0 {
+		fmt.Fprintf(b, " (showing %d of %d; remaining names listed below)",
+			renderedN, totalN)
+	}
+	b.WriteString("\n")
+}
+
+// writeTruncatedTail renders the truncated names as a single
+// comma-separated line so the agent can still discover them via
+// skill_load without paying for full descriptions.
+func writeTruncatedTail(b *strings.Builder, truncated []skill.Summary) {
+	if len(truncated) == 0 {
 		return
 	}
-	// No system message yet: create one at the front.
-	msg := model.NewSystemMessage(overview)
-	req.Messages = append([]model.Message{msg}, req.Messages...)
+	b.WriteString("Additional skills (use skill_load by name to access): ")
+	names := make([]string, 0, len(truncated))
+	for _, s := range truncated {
+		names = append(names, s.Name)
+	}
+	b.WriteString(strings.Join(names, ", "))
+	b.WriteString("\n")
+}
+
+// mergeOverviewIntoRequest places the rendered overview in the request's
+// system message. When protocolFirst is true the overview is prepended to
+// the existing system content (matching protocol-driven layout); otherwise
+// it is appended.
+func mergeOverviewIntoRequest(req *model.Request, overview string, protocolFirst bool) {
+	idx := findSystemMessageIndex(req.Messages)
+	if idx < 0 {
+		msg := model.NewSystemMessage(overview)
+		req.Messages = append([]model.Message{msg}, req.Messages...)
+		return
+	}
+	sys := &req.Messages[idx]
+	if strings.Contains(sys.Content, skillsOverviewHeader) {
+		return
+	}
+	switch {
+	case sys.Content == "":
+		sys.Content = overview
+	case protocolFirst:
+		sys.Content = overview + "\n\n" + sys.Content
+	default:
+		sys.Content += "\n\n" + overview
+	}
 }
 
 // applyOverviewCap splits the available summaries into a "rendered"
