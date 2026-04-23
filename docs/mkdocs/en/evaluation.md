@@ -6,6 +6,8 @@ Unlike deterministic systems, Agent issues often appear as probabilistic deviati
 
 The core purpose of evaluation is to turn key scenarios and acceptance criteria into assets and distill them into sustainable regression signals. tRPC-Agent-Go provides out-of-the-box evaluation capabilities, supporting asset management and result persistence based on evaluation sets and metrics. It includes static evaluators and LLM Judge evaluators, and provides multi-turn evaluation, repeated runs, `Trace` evaluation mode, callbacks, context injection, and concurrent inference to support local debugging and pipeline regression at engineering scale.
 
+If you want to further automate prompt optimization on top of evaluation, continue with the [PromptIter Guide](promptiter.md). PromptIter is built on top of Evaluation and provides train/validation separation, multi-round optimization, asynchronous run management, and HTTP APIs.
+
 ## Quick Start
 
 This section provides a minimal example to help you quickly understand how to use tRPC-Agent-Go evaluation.
@@ -3180,7 +3182,7 @@ See [examples/evaluation/evalsetrecorder](https://github.com/trpc-group/trpc-age
 
 ### Skills Evaluation
 
-Agent Skills are exposed as built-in tools: `skill_load` and `skill_run`, so you can evaluate whether the agent uses Skills correctly with the same tool trajectory evaluator. In practice, `skill_run` results contain volatile fields such as `stdout`, `stderr`, `duration_ms`, and inline `output_files` content. Prefer using `onlyTree` in a per-tool strategy to assert only stable fields such as `skill`, requested `output_files`, and `exit_code` and `timed_out`, letting other volatile keys be ignored.
+Agent Skills inject knowledge through `skill_load` and execute scripts through `workspace_exec`, so you can evaluate whether the agent uses Skills correctly with the same tool trajectory evaluator. In practice, `workspace_exec` results contain volatile fields such as `stdout`, `stderr`, `duration_ms`, and inline file content. Prefer using `onlyTree` in a per-tool strategy to assert only stable fields (for example `command`, `exit_code`, `timed_out`), letting other volatile keys be ignored.
 
 A minimal example is shown below.
 
@@ -3203,12 +3205,9 @@ EvalSet `tools` snippet:
     },
     {
       "id": "tool_use_2",
-      "name": "skill_run",
+      "name": "workspace_exec",
       "arguments": {
-        "skill": "write-ok",
-        "output_files": [
-          "out/ok.txt"
-        ]
+        "command": "bash skills/write-ok/scripts/run.sh"
       },
       "result": {
         "exit_code": 0,
@@ -3242,11 +3241,10 @@ Metric `toolTrajectory` snippet:
               "ignore": true
             }
           },
-          "skill_run": {
+          "workspace_exec": {
             "arguments": {
               "onlyTree": {
-                "skill": true,
-                "output_files": true
+                "command": true
               },
               "matchStrategy": "exact"
             },

@@ -90,6 +90,20 @@ func WithMemoryService(service memory.Service) Option {
 	}
 }
 
+// WithSessionIngestor sets the session ingestor that receives completed
+// session transcripts for ingestion into an external long-term memory
+// platform.
+//
+// The name is intentionally scoped to "Session" because today the contract
+// only operates on completed session transcripts. Keeping the option name
+// specific leaves room for additional ingestor flavours (e.g. event-level
+// or user-level) without overloading a single option.
+func WithSessionIngestor(ingestor session.Ingestor) Option {
+	return func(opts *Options) {
+		opts.ingestor = ingestor
+	}
+}
+
 // WithArtifactService sets the artifact service to use.
 func WithArtifactService(service artifact.Service) Option {
 	return func(opts *Options) {
@@ -209,6 +223,7 @@ type runner struct {
 	agentFactories   map[string]AgentFactory
 	sessionService   session.Service
 	memoryService    memory.Service
+	ingestor         session.Ingestor
 	artifactService  artifact.Service
 	evolutionService evolution.Service
 	pluginManager    agent.PluginManager
@@ -234,6 +249,7 @@ type runHandle struct {
 type Options struct {
 	sessionService   session.Service
 	memoryService    memory.Service
+	ingestor         session.Ingestor
 	artifactService  artifact.Service
 	evolutionService evolution.Service
 	agents           map[string]agent.Agent
@@ -285,6 +301,7 @@ func NewRunner(appName string, ag agent.Agent, opts ...Option) Runner {
 		agentFactories:      options.agentFactories,
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
+		ingestor:            options.ingestor,
 		artifactService:     options.artifactService,
 		evolutionService:    options.evolutionService,
 		pluginManager:       pm,
@@ -336,6 +353,7 @@ func NewRunnerWithAgentFactory(
 		agentFactories:      options.agentFactories,
 		sessionService:      options.sessionService,
 		memoryService:       options.memoryService,
+		ingestor:            options.ingestor,
 		artifactService:     options.artifactService,
 		evolutionService:    options.evolutionService,
 		pluginManager:       pm,
@@ -1566,6 +1584,9 @@ func (r *runner) emitRunnerCompletion(ctx context.Context, loop *eventLoopContex
 
 	// Enqueue evolution learning job if the evolution service is configured.
 	r.enqueueEvolutionLearningJob(ctx, loop.sess)
+
+	// Enqueue external session ingestion if configured.
+	r.enqueueSessionIngest(ctx, loop.sess, loop.invocation)
 }
 
 func resolveExecutionTraceStatus(loop *eventLoopContext, ctxErr error) trace.TraceStatus {
@@ -2103,4 +2124,44 @@ func (r *runner) enqueueEvolutionLearningJob(ctx context.Context, sess *session.
 		log.DebugfContext(ctx, "Evolution learning job skipped or failed: %v", err)
 		return
 	}
+}
+
+func (r *runner) enqueueSessionIngest(
+	ctx context.Context,
+	sess *session.Session,
+	inv *agent.Invocation,
+) {
+	if r.ingestor == nil || sess == nil {
+		return
+	}
+	opts := r.defaultIngestOptions(sess, inv)
+	if err := r.ingestor.IngestSession(ctx, sess, opts...); err != nil {
+		log.DebugfContext(ctx, "Session ingest skipped or failed: %v", err)
+	}
+}
+
+// defaultIngestOptions builds the per-request ingestion options the runner
+// passes to Ingestor.IngestSession on each turn. The defaults thread the
+// session ID through as run_id and the active invocation's agent name through
+// as agent_id, giving downstream backends (e.g. mem0) natural grouping keys
+// without requiring callers to construct options manually.
+func (r *runner) defaultIngestOptions(
+	sess *session.Session,
+	inv *agent.Invocation,
+) []session.IngestOption {
+	var opts []session.IngestOption
+	if sess != nil && sess.ID != "" {
+		opts = append(opts, session.WithIngestRunID(sess.ID))
+	}
+	agentName := ""
+	if inv != nil {
+		agentName = inv.AgentName
+	}
+	if agentName == "" {
+		agentName = r.defaultAgentName
+	}
+	if agentName != "" {
+		opts = append(opts, session.WithIngestAgentID(agentName))
+	}
+	return opts
 }
