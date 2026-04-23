@@ -288,6 +288,14 @@ func buildRequestProcessorsWithAgent(a *LLMAgent, options *Options) []flow.Reque
 			),
 		)
 	}
+	if options.MaxOverviewSkills > 0 {
+		skillsOpts = append(
+			skillsOpts,
+			processor.WithMaxOverviewSkills(
+				options.MaxOverviewSkills,
+			),
+		)
+	}
 	if options.SkillsLoadedContentInToolResults {
 		skillsOpts = append(
 			skillsOpts,

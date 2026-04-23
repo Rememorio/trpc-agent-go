@@ -368,6 +368,19 @@ type Options struct {
 	// When <= 0, no cap is applied (default behavior).
 	MaxLoadedSkills int
 
+	// MaxOverviewSkills caps how many skill summaries (name + full
+	// description) are rendered into the system-prompt overview.
+	//
+	// When > 0 and the repository exposes more than this many skills,
+	// only the first N are rendered with descriptions; the remaining
+	// skill names are listed as a compact tail so the agent can still
+	// discover them via skill_load.
+	//
+	// When <= 0, no cap is applied (default behavior) and every skill
+	// summary is rendered. Use this to bound the per-invocation prompt
+	// budget when the managed-skill library grows large.
+	MaxOverviewSkills int
+
 	// SkillsLoadedContentInToolResults controls where loaded skill bodies
 	// and selected docs are materialized.
 	//
@@ -712,6 +725,24 @@ func WithSkillLoadMode(mode string) Option {
 func WithMaxLoadedSkills(max int) Option {
 	return func(opts *Options) {
 		opts.MaxLoadedSkills = max
+	}
+}
+
+// WithMaxOverviewSkills caps how many skill summaries are rendered
+// into the system-prompt overview with full descriptions.
+//
+// When max <= 0, no cap is applied (default behavior). When max > 0
+// and the repository exposes more than max skills, only the first max
+// summaries are rendered fully; the remaining skill names are listed
+// as a compact, comma-separated tail so the agent can still load them
+// on demand via skill_load.
+//
+// Use this to bound the per-invocation prompt budget when the managed-
+// skill library grows large enough to push the request close to the
+// model's context window.
+func WithMaxOverviewSkills(max int) Option {
+	return func(opts *Options) {
+		opts.MaxOverviewSkills = max
 	}
 }
 

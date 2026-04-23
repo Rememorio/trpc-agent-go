@@ -13,7 +13,6 @@ import (
 	"context"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
-	"trpc.group/trpc-go/trpc-agent-go/session"
 )
 
 // service is the default Service implementation backed by an async Worker.
@@ -45,22 +44,23 @@ func NewService(reviewModel model.Model, opts ...Option) Service {
 	}
 
 	w := NewWorker(WorkerConfig{
-		Reviewer:      reviewer,
-		Publisher:     publisher,
-		Policy:        o.policy,
-		SkillRepo:     o.skillRepo,
-		MemoryService: o.memoryService,
-		WorkerNum:     o.workerNum,
-		QueueSize:     o.queueSize,
+		Reviewer:                  reviewer,
+		Publisher:                 publisher,
+		Policy:                    o.policy,
+		SkillRepo:                 o.skillRepo,
+		WorkerNum:                 o.workerNum,
+		QueueSize:                 o.queueSize,
+		ExistingSkillBodyMaxChars: o.existingSkillBodyMaxChars,
 	})
 	w.Start()
 
 	return &service{worker: w}
 }
 
-// EnqueueLearningJob implements Service.
-func (s *service) EnqueueLearningJob(ctx context.Context, sess *session.Session) error {
-	return s.worker.Enqueue(ctx, sess)
+// EnqueueLearningJob implements Service. The job carries the session to
+// review and an optional Outcome describing the evaluator verdict.
+func (s *service) EnqueueLearningJob(ctx context.Context, job LearningJob) error {
+	return s.worker.Enqueue(ctx, job)
 }
 
 // Close implements Service.

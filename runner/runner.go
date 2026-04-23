@@ -2090,12 +2090,16 @@ func (r *runner) enqueueAutoMemoryJob(ctx context.Context, sess *session.Session
 }
 
 // enqueueEvolutionLearningJob triggers evolution extraction if the evolution
-// service is configured.
+// service is configured. The runner-driven hook submits the session
+// without an Outcome (online services have no evaluator); benchmark
+// runners and RLHF pipelines that DO have an evaluator should attach
+// the service themselves and call EnqueueLearningJob with a populated
+// Outcome instead of relying on this hook.
 func (r *runner) enqueueEvolutionLearningJob(ctx context.Context, sess *session.Session) {
 	if r.evolutionService == nil || sess == nil {
 		return
 	}
-	if err := r.evolutionService.EnqueueLearningJob(ctx, sess); err != nil {
+	if err := r.evolutionService.EnqueueLearningJob(ctx, evolution.LearningJob{Session: sess}); err != nil {
 		log.DebugfContext(ctx, "Evolution learning job skipped or failed: %v", err)
 		return
 	}

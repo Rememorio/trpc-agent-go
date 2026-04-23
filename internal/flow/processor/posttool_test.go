@@ -53,6 +53,8 @@ func TestPostToolRequestProcessor_WithToolResults_DefaultPrompt(t *testing.T) {
 	assert.Contains(t, req.Messages[0].Content, "You are helpful.")
 	assert.Contains(t, req.Messages[0].Content, "[Tool Prompt]")
 	assert.Contains(t, req.Messages[0].Content, "Analyze the tool result")
+	assert.Contains(t, req.Messages[0].Content, "Do NOT call the same data-fetch tool")
+	assert.Contains(t, req.Messages[0].Content, "required artifact is still missing")
 }
 
 func TestPostToolRequestProcessor_IgnoresHistoricalToolResults(t *testing.T) {
@@ -102,6 +104,7 @@ func TestPostToolRequestProcessor_WithCompactedToolResultsState(t *testing.T) {
 	require.Len(t, req.Messages, 2)
 	assert.Contains(t, req.Messages[0].Content, "[Tool Prompt]")
 	assert.Contains(t, req.Messages[0].Content, "Analyze the tool result")
+	assert.Contains(t, req.Messages[0].Content, "Reuse successful tool results you already have")
 }
 
 func TestPostToolRequestProcessor_WithToolResults_CustomPrompt(t *testing.T) {

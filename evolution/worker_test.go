@@ -11,6 +11,7 @@ package evolution
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -19,11 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
-	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
 // --- mocks ---
@@ -43,9 +42,11 @@ func (m *mockReviewer) Review(_ context.Context, _ *ReviewInput) (*ReviewDecisio
 }
 
 type mockPublisher struct {
-	mu     sync.Mutex
-	skills []*SkillSpec
-	err    error
+	mu        sync.Mutex
+	skills    []*SkillSpec
+	deletions []string
+	err       error
+	deleteErr error
 }
 
 func (m *mockPublisher) UpsertSkill(_ context.Context, spec *SkillSpec) error {
@@ -58,47 +59,34 @@ func (m *mockPublisher) UpsertSkill(_ context.Context, spec *SkillSpec) error {
 	return nil
 }
 
-type mockMemoryService struct {
-	mu    sync.Mutex
-	added []string
-}
-
-func (m *mockMemoryService) AddMemory(_ context.Context, _ memory.UserKey, mem string, _ []string, _ ...memory.AddOption) error {
+func (m *mockPublisher) DeleteSkill(_ context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.added = append(m.added, mem)
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletions = append(m.deletions, name)
 	return nil
 }
-
-// Stubs for the rest of memory.Service.
-func (m *mockMemoryService) UpdateMemory(context.Context, memory.Key, string, []string, ...memory.UpdateOption) error {
-	return nil
-}
-func (m *mockMemoryService) DeleteMemory(context.Context, memory.Key) error { return nil }
-func (m *mockMemoryService) ClearMemories(context.Context, memory.UserKey) error {
-	return nil
-}
-func (m *mockMemoryService) ReadMemories(context.Context, memory.UserKey, int) ([]*memory.Entry, error) {
-	return nil, nil
-}
-func (m *mockMemoryService) SearchMemories(context.Context, memory.UserKey, string, ...memory.SearchOption) ([]*memory.Entry, error) {
-	return nil, nil
-}
-func (m *mockMemoryService) Tools() []tool.Tool { return nil }
-func (m *mockMemoryService) EnqueueAutoMemoryJob(context.Context, *session.Session) error {
-	return nil
-}
-func (m *mockMemoryService) Close() error { return nil }
 
 type mockSkillRepo struct {
 	summaries []skill.Summary
+	bodies    map[string]string // name -> body; missing names → Get returns error
 	refreshed int
 	mu        sync.Mutex
 }
 
-func (m *mockSkillRepo) Summaries() []skill.Summary       { return m.summaries }
-func (m *mockSkillRepo) Get(string) (*skill.Skill, error) { return nil, nil }
-func (m *mockSkillRepo) Path(string) (string, error)      { return "", nil }
+func (m *mockSkillRepo) Summaries() []skill.Summary { return m.summaries }
+func (m *mockSkillRepo) Get(name string) (*skill.Skill, error) {
+	if body, ok := m.bodies[name]; ok {
+		return &skill.Skill{
+			Summary: skill.Summary{Name: name},
+			Body:    body,
+		}, nil
+	}
+	return nil, fmt.Errorf("skill %q not found", name)
+}
+func (m *mockSkillRepo) Path(string) (string, error) { return "", nil }
 func (m *mockSkillRepo) Refresh() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -129,7 +117,7 @@ func TestWorker_ProcessJob_NoMessages(t *testing.T) {
 	w := NewWorker(WorkerConfig{Reviewer: rev})
 
 	sess := newTestSession()
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	rev.mu.Lock()
 	assert.Equal(t, 0, rev.calls, "reviewer should not be called when no messages")
@@ -145,7 +133,7 @@ func TestWorker_ProcessJob_PolicyRejects(t *testing.T) {
 		model.Message{Role: model.RoleUser, Content: "hi"},
 		model.Message{Role: model.RoleAssistant, Content: "hello"},
 	)
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	rev.mu.Lock()
 	assert.Equal(t, 0, rev.calls, "reviewer should not be called when policy rejects")
@@ -181,7 +169,7 @@ func TestWorker_ProcessJob_SkillWrittenAndRefreshed(t *testing.T) {
 		model.Message{Role: model.RoleAssistant, Content: "sure"},
 	)
 
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	pub.mu.Lock()
 	require.Len(t, pub.skills, 1)
@@ -191,34 +179,6 @@ func TestWorker_ProcessJob_SkillWrittenAndRefreshed(t *testing.T) {
 	repo.mu.Lock()
 	assert.Equal(t, 1, repo.refreshed, "repo should be refreshed after writing skill")
 	repo.mu.Unlock()
-}
-
-func TestWorker_ProcessJob_FactsGoToMemory(t *testing.T) {
-	memSvc := &mockMemoryService{}
-	rev := &mockReviewer{
-		decision: &ReviewDecision{
-			Facts: []*FactEntry{
-				{Memory: "user prefers dark mode", Topics: []string{"preferences"}},
-			},
-		},
-	}
-	w := NewWorker(WorkerConfig{
-		Reviewer:      rev,
-		Policy:        alwaysPolicy{},
-		MemoryService: memSvc,
-	})
-
-	sess := newTestSession()
-	addEvents(sess,
-		model.Message{Role: model.RoleUser, Content: "I prefer dark mode"},
-		model.Message{Role: model.RoleAssistant, Content: "noted"},
-	)
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
-
-	memSvc.mu.Lock()
-	require.Len(t, memSvc.added, 1)
-	assert.Equal(t, "user prefers dark mode", memSvc.added[0])
-	memSvc.mu.Unlock()
 }
 
 func TestWorker_ProcessJob_SkipReason(t *testing.T) {
@@ -237,7 +197,7 @@ func TestWorker_ProcessJob_SkipReason(t *testing.T) {
 		model.Message{Role: model.RoleUser, Content: "hello"},
 		model.Message{Role: model.RoleAssistant, Content: "hi"},
 	)
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	pub.mu.Lock()
 	assert.Empty(t, pub.skills, "should not publish when skip_reason is set")
@@ -256,7 +216,7 @@ func TestWorker_ProcessJob_SkipsWhenSkillWritesDetected(t *testing.T) {
 		model.Message{Role: model.RoleUser, Content: "create a skill"},
 		model.Message{Role: model.RoleAssistant, Content: "I wrote SKILL.md for you"},
 	)
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	rev.mu.Lock()
 	assert.Equal(t, 0, rev.calls, "reviewer should be skipped when assistant already wrote SKILL.md")
@@ -284,7 +244,7 @@ func TestWorker_ProcessJob_SkipsWhenStructuredSkillWriteDetected(t *testing.T) {
 			}},
 		},
 	)
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	rev.mu.Lock()
 	assert.Equal(t, 0, rev.calls, "reviewer should be skipped when a tool call writes SKILL.md")
@@ -311,7 +271,7 @@ func TestWorker_AsyncEnqueue(t *testing.T) {
 		model.Message{Role: model.RoleUser, Content: "do it"},
 		model.Message{Role: model.RoleAssistant, Content: "done"},
 	)
-	err := w.Enqueue(context.Background(), sess)
+	err := w.Enqueue(context.Background(), LearningJob{Session: sess})
 	require.NoError(t, err)
 
 	// Wait for async processing.
@@ -353,7 +313,7 @@ func TestWorker_DeltaScan_Incremental(t *testing.T) {
 		}}},
 	})
 
-	w.processJob(&LearningJob{Ctx: context.Background(), Session: sess})
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
 
 	rev.mu.Lock()
 	assert.Equal(t, 1, rev.calls, "reviewer should see only the new delta")
@@ -475,7 +435,414 @@ func TestScanDelta_TranscriptIncludesToolMessagesAndCalls(t *testing.T) {
 	assert.Equal(t, "workspace_exec", ctx.Transcript[1].ToolName)
 }
 
+func TestWorker_ApplyDecision_UpdateExistingSkill(t *testing.T) {
+	pub := &mockPublisher{}
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Existing", Description: "old"}},
+		bodies:    map[string]string{"Existing": "body"},
+	}
+	rev := &mockReviewer{
+		decision: &ReviewDecision{
+			Updates: []*SkillUpdate{{
+				Name: "Existing",
+				NewSpec: &SkillSpec{
+					Name:        "Existing",
+					Description: "new desc",
+					WhenToUse:   "always",
+					Steps:       []string{"do better"},
+				},
+			}},
+		},
+	}
+	w := NewWorker(WorkerConfig{
+		Reviewer:  rev,
+		Publisher: pub,
+		Policy:    alwaysPolicy{},
+		SkillRepo: repo,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "improve"},
+		model.Message{Role: model.RoleAssistant, Content: "ok"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	pub.mu.Lock()
+	require.Len(t, pub.skills, 1, "update should call UpsertSkill")
+	assert.Equal(t, "Existing", pub.skills[0].Name)
+	assert.Equal(t, "new desc", pub.skills[0].Description)
+	pub.mu.Unlock()
+
+	repo.mu.Lock()
+	assert.Equal(t, 1, repo.refreshed, "repo should refresh after update")
+	repo.mu.Unlock()
+}
+
+func TestWorker_ApplyDecision_UpdateUnknownSkillIsDropped(t *testing.T) {
+	pub := &mockPublisher{}
+	repo := &mockSkillRepo{} // no skills
+	rev := &mockReviewer{
+		decision: &ReviewDecision{
+			Updates: []*SkillUpdate{{
+				Name: "Ghost",
+				NewSpec: &SkillSpec{
+					Name:        "Ghost",
+					Description: "phantom",
+					WhenToUse:   "never",
+					Steps:       []string{"haunt"},
+				},
+			}},
+		},
+	}
+	w := NewWorker(WorkerConfig{
+		Reviewer:  rev,
+		Publisher: pub,
+		Policy:    alwaysPolicy{},
+		SkillRepo: repo,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	pub.mu.Lock()
+	assert.Empty(t, pub.skills, "unknown update target must not be written")
+	pub.mu.Unlock()
+	repo.mu.Lock()
+	assert.Equal(t, 0, repo.refreshed, "no refresh when no mutation occurred")
+	repo.mu.Unlock()
+}
+
+func TestWorker_ApplyDecision_DeleteExistingSkill(t *testing.T) {
+	pub := &mockPublisher{}
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Stale"}},
+		bodies:    map[string]string{"Stale": "outdated"},
+	}
+	rev := &mockReviewer{
+		decision: &ReviewDecision{Deletions: []string{"Stale"}},
+	}
+	w := NewWorker(WorkerConfig{
+		Reviewer:  rev,
+		Publisher: pub,
+		Policy:    alwaysPolicy{},
+		SkillRepo: repo,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "drop"},
+		model.Message{Role: model.RoleAssistant, Content: "ok"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	pub.mu.Lock()
+	require.Equal(t, []string{"Stale"}, pub.deletions)
+	pub.mu.Unlock()
+	repo.mu.Lock()
+	assert.Equal(t, 1, repo.refreshed)
+	repo.mu.Unlock()
+}
+
+func TestWorker_ApplyDecision_DeleteUnknownIsIdempotent(t *testing.T) {
+	pub := &mockPublisher{}
+	repo := &mockSkillRepo{} // no skills
+	rev := &mockReviewer{
+		decision: &ReviewDecision{Deletions: []string{"Phantom"}},
+	}
+	w := NewWorker(WorkerConfig{
+		Reviewer:  rev,
+		Publisher: pub,
+		Policy:    alwaysPolicy{},
+		SkillRepo: repo,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "drop"},
+		model.Message{Role: model.RoleAssistant, Content: "ok"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	pub.mu.Lock()
+	assert.Empty(t, pub.deletions)
+	pub.mu.Unlock()
+	repo.mu.Lock()
+	assert.Equal(t, 0, repo.refreshed)
+	repo.mu.Unlock()
+}
+
+func TestWorker_ProcessJob_ForwardsOutcomeToReviewer(t *testing.T) {
+	rev := &capturingReviewer{}
+	w := NewWorker(WorkerConfig{
+		Reviewer: rev,
+		Policy:   alwaysPolicy{},
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+
+	score := 0.0
+	want := &Outcome{
+		Status:    OutcomeFail,
+		Score:     &score,
+		Notes:     "missing economic_snapshot.json",
+		Evaluator: "skillcraft",
+	}
+	w.processJob(&pendingJob{
+		ctx: context.Background(),
+		job: LearningJob{Session: sess, Outcome: want},
+	})
+
+	got := rev.snapshot()
+	require.NotNil(t, got)
+	require.NotNil(t, got.Outcome, "outcome must be forwarded to reviewer")
+	assert.Equal(t, want, got.Outcome)
+}
+
+func TestWorker_Enqueue_ForwardsOutcomeViaAsyncQueue(t *testing.T) {
+	rev := &capturingReviewer{}
+	w := NewWorker(WorkerConfig{
+		Reviewer: rev,
+		Policy:   alwaysPolicy{},
+	})
+	w.Start()
+	defer w.Stop()
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+
+	want := &Outcome{Status: OutcomePartial, Notes: "wrong indicator code"}
+	require.NoError(t, w.Enqueue(context.Background(), LearningJob{
+		Session: sess,
+		Outcome: want,
+	}))
+
+	require.Eventually(t, func() bool {
+		return rev.snapshot() != nil
+	}, 5*time.Second, 25*time.Millisecond)
+
+	got := rev.snapshot()
+	require.NotNil(t, got.Outcome)
+	assert.Equal(t, OutcomePartial, got.Outcome.Status)
+	assert.Equal(t, "wrong indicator code", got.Outcome.Notes)
+}
+
+func TestWorker_ProcessJob_RedactsSecretsBeforeReviewer(t *testing.T) {
+	rev := &capturingReviewer{}
+	w := NewWorker(WorkerConfig{
+		Reviewer: rev,
+		Policy:   alwaysPolicy{},
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{
+			Role:    model.RoleUser,
+			Content: "OPENAI_API_KEY=sk-top-secret",
+		},
+		model.Message{
+			Role: model.RoleAssistant,
+			ToolCalls: []model.ToolCall{{
+				Type: "function",
+				Function: model.FunctionDefinitionParam{
+					Name:      "workspace_exec",
+					Arguments: []byte(`{"token":"abc1234567890"}`),
+				},
+			}},
+		},
+		model.Message{
+			Role:     model.RoleTool,
+			ToolName: "workspace_exec",
+			Content:  "Authorization: Bearer abc1234567890",
+		},
+	)
+
+	w.processJob(&pendingJob{
+		ctx: context.Background(),
+		job: LearningJob{
+			Session: sess,
+			Outcome: &Outcome{Status: OutcomeFail, Notes: "api_key=sk-top-secret"},
+		},
+	})
+
+	got := rev.snapshot()
+	require.NotNil(t, got)
+	require.Len(t, got.Transcript, 3)
+	assert.NotContains(t, got.Transcript[0].Content, "sk-top-secret")
+	assert.NotContains(t, got.Transcript[1].ToolCalls[0].Arguments, "abc1234567890")
+	assert.NotContains(t, got.Transcript[2].Content, "abc1234567890")
+	require.NotNil(t, got.Outcome)
+	assert.NotContains(t, got.Outcome.Notes, "sk-top-secret")
+	assert.Contains(t, got.Outcome.Notes, reviewerRedactedValue)
+}
+
+func TestWorker_ProcessJob_ForwardsExistingSkillsWithBodyExcerpt(t *testing.T) {
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Known", Description: "desc"}},
+		bodies:    map[string]string{"Known": "full body content"},
+	}
+	rev := &capturingReviewer{}
+	w := NewWorker(WorkerConfig{
+		Reviewer:  rev,
+		Policy:    alwaysPolicy{},
+		SkillRepo: repo,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	in := rev.snapshot()
+	require.NotNil(t, in)
+	require.Len(t, in.ExistingSkills, 1)
+	got := in.ExistingSkills[0]
+	assert.Equal(t, "Known", got.Name)
+	assert.Equal(t, "desc", got.Description)
+	// Default budget is large enough to fit the short body verbatim.
+	assert.Equal(t, "full body content", got.BodyExcerpt)
+}
+
+func TestWorker_ProcessJob_TruncatesBodyExcerptToConfiguredBudget(t *testing.T) {
+	const longBody = "step 1: do a long thing\nstep 2: do another long thing\nstep 3: save"
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Known", Description: "desc"}},
+		bodies:    map[string]string{"Known": longBody},
+	}
+	rev := &capturingReviewer{}
+	w := NewWorker(WorkerConfig{
+		Reviewer:                  rev,
+		Policy:                    alwaysPolicy{},
+		SkillRepo:                 repo,
+		ExistingSkillBodyMaxChars: 30,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	in := rev.snapshot()
+	require.NotNil(t, in)
+	require.Len(t, in.ExistingSkills, 1)
+	got := in.ExistingSkills[0]
+	assert.LessOrEqual(t, len(got.BodyExcerpt), 30,
+		"body excerpt must respect the configured budget")
+	assert.Contains(t, got.BodyExcerpt, "[truncated]",
+		"truncation marker must be present")
+	assert.Contains(t, got.BodyExcerpt, "step 1",
+		"head of the body must be preserved")
+}
+
+func TestWorker_ProcessJob_OmitsBodyWhenBudgetIsNegative(t *testing.T) {
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Known", Description: "desc"}},
+		bodies:    map[string]string{"Known": "full body content"},
+	}
+	rev := &capturingReviewer{}
+	w := NewWorker(WorkerConfig{
+		Reviewer:                  rev,
+		Policy:                    alwaysPolicy{},
+		SkillRepo:                 repo,
+		ExistingSkillBodyMaxChars: -1,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	in := rev.snapshot()
+	require.NotNil(t, in)
+	require.Len(t, in.ExistingSkills, 1)
+	got := in.ExistingSkills[0]
+	assert.Equal(t, "", got.BodyExcerpt,
+		"negative budget must opt out of body loading entirely")
+}
+
+func TestWorker_ProcessJob_ReconcilerRewritesSupersetCandidate(t *testing.T) {
+	// Reviewer emits a proliferation candidate ("Foo Workflow - 3 Cities")
+	// for a library that already contains "Foo Workflow". The worker
+	// must invoke the reconciler, rewrite the candidate to an `updates`
+	// entry against the existing parent, and the publisher must see one
+	// upsert against the parent name (not the suffixed candidate name).
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Foo Workflow", Description: "shared"}},
+		bodies:    map[string]string{"Foo Workflow": "step 1: do thing"},
+	}
+	rev := &mockReviewer{decision: &ReviewDecision{
+		Skills: []*SkillSpec{{
+			Name:        "Foo Workflow - 3 Cities",
+			Description: "specific to 3 cities",
+			WhenToUse:   "when there are 3 cities",
+			Steps:       []string{"a", "b", "c"},
+		}},
+	}}
+	pub := &mockPublisher{}
+	w := NewWorker(WorkerConfig{
+		Reviewer:  rev,
+		Policy:    alwaysPolicy{},
+		SkillRepo: repo,
+		Publisher: pub,
+	})
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "go"},
+		model.Message{Role: model.RoleAssistant, Content: "done"},
+	)
+	w.processJob(&pendingJob{ctx: context.Background(), job: LearningJob{Session: sess}})
+
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	require.Len(t, pub.skills, 1, "exactly one upsert should reach the publisher")
+	assert.Equal(t, "Foo Workflow", pub.skills[0].Name,
+		"reconciler must redirect the upsert to the existing parent's name, "+
+			"not the proliferation suffix")
+	// Body content should still come from the candidate's spec — only
+	// the name moves.
+	assert.Equal(t, "specific to 3 cities", pub.skills[0].Description)
+}
+
 // --- test helpers ---
+
+// capturingReviewer is a Reviewer that records the last input it received.
+// All access goes through mu so the async-enqueue tests do not race on
+// the recorded input pointer.
+type capturingReviewer struct {
+	mu    sync.Mutex
+	input *ReviewInput
+}
+
+func (c *capturingReviewer) Review(_ context.Context, in *ReviewInput) (*ReviewDecision, error) {
+	c.mu.Lock()
+	c.input = in
+	c.mu.Unlock()
+	return &ReviewDecision{}, nil
+}
+
+func (c *capturingReviewer) snapshot() *ReviewInput {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.input
+}
 
 // alwaysPolicy is a Policy that always triggers review.
 type alwaysPolicy struct{}

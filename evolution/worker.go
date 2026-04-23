@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"trpc.group/trpc-go/trpc-agent-go/log"
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
@@ -28,36 +27,66 @@ const (
 	DefaultWorkerNum  = 1
 	DefaultQueueSize  = 10
 	DefaultJobTimeout = 60 * time.Second
+
+	// DefaultExistingSkillBodyMaxChars caps the body excerpt the worker
+	// loads per existing skill before handing the list to the reviewer.
+	// Picked so a library of ~50 skills still fits comfortably in a
+	// 32K-token reviewer prompt; bump it for libraries with longer
+	// SKILL.md files or shrink it (or set 0) to disable bodies.
+	DefaultExistingSkillBodyMaxChars = 600
 )
 
 // Worker manages async evolution workers.
+//
+// Worker only manages reusable skills (create/update/delete via
+// Publisher and skill.Repository). Durable fact memory is intentionally
+// out of scope: it is owned by `memory.Service` + the auto-memory
+// extractor (memory/<backend>.WithExtractor), so users get a single,
+// dedup-aware fact pipeline instead of two competing writers against
+// the same backend.
 type Worker struct {
-	reviewer      Reviewer
-	publisher     Publisher
-	policy        Policy
-	skillRepo     skill.Repository
-	memoryService memory.Service
+	reviewer  Reviewer
+	publisher Publisher
+	policy    Policy
+	skillRepo skill.Repository
 
-	workerNum  int
-	queueSize  int
-	jobTimeout time.Duration
+	workerNum                 int
+	queueSize                 int
+	jobTimeout                time.Duration
+	existingSkillBodyMaxChars int
 
-	jobChans []chan *LearningJob
+	jobChans []chan *pendingJob
 	wg       sync.WaitGroup
 	mu       sync.RWMutex
 	started  bool
 }
 
+// pendingJob is the internal queue item: a public LearningJob plus the
+// per-job context snapshot. We snapshot the context with WithoutCancel so
+// the reviewer is not cancelled when the request that triggered the
+// enqueue completes (online services typically tear down the request
+// context immediately after returning to the user).
+type pendingJob struct {
+	ctx context.Context
+	job LearningJob
+}
+
 // WorkerConfig holds configuration for the Worker.
 type WorkerConfig struct {
-	Reviewer      Reviewer
-	Publisher     Publisher
-	Policy        Policy
-	SkillRepo     skill.Repository
-	MemoryService memory.Service
-	WorkerNum     int
-	QueueSize     int
-	JobTimeout    time.Duration
+	Reviewer   Reviewer
+	Publisher  Publisher
+	Policy     Policy
+	SkillRepo  skill.Repository
+	WorkerNum  int
+	QueueSize  int
+	JobTimeout time.Duration
+
+	// ExistingSkillBodyMaxChars caps the body excerpt the worker loads
+	// per existing skill before sending the library snapshot to the
+	// reviewer. Zero means "use DefaultExistingSkillBodyMaxChars"; a
+	// negative value means "do not include bodies at all" (description
+	// only — the pre-P1 behavior).
+	ExistingSkillBodyMaxChars int
 }
 
 // NewWorker creates a new Worker.
@@ -74,15 +103,19 @@ func NewWorker(cfg WorkerConfig) *Worker {
 	if cfg.Policy == nil {
 		cfg.Policy = DefaultPolicy{}
 	}
+	bodyMax := cfg.ExistingSkillBodyMaxChars
+	if bodyMax == 0 {
+		bodyMax = DefaultExistingSkillBodyMaxChars
+	}
 	return &Worker{
-		reviewer:      cfg.Reviewer,
-		publisher:     cfg.Publisher,
-		policy:        cfg.Policy,
-		skillRepo:     cfg.SkillRepo,
-		memoryService: cfg.MemoryService,
-		workerNum:     cfg.WorkerNum,
-		queueSize:     cfg.QueueSize,
-		jobTimeout:    cfg.JobTimeout,
+		reviewer:                  cfg.Reviewer,
+		publisher:                 cfg.Publisher,
+		policy:                    cfg.Policy,
+		skillRepo:                 cfg.SkillRepo,
+		workerNum:                 cfg.WorkerNum,
+		queueSize:                 cfg.QueueSize,
+		jobTimeout:                cfg.JobTimeout,
+		existingSkillBodyMaxChars: bodyMax,
 	}
 }
 
@@ -93,16 +126,16 @@ func (w *Worker) Start() {
 	if w.started || w.reviewer == nil {
 		return
 	}
-	w.jobChans = make([]chan *LearningJob, w.workerNum)
+	w.jobChans = make([]chan *pendingJob, w.workerNum)
 	for i := range w.jobChans {
-		w.jobChans[i] = make(chan *LearningJob, w.queueSize)
+		w.jobChans[i] = make(chan *pendingJob, w.queueSize)
 	}
 	w.wg.Add(w.workerNum)
 	for _, ch := range w.jobChans {
-		go func(ch chan *LearningJob) {
+		go func(ch chan *pendingJob) {
 			defer w.wg.Done()
-			for job := range ch {
-				w.processJob(job)
+			for item := range ch {
+				w.processJob(item)
 			}
 		}(ch)
 	}
@@ -126,32 +159,37 @@ func (w *Worker) Stop() {
 
 // Enqueue adds a learning job to the async queue. It falls back to synchronous
 // processing when the queue is full or the worker has not been started.
-func (w *Worker) Enqueue(ctx context.Context, sess *session.Session) error {
-	if w.reviewer == nil || sess == nil {
+//
+// The caller's context is snapshotted with WithoutCancel before the job is
+// queued so the reviewer continues to run even after the originating
+// request context is torn down. Outcome (when set) is forwarded verbatim
+// to the reviewer prompt.
+func (w *Worker) Enqueue(ctx context.Context, job LearningJob) error {
+	if w.reviewer == nil || job.Session == nil {
 		return nil
 	}
 
-	job := &LearningJob{
-		Ctx:     context.WithoutCancel(ctx),
-		Session: sess,
+	item := &pendingJob{
+		ctx: context.WithoutCancel(ctx),
+		job: job,
 	}
 
-	if w.tryEnqueue(ctx, sess, job) {
+	if w.tryEnqueue(ctx, job.Session, item) {
 		return nil
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
 	log.DebugfContext(ctx, "evolution: queue full, processing synchronously for session %s",
-		sess.ID)
+		job.Session.ID)
 	syncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.jobTimeout)
 	defer cancel()
-	job.Ctx = syncCtx
-	w.processJob(job)
+	item.ctx = syncCtx
+	w.processJob(item)
 	return nil
 }
 
-func (w *Worker) tryEnqueue(ctx context.Context, sess *session.Session, job *LearningJob) bool {
+func (w *Worker) tryEnqueue(ctx context.Context, sess *session.Session, item *pendingJob) bool {
 	if ctx.Err() != nil {
 		return false
 	}
@@ -162,21 +200,21 @@ func (w *Worker) tryEnqueue(ctx context.Context, sess *session.Session, job *Lea
 	}
 	idx := hashSession(sess) % len(w.jobChans)
 	select {
-	case w.jobChans[idx] <- job:
+	case w.jobChans[idx] <- item:
 		return true
 	default:
 		return false
 	}
 }
 
-func (w *Worker) processJob(job *LearningJob) {
+func (w *Worker) processJob(item *pendingJob) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.ErrorfContext(context.Background(), "evolution: panic in worker: %v", r)
 		}
 	}()
 
-	ctx := job.Ctx
+	ctx := item.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -184,7 +222,7 @@ func (w *Worker) processJob(job *LearningJob) {
 	ctx, cancel = context.WithTimeout(ctx, w.jobTimeout)
 	defer cancel()
 
-	sess := job.Session
+	sess := item.job.Session
 
 	since := readLastReviewAt(sess)
 	latestTs, reviewCtx := scanDelta(sess, since)
@@ -202,14 +240,16 @@ func (w *Worker) processJob(job *LearningJob) {
 		return
 	}
 
-	decision, err := w.reviewer.Review(ctx, &ReviewInput{
+	existing := loadExistingSkills(w.skillRepo, w.existingSkillBodyMaxChars)
+	decision, err := w.reviewer.Review(ctx, sanitizeReviewInput(&ReviewInput{
 		AppName:        sess.AppName,
 		UserID:         sess.UserID,
 		SessionID:      sess.ID,
 		Messages:       reviewCtx.Messages,
 		Transcript:     reviewCtx.Transcript,
-		ExistingSkills: existingSkillSummaries(w.skillRepo),
-	})
+		ExistingSkills: existing,
+		Outcome:        item.job.Outcome,
+	}))
 	if err != nil {
 		log.WarnfContext(ctx, "evolution: review failed for session %s: %v", sess.ID, err)
 		return
@@ -219,51 +259,115 @@ func (w *Worker) processJob(job *LearningJob) {
 		return
 	}
 
-	w.applyDecision(ctx, sess, decision)
+	// Deterministic library-aware fixes after the LLM produced its raw
+	// decision: strict-name-superset rewrites and intra-batch dedup.
+	// These are pure string-shape rules and stay safe to enable
+	// unconditionally (see reconcile.go for the rule set).
+	decision, events := reconcileWithLibrary(decision, existing)
+	for _, e := range events {
+		log.InfofContext(ctx,
+			"evolution: reconciler %s candidate=%q target=%q reason=%s",
+			e.Kind, e.Original, e.Target, e.Reason)
+	}
+
+	w.applyDecision(ctx, decision)
 	writeLastReviewAt(sess, latestTs)
 }
 
-func (w *Worker) applyDecision(
-	ctx context.Context,
-	sess *session.Session,
-	decision *ReviewDecision,
-) {
-	for _, fact := range decision.Facts {
-		if w.memoryService == nil {
-			continue
-		}
-		userKey := memory.UserKey{
-			AppName: sess.AppName,
-			UserID:  sess.UserID,
-		}
-		var opts []memory.AddOption
-		if fact.Metadata != nil {
-			opts = append(opts, memory.WithMetadata(fact.Metadata))
-		}
-		if err := w.memoryService.AddMemory(ctx, userKey, fact.Memory, fact.Topics, opts...); err != nil {
-			log.WarnfContext(ctx, "evolution: add memory failed for session %s: %v", sess.ID, err)
-		}
+func (w *Worker) applyDecision(ctx context.Context, decision *ReviewDecision) {
+	mutated := false
+	if w.applySkills(ctx, decision.Skills) {
+		mutated = true
+	}
+	if w.applyUpdates(ctx, decision.Updates) {
+		mutated = true
+	}
+	if w.applyDeletions(ctx, decision.Deletions) {
+		mutated = true
 	}
 
-	wroteSkill := false
-	for _, spec := range decision.Skills {
-		if w.publisher == nil {
+	if !mutated {
+		return
+	}
+	refreshable, ok := w.skillRepo.(skill.RefreshableRepository)
+	if !ok {
+		return
+	}
+	if err := refreshable.Refresh(); err != nil {
+		log.WarnfContext(ctx, "evolution: skill repo refresh failed: %v", err)
+	}
+}
+
+func (w *Worker) applySkills(ctx context.Context, skills []*SkillSpec) bool {
+	if w.publisher == nil {
+		return false
+	}
+	mutated := false
+	for _, spec := range skills {
+		if spec == nil {
 			continue
 		}
 		if err := w.publisher.UpsertSkill(ctx, spec); err != nil {
 			log.WarnfContext(ctx, "evolution: upsert skill %q failed: %v", spec.Name, err)
 			continue
 		}
-		wroteSkill = true
+		mutated = true
 	}
+	return mutated
+}
 
-	if wroteSkill {
-		if refreshable, ok := w.skillRepo.(skill.RefreshableRepository); ok {
-			if err := refreshable.Refresh(); err != nil {
-				log.WarnfContext(ctx, "evolution: skill repo refresh failed: %v", err)
-			}
-		}
+func (w *Worker) applyUpdates(ctx context.Context, updates []*SkillUpdate) bool {
+	if w.publisher == nil {
+		return false
 	}
+	mutated := false
+	for _, upd := range updates {
+		if upd == nil || upd.NewSpec == nil {
+			continue
+		}
+		if !skillExists(w.skillRepo, upd.Name) {
+			log.WarnfContext(ctx, "evolution: update skill %q skipped: not found in repo", upd.Name)
+			continue
+		}
+		// Force the on-disk directory name to remain stable.
+		upd.NewSpec.Name = upd.Name
+		if err := w.publisher.UpsertSkill(ctx, upd.NewSpec); err != nil {
+			log.WarnfContext(ctx, "evolution: update skill %q failed: %v", upd.Name, err)
+			continue
+		}
+		mutated = true
+	}
+	return mutated
+}
+
+func (w *Worker) applyDeletions(ctx context.Context, names []string) bool {
+	if w.publisher == nil {
+		return false
+	}
+	mutated := false
+	for _, name := range names {
+		if name == "" || !skillExists(w.skillRepo, name) {
+			// Idempotent: nothing to delete (or never existed).
+			continue
+		}
+		if err := w.publisher.DeleteSkill(ctx, name); err != nil {
+			log.WarnfContext(ctx, "evolution: delete skill %q failed: %v", name, err)
+			continue
+		}
+		mutated = true
+	}
+	return mutated
+}
+
+// skillExists reports whether the repo currently contains a skill with the
+// given exact name. A nil repo or empty name returns false so callers
+// reject unknown targets safely.
+func skillExists(repo skill.Repository, name string) bool {
+	if repo == nil || strings.TrimSpace(name) == "" {
+		return false
+	}
+	got, err := repo.Get(name)
+	return err == nil && got != nil
 }
 
 // scanDelta extracts the session delta since the given timestamp and builds a
@@ -351,9 +455,17 @@ func buildReviewMessage(msg model.Message) (ReviewMessage, bool) {
 	return reviewMsg, true
 }
 
-// hasSkillWritesInDelta checks whether the assistant already wrote skill files
-// in this delta, which indicates the main flow is managing skills and the
-// background reviewer should not compete.
+// hasSkillWritesInDelta checks whether the assistant already wrote skill
+// files in this delta via a generic filesystem / shell tool, which would
+// mean the main flow is managing skills outside the evolution Publisher
+// and the background reviewer should not compete.
+//
+// evolution itself no longer ships an agent-facing skill_manage tool
+// (that path was found, in benchmark v1, to add prompt overhead without
+// ever being exercised by the model and was removed in favor of the
+// reviewer-driven path). The SKILL.md filename heuristic still matters
+// because users can wire up a filesystem MCP server that lets the agent
+// write SKILL.md files directly.
 func hasSkillWritesInDelta(messages []ReviewMessage) bool {
 	for _, msg := range messages {
 		if containsSkillWriteText(msg.Content) {
@@ -372,8 +484,7 @@ func hasSkillWritesInDelta(messages []ReviewMessage) bool {
 }
 
 func containsSkillWriteText(content string) bool {
-	text := strings.ToLower(content)
-	return strings.Contains(text, "skill.md") || strings.Contains(text, "skill_manage")
+	return strings.Contains(strings.ToLower(content), "skill.md")
 }
 
 func isSkillWriteToolResult(msg ReviewMessage) bool {
@@ -397,9 +508,6 @@ func isSkillWriteToolResult(msg ReviewMessage) bool {
 func isSkillWriteToolCall(call ReviewToolCall) bool {
 	name := strings.ToLower(strings.TrimSpace(call.Name))
 	args := strings.ToLower(strings.TrimSpace(call.Arguments))
-	if strings.Contains(name, "skill_manage") {
-		return true
-	}
 	if name == "" || !strings.Contains(args, "skill.md") {
 		return false
 	}

@@ -53,7 +53,7 @@ func TestNewService_EnqueueAndClose(t *testing.T) {
 		model.Message{Role: model.RoleAssistant, Content: "test output"},
 	)
 
-	err := svc.EnqueueLearningJob(context.Background(), sess)
+	err := svc.EnqueueLearningJob(context.Background(), LearningJob{Session: sess})
 	assert.NoError(t, err)
 
 	err = svc.Close()
@@ -84,12 +84,47 @@ func TestNewService_WritesSkill(t *testing.T) {
 		model.Message{Role: model.RoleAssistant, Content: "done"},
 	)
 
-	require.NoError(t, svc.EnqueueLearningJob(context.Background(), sess))
+	require.NoError(t, svc.EnqueueLearningJob(context.Background(), LearningJob{Session: sess}))
 	require.NoError(t, svc.Close())
 
 	pub.mu.Lock()
 	require.Len(t, pub.skills, 1)
 	assert.Equal(t, "Integration Skill", pub.skills[0].Name)
+	pub.mu.Unlock()
+}
+
+// Reviewer JSON containing a top-level "facts" key (legacy schema or a
+// hallucinating model) must not break decoding or trigger any fact
+// persistence -- evolution intentionally owns only the skill library.
+func TestNewService_FactsKeyInResponseIsIgnored(t *testing.T) {
+	mdl := &stubModel{response: `{
+		"facts": [{"memory": "user prefers dark mode"}],
+		"skills": [{
+			"name": "demo skill",
+			"description": "d",
+			"when_to_use": "always",
+			"steps": ["step"]
+		}]
+	}`}
+
+	pub := &mockPublisher{}
+	svc := NewService(mdl,
+		WithManagedSkillsDir(t.TempDir()),
+		WithPublisher(pub),
+		WithPolicy(alwaysPolicy{}),
+	)
+
+	sess := newTestSession()
+	addEvents(sess,
+		model.Message{Role: model.RoleUser, Content: "I prefer dark mode"},
+		model.Message{Role: model.RoleAssistant, Content: "noted"},
+	)
+	require.NoError(t, svc.EnqueueLearningJob(context.Background(), LearningJob{Session: sess}))
+	require.NoError(t, svc.Close())
+
+	pub.mu.Lock()
+	require.Len(t, pub.skills, 1, "skills should still be published even when extra unknown keys are present")
+	assert.Equal(t, "demo skill", pub.skills[0].Name)
 	pub.mu.Unlock()
 }
 

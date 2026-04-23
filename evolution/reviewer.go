@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 
+	"trpc.group/trpc-go/trpc-agent-go/internal/jsonrepair"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 )
@@ -26,30 +27,56 @@ type Reviewer interface {
 
 var reviewSystemPrompt = strings.Join([]string{
 	"You are an evolution reviewer.",
-	"Review the session transcript and decide whether new durable facts",
-	"or reusable skills should be saved.",
+	"Review the session transcript and decide whether reusable skills",
+	"should be created, updated, or deleted in the managed skill library.",
+	"",
+	"Scope:",
+	"- Evolution owns ONLY the skill library. Do NOT emit user facts, preferences, or episodic events here; durable memory is handled by a separate auto-memory pipeline against the same session.",
 	"",
 	"Guidelines:",
 	"- Only save a skill when the workflow is reusable and non-trivial.",
 	"- Do not save task-only progress, secrets, or one-off outputs.",
-	"- Do not create a skill that duplicates an existing one.",
+	"- The user message lists every existing skill with name, description, and a truncated body excerpt. Read the excerpts before deciding to create a new skill.",
+	"",
+	"Anti-proliferation rules (apply BEFORE deciding between `skills` and `updates`):",
+	"- Compare your candidate's `steps` and `when_to_use` against each existing skill's body excerpt, not just the names. Quantitative differences (item counts, scale levels, sizes, region/entity lists, parameter values) are NOT a reason to create a new skill — they belong inside the body of the existing skill, e.g. as a parameter or as an explicit \"works for N items\" note.",
+	"- If your proposed name is a strict superset of an existing name (e.g. existing `Foo Workflow`, proposed `Foo Workflow - X` / `Foo Workflow (3 items)` / `Foo Workflow v2`), this is a strong signal you should emit an `updates` entry against the existing name instead of a new `skills` entry. Suffixes that encode a specific task instance, scale, or run id are not allowed in skill names.",
+	"- A new `skills` entry is only justified when the workflow itself is genuinely different (different tools, different output shape, different ordering constraint), not when only the input scale or named entities change.",
+	"- If the existing library already covers your candidate and there is nothing new to add (no new pitfall, no broader applicability, no corrected step), prefer `skip_reason` over emitting a near-duplicate `updates` entry just to record the run.",
+	"",
+	"Update / delete mechanics:",
+	"- `updates` entries reuse the exact existing `name` and rewrite the spec from scratch using the current transcript as the source of truth (do not assume the old body's wording).",
+	"- Only emit a `deletions` entry when an existing skill is fully obsolete, harmful, or contradicted by the current transcript. The string value must equal the existing skill's exact `name`.",
+	"- Never list the same skill name in more than one of `skills`, `updates`, `deletions`.",
+	"",
+	"Content rules:",
 	"- Keep skill names and descriptions scope-accurate. If the transcript only covers part of a broader workflow, name the skill narrowly and mention its limits instead of implying full task-family coverage.",
 	"- If you save a skill, include every essential API/tool category, ordering constraint, and output-field requirement that was necessary for successful completion in the transcript.",
-	"- Do not omit required steps from the learned skill just because they appeared obvious in context. If the task required historical data, indicators, region fields, or other mandatory outputs, mention them explicitly.",
-	"- For facts, only save information that is durable and user-specific.",
-	"- If nothing is worth saving, set skip_reason and leave facts/skills empty.",
+	"- Do not omit required steps from the learned skill just because they appeared obvious in context. If a step (e.g. saving the final artifact, calling a finalize tool, validating output) was required, mention it explicitly.",
+	"- If nothing is worth saving, set skip_reason and leave skills/updates/deletions empty.",
+	"",
+	"Failure-aware learning (only when `## Session outcome` is present):",
+	"- Treat the outcome status as the ground truth for what the agent actually achieved. Never describe a step the transcript did not actually execute. If the agent did not produce a required artifact, you MUST NOT list \"save the result\" or similar as a completed step.",
+	"- On `success` / `partial`: extract the workflow as usual, but mention any partial-credit gaps in `pitfalls` so the next run knows what was missed.",
+	"- On `fail` / `agent_error`: prefer a narrowly-scoped skill that captures the lesson. Use the outcome `notes` to focus `pitfalls` on the concrete failure (e.g. wrong endpoint, missing auth header, schema mismatch). Do not pretend the failed step succeeded.",
+	"- If the transcript is too thin to extract anything actionable even with the outcome context, set skip_reason instead of inventing content.",
 	"",
 	"Return strict JSON matching this schema:",
 	"{",
 	`  "skip_reason": "string or empty",`,
-	`  "facts": [{"memory": "string", "topics": ["string"], "metadata": {"kind": "fact|episode", "event_time": "RFC3339 or empty", "participants": ["string"], "location": "string"}}],`,
 	`  "skills": [{`,
 	`    "name": "string",`,
 	`    "description": "string",`,
 	`    "when_to_use": "string",`,
 	`    "steps": ["string"],`,
 	`    "pitfalls": ["string"]`,
-	"  }]",
+	"  }],",
+	`  "updates": [{`,
+	`    "name": "string (must match an existing skill name)",`,
+	`    "new_spec": {"name": "string", "description": "string", "when_to_use": "string", "steps": ["string"], "pitfalls": ["string"]},`,
+	`    "reason": "string"`,
+	"  }],",
+	`  "deletions": ["string (must match an existing skill name)"]`,
 	"}",
 }, "\n")
 
@@ -92,6 +119,7 @@ func NewLLMReviewer(m model.Model, opts ...LLMReviewerOption) *LLMReviewer {
 // Review implements Reviewer by sending the session delta to the model and
 // parsing the structured JSON response.
 func (r *LLMReviewer) Review(ctx context.Context, input *ReviewInput) (*ReviewDecision, error) {
+	input = sanitizeReviewInput(input)
 	if input == nil || (len(input.Messages) == 0 && len(input.Transcript) == 0) {
 		return nil, nil
 	}
@@ -125,14 +153,11 @@ func (r *LLMReviewer) Review(ctx context.Context, input *ReviewInput) (*ReviewDe
 		}
 	}
 
-	raw := strings.TrimSpace(full.String())
-	raw = stripMarkdownCodeFence(raw)
-
-	var decision ReviewDecision
-	if err := json.Unmarshal([]byte(raw), &decision); err != nil {
-		return nil, fmt.Errorf("evolution: parse reviewer output: %w", err)
+	decision, err := parseReviewDecision(strings.TrimSpace(full.String()))
+	if err != nil {
+		return nil, err
 	}
-	return normalizeReviewDecision(&decision)
+	return normalizeReviewDecision(decision)
 }
 
 func buildUserPrompt(input *ReviewInput, messageMaxChars int) string {
@@ -142,10 +167,17 @@ func buildUserPrompt(input *ReviewInput, messageMaxChars int) string {
 	fmt.Fprintf(&b, "- user: %s\n", input.UserID)
 	fmt.Fprintf(&b, "- session: %s\n\n", input.SessionID)
 
+	renderOutcome(&b, input.Outcome)
+
 	if len(input.ExistingSkills) > 0 {
-		b.WriteString("## Existing skills (do not duplicate)\n")
+		b.WriteString("## Existing skills\n")
+		b.WriteString("Each entry shows `name: description` plus a truncated body excerpt. ")
+		b.WriteString("Use the excerpt to detect substantive duplicates: if your candidate's workflow ")
+		b.WriteString("(steps + when_to_use) overlaps an existing skill except for quantitative parameters ")
+		b.WriteString("(counts, sizes, scale levels, named entities), prefer an `updates` entry over a new ")
+		b.WriteString("`skills` entry. Use `deletions` only when an existing skill is fully superseded.\n\n")
 		for _, s := range input.ExistingSkills {
-			fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
+			renderExistingSkill(&b, s)
 		}
 		b.WriteString("\n")
 	}
@@ -268,26 +300,172 @@ func stripMarkdownCodeFence(s string) string {
 	return strings.TrimSpace(s)
 }
 
+func parseReviewDecision(raw string) (*ReviewDecision, error) {
+	var lastErr error
+	for _, candidate := range reviewerJSONCandidates(raw) {
+		var decision ReviewDecision
+		if err := json.Unmarshal([]byte(candidate), &decision); err == nil {
+			return &decision, nil
+		} else {
+			lastErr = err
+		}
+
+		repaired, err := jsonrepair.Repair([]byte(candidate))
+		if err != nil {
+			continue
+		}
+		if err := json.Unmarshal(repaired, &decision); err == nil {
+			return &decision, nil
+		} else {
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("empty reviewer output")
+	}
+	return nil, fmt.Errorf("evolution: parse reviewer output: %w", lastErr)
+}
+
+func reviewerJSONCandidates(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	candidates := make([]string, 0, 4)
+	seen := make(map[string]struct{}, 4)
+	add := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
+	stripped := stripMarkdownCodeFence(raw)
+	add(stripped)
+	if extracted, ok := extractFirstJSONObject(stripped); ok {
+		add(extracted)
+	}
+	if stripped != raw {
+		add(raw)
+		if extracted, ok := extractFirstJSONObject(raw); ok {
+			add(extracted)
+		}
+	}
+	return candidates
+}
+
+func extractFirstJSONObject(text string) (string, bool) {
+	start := strings.IndexByte(text, '{')
+	if start < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return text[start : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
 func normalizeReviewDecision(decision *ReviewDecision) (*ReviewDecision, error) {
 	if decision == nil {
 		return nil, nil
 	}
 	decision.SkipReason = strings.TrimSpace(decision.SkipReason)
 
-	facts := make([]*FactEntry, 0, len(decision.Facts))
-	for _, fact := range decision.Facts {
-		normalized, err := normalizeFactEntry(fact)
+	// Resolve cross-field name collisions before validating individual lists.
+	// Priority: Deletions > Updates > Skills. The first occurrence of a name
+	// in this priority order wins; later occurrences are dropped silently.
+	claimed := make(map[string]struct{})
+	deletions := normalizeDeletions(decision.Deletions, claimed)
+	updates, err := normalizeUpdates(decision.Updates, claimed)
+	if err != nil {
+		return nil, err
+	}
+	skills, err := normalizeSkills(decision.Skills, claimed)
+	if err != nil {
+		return nil, err
+	}
+
+	if decision.SkipReason != "" &&
+		(len(skills) > 0 || len(updates) > 0 || len(deletions) > 0) {
+		return nil, fmt.Errorf("evolution: invalid reviewer output: skip_reason cannot coexist with skills, updates, or deletions")
+	}
+
+	decision.Skills = skills
+	decision.Updates = updates
+	decision.Deletions = deletions
+	return decision, nil
+}
+
+func normalizeDeletions(in []string, claimed map[string]struct{}) []string {
+	out := make([]string, 0, len(in))
+	for _, name := range in {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := claimed[key]; ok {
+			continue
+		}
+		claimed[key] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func normalizeUpdates(in []*SkillUpdate, claimed map[string]struct{}) ([]*SkillUpdate, error) {
+	out := make([]*SkillUpdate, 0, len(in))
+	for _, upd := range in {
+		normalized, err := normalizeSkillUpdate(upd)
 		if err != nil {
 			return nil, err
 		}
-		if normalized != nil {
-			facts = append(facts, normalized)
+		if normalized == nil {
+			continue
 		}
+		key := strings.ToLower(normalized.Name)
+		if _, ok := claimed[key]; ok {
+			continue
+		}
+		claimed[key] = struct{}{}
+		out = append(out, normalized)
 	}
+	return out, nil
+}
 
-	skills := make([]*SkillSpec, 0, len(decision.Skills))
-	seenSkills := make(map[string]struct{})
-	for _, spec := range decision.Skills {
+func normalizeSkills(in []*SkillSpec, claimed map[string]struct{}) ([]*SkillSpec, error) {
+	out := make([]*SkillSpec, 0, len(in))
+	for _, spec := range in {
 		normalized, err := normalizeSkillSpec(spec)
 		if err != nil {
 			return nil, err
@@ -296,36 +474,43 @@ func normalizeReviewDecision(decision *ReviewDecision) (*ReviewDecision, error) 
 			continue
 		}
 		key := strings.ToLower(normalized.Name)
-		if _, ok := seenSkills[key]; ok {
+		if _, ok := claimed[key]; ok {
 			continue
 		}
-		seenSkills[key] = struct{}{}
-		skills = append(skills, normalized)
+		claimed[key] = struct{}{}
+		out = append(out, normalized)
 	}
-
-	if decision.SkipReason != "" && (len(facts) > 0 || len(skills) > 0) {
-		return nil, fmt.Errorf("evolution: invalid reviewer output: skip_reason cannot coexist with facts or skills")
-	}
-
-	decision.Facts = facts
-	decision.Skills = skills
-	return decision, nil
+	return out, nil
 }
 
-func normalizeFactEntry(fact *FactEntry) (*FactEntry, error) {
-	if fact == nil {
+// normalizeSkillUpdate validates and trims a SkillUpdate. Updates whose
+// target name is empty or whose new_spec is nil/incomplete are dropped.
+// The new_spec.Name is forced to match the update target so the on-disk
+// directory does not move when applied.
+func normalizeSkillUpdate(upd *SkillUpdate) (*SkillUpdate, error) {
+	if upd == nil {
 		return nil, nil
 	}
-	fact.Memory = strings.TrimSpace(fact.Memory)
-	if fact.Memory == "" {
+	upd.Name = strings.TrimSpace(upd.Name)
+	upd.Reason = strings.TrimSpace(upd.Reason)
+	if upd.Name == "" {
 		return nil, nil
 	}
-	fact.Topics = normalizeStringSlice(fact.Topics)
-	if fact.Metadata != nil {
-		fact.Metadata.Participants = normalizeStringSlice(fact.Metadata.Participants)
-		fact.Metadata.Location = strings.TrimSpace(fact.Metadata.Location)
+	if upd.NewSpec == nil {
+		return nil, nil
 	}
-	return fact, nil
+	// Lock the on-disk identity to the update target before validation, so
+	// reviewers that omit the redundant new_spec.name field still pass.
+	upd.NewSpec.Name = upd.Name
+	spec, err := normalizeSkillSpec(upd.NewSpec)
+	if err != nil {
+		return nil, err
+	}
+	if spec == nil {
+		return nil, nil
+	}
+	upd.NewSpec = spec
+	return upd, nil
 }
 
 func normalizeSkillSpec(spec *SkillSpec) (*SkillSpec, error) {
@@ -371,11 +556,111 @@ func normalizeStringSlice(values []string) []string {
 	return out
 }
 
-// existingSkillSummaries returns skill summaries from a repository, or nil if
-// the repository is nil.
-func existingSkillSummaries(repo skill.Repository) []skill.Summary {
+// loadExistingSkills snapshots the repository's skill library into the
+// reviewer-facing ExistingSkill shape, optionally including a head
+// excerpt of each SKILL.md body.
+//
+// The body excerpt is what makes the reviewer able to detect substantive
+// duplicates ("the proposed workflow already exists, only the dish count
+// differs") instead of relying on name/description string matches alone.
+// bodyMaxChars caps the per-skill excerpt: a positive value is the
+// character budget; zero falls back to DefaultExistingSkillBodyMaxChars;
+// a negative value disables bodies entirely (description-only mode).
+//
+// Errors loading a single skill body are non-fatal — that skill is still
+// returned with an empty BodyExcerpt — so an unreadable file never
+// silently drops other skills from the reviewer's view.
+func loadExistingSkills(repo skill.Repository, bodyMaxChars int) []ExistingSkill {
 	if repo == nil {
 		return nil
 	}
-	return repo.Summaries()
+	summaries := repo.Summaries()
+	if len(summaries) == 0 {
+		return nil
+	}
+	if bodyMaxChars == 0 {
+		bodyMaxChars = DefaultExistingSkillBodyMaxChars
+	}
+	out := make([]ExistingSkill, 0, len(summaries))
+	for _, s := range summaries {
+		entry := ExistingSkill{
+			Name:        s.Name,
+			Description: s.Description,
+		}
+		if bodyMaxChars > 0 {
+			if full, err := repo.Get(s.Name); err == nil && full != nil {
+				entry.BodyExcerpt = truncateBodyExcerpt(full.Body, bodyMaxChars)
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// truncateBodyExcerpt cuts a SKILL.md body down to the head budget and
+// appends a short ellipsis marker so the reviewer knows the excerpt is
+// partial. The marker is intentionally generic ("[truncated]") so it
+// does not bias the reviewer toward any particular skill format.
+func truncateBodyExcerpt(body string, maxChars int) string {
+	body = strings.TrimSpace(body)
+	if maxChars <= 0 || len(body) <= maxChars {
+		return body
+	}
+	const marker = "\n... [truncated]"
+	cut := maxChars - len(marker)
+	if cut < 0 {
+		cut = maxChars
+	}
+	return strings.TrimRight(body[:cut], " \t\r\n") + marker
+}
+
+// renderOutcome writes the optional "## Session outcome" block into the
+// reviewer prompt. Renders nothing when the caller did not attach an
+// Outcome (e.g. online services without an evaluator) so the prompt
+// stays identical to the transcript-only baseline in that mode.
+func renderOutcome(b *strings.Builder, o *Outcome) {
+	if o == nil {
+		return
+	}
+	b.WriteString("## Session outcome\n")
+	status := strings.TrimSpace(string(o.Status))
+	if status == "" {
+		status = "unknown"
+	}
+	fmt.Fprintf(b, "- status: %s\n", status)
+	if o.Score != nil {
+		fmt.Fprintf(b, "- score: %.4f\n", *o.Score)
+	}
+	if eval := strings.TrimSpace(o.Evaluator); eval != "" {
+		fmt.Fprintf(b, "- evaluator: %s\n", eval)
+	}
+	if notes := strings.TrimSpace(o.Notes); notes != "" {
+		fmt.Fprintf(b, "- notes: %s\n", notes)
+	}
+	b.WriteString("\n")
+}
+
+// renderExistingSkill writes one existing-skill entry into the reviewer
+// prompt. The body excerpt (when present) is rendered as an indented
+// fenced block under the name+description so the reviewer can scan the
+// list quickly and only "zoom in" when checking for substantive overlap.
+func renderExistingSkill(b *strings.Builder, s ExistingSkill) {
+	name := strings.TrimSpace(s.Name)
+	if name == "" {
+		name = "(unnamed)"
+	}
+	desc := strings.TrimSpace(s.Description)
+	if desc == "" {
+		fmt.Fprintf(b, "- %s\n", name)
+	} else {
+		fmt.Fprintf(b, "- %s: %s\n", name, desc)
+	}
+	body := strings.TrimSpace(s.BodyExcerpt)
+	if body == "" {
+		return
+	}
+	b.WriteString("  body excerpt:\n")
+	for _, line := range strings.Split(body, "\n") {
+		fmt.Fprintf(b, "  | %s\n", line)
+	}
 }

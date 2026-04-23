@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/skill"
 )
 
 type recordingReviewModel struct {
@@ -130,7 +131,7 @@ func TestLLMReviewer_Review_SystemPromptRequiresScopeAccurateSkills(t *testing.T
 func TestLLMReviewer_Review_InvalidJSON(t *testing.T) {
 	reviewModel := &recordingReviewModel{
 		responses: []*model.Response{{
-			Choices: []model.Choice{{Message: model.Message{Content: `{"skills":`}}},
+			Choices: []model.Choice{{Message: model.Message{Content: `definitely not valid reviewer json`}}},
 		}},
 	}
 	reviewer := NewLLMReviewer(reviewModel)
@@ -140,6 +141,42 @@ func TestLLMReviewer_Review_InvalidJSON(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse reviewer output")
+}
+
+func TestLLMReviewer_Review_ParsesJSONWrappedInProse(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{
+				Message: model.Message{Content: "Here is the decision:\n{\"skip_reason\":\"nothing useful\"}\nThanks."},
+			}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	decision, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "teach me"}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "nothing useful", decision.SkipReason)
+}
+
+func TestLLMReviewer_Review_RepairsMalformedJSON(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{
+				Message: model.Message{Content: "```json\n{skip_reason: 'nothing useful', updates: [],}\n```"},
+			}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	decision, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "teach me"}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, decision)
+	assert.Equal(t, "nothing useful", decision.SkipReason)
 }
 
 func TestLLMReviewer_Review_ResponseError(t *testing.T) {
@@ -205,6 +242,39 @@ func TestLLMReviewer_Review_TruncatesLongToolResults(t *testing.T) {
 		"truncated prompt should be much smaller than the raw payload")
 }
 
+func TestLLMReviewer_Review_RedactsSecretsInPrompt(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"nothing useful"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{
+			{
+				Role:    model.RoleAssistant,
+				Content: "use OPENAI_API_KEY=sk-super-secret-value and Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
+				ToolCalls: []ReviewToolCall{{
+					Name:      "workspace_exec",
+					Arguments: `{"api_key":"sk-another-secret","token":"abc1234567890"}`,
+				}},
+			},
+		},
+		Outcome: &Outcome{
+			Status: OutcomeFail,
+			Notes:  "Authorization: Bearer abc1234567890",
+		},
+	})
+	require.NoError(t, err)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.NotContains(t, prompt, "sk-super-secret-value")
+	assert.NotContains(t, prompt, "sk-another-secret")
+	assert.NotContains(t, prompt, "abc1234567890")
+	assert.Contains(t, prompt, reviewerRedactedValue)
+}
+
 func TestLLMReviewer_Review_DefaultMessageMaxCharsApplied(t *testing.T) {
 	reviewModel := &recordingReviewModel{
 		responses: []*model.Response{{
@@ -268,4 +338,331 @@ func TestNormalizeReviewDecision_RejectsIncompleteSkill(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skill description is required")
+}
+
+func TestLLMReviewer_Review_RendersExistingSkillIndex(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"nothing useful"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+		ExistingSkills: []ExistingSkill{
+			{Name: "release-checklist", Description: "Steps to ship"},
+			{Name: "bare-name"},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, reviewModel.request)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.Contains(t, prompt, "## Existing skills")
+	assert.Contains(t, prompt, "- release-checklist: Steps to ship")
+	assert.Contains(t, prompt, "- bare-name\n")
+}
+
+func TestLLMReviewer_Review_RendersBodyExcerptWhenProvided(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	excerpt := "## Steps\n1. fetch foo\n2. transform foo\n3. save bar"
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+		ExistingSkills: []ExistingSkill{{
+			Name:        "foo-to-bar",
+			Description: "Convert foo into bar",
+			BodyExcerpt: excerpt,
+		}},
+	})
+	require.NoError(t, err)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.Contains(t, prompt, "- foo-to-bar: Convert foo into bar")
+	assert.Contains(t, prompt, "  body excerpt:")
+	for _, line := range strings.Split(excerpt, "\n") {
+		assert.Contains(t, prompt, "  | "+line)
+	}
+}
+
+func TestLLMReviewer_Review_DoesNotFabricateBodyWhenCallerOmitsIt(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+		ExistingSkills: []ExistingSkill{{
+			Name:        "no-body",
+			Description: "description only",
+		}},
+	})
+	require.NoError(t, err)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.Contains(t, prompt, "- no-body: description only")
+	assert.NotContains(t, prompt, "body excerpt:",
+		"reviewer must not invent a body excerpt when caller did not provide one")
+}
+
+func TestLLMReviewer_Review_SystemPromptDescribesUpdatesAndDeletions(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+	})
+	require.NoError(t, err)
+	system := reviewModel.request.Messages[0].Content
+	assert.Contains(t, system, "updates")
+	assert.Contains(t, system, "deletions")
+	assert.Contains(t, system, "Never list the same skill name in more than one")
+	assert.Contains(t, system, `"updates"`)
+	assert.Contains(t, system, `"deletions"`)
+}
+
+func TestLLMReviewer_Review_SystemPromptHasAntiProliferationRules(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+	})
+	require.NoError(t, err)
+	system := reviewModel.request.Messages[0].Content
+
+	assert.Contains(t, system, "Anti-proliferation rules",
+		"reviewer must be told the dedup rules")
+	assert.Contains(t, system, "Quantitative differences",
+		"quantitative-only differences should not justify a new skill")
+	assert.Contains(t, system, "strict superset of an existing name",
+		"name-suffix duplication should be called out")
+	assert.Contains(t, system, "skip_reason",
+		"reviewer must be reminded that skipping is the right answer when the library already covers the workflow")
+}
+
+func TestTruncateBodyExcerpt(t *testing.T) {
+	t.Run("short body is returned verbatim", func(t *testing.T) {
+		body := "tiny body"
+		got := truncateBodyExcerpt(body, 100)
+		assert.Equal(t, body, got)
+	})
+
+	t.Run("long body is truncated and marked", func(t *testing.T) {
+		body := strings.Repeat("x", 500)
+		got := truncateBodyExcerpt(body, 80)
+		assert.LessOrEqual(t, len(got), 80)
+		assert.Contains(t, got, "[truncated]")
+	})
+
+	t.Run("non-positive budget keeps body untouched", func(t *testing.T) {
+		body := strings.Repeat("y", 100)
+		assert.Equal(t, body, truncateBodyExcerpt(body, 0))
+		assert.Equal(t, body, truncateBodyExcerpt(body, -1))
+	})
+
+	t.Run("trailing whitespace is trimmed before the marker", func(t *testing.T) {
+		body := "step 1   \n\nstep 2 with extra " + strings.Repeat("x", 200)
+		got := truncateBodyExcerpt(body, 40)
+		assert.Contains(t, got, "[truncated]")
+		// Marker should follow visible text, not a space run.
+		assert.NotContains(t, got, "   \n... [truncated]")
+	})
+}
+
+func TestLoadExistingSkills_RespectsBodyBudget(t *testing.T) {
+	repo := &mockSkillRepo{
+		summaries: []skill.Summary{{Name: "Foo", Description: "foo desc"}},
+		bodies:    map[string]string{"Foo": strings.Repeat("F", 1000)},
+	}
+	t.Run("default budget includes a head excerpt", func(t *testing.T) {
+		got := loadExistingSkills(repo, 0)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Foo", got[0].Name)
+		assert.NotEmpty(t, got[0].BodyExcerpt)
+		assert.Contains(t, got[0].BodyExcerpt, "[truncated]")
+	})
+	t.Run("negative budget skips body loading", func(t *testing.T) {
+		got := loadExistingSkills(repo, -1)
+		require.Len(t, got, 1)
+		assert.Empty(t, got[0].BodyExcerpt)
+	})
+	t.Run("nil repo returns nil", func(t *testing.T) {
+		assert.Nil(t, loadExistingSkills(nil, 100))
+	})
+}
+
+func TestNormalizeReviewDecision_NormalizesUpdatesAndDeletions(t *testing.T) {
+	decision, err := normalizeReviewDecision(&ReviewDecision{
+		Updates: []*SkillUpdate{{
+			Name: "Existing",
+			NewSpec: &SkillSpec{
+				Description: "  refreshed  ",
+				WhenToUse:   "When better",
+				Steps:       []string{" step1 ", "  ", "step2"},
+			},
+		}},
+		Deletions: []string{"  Stale  ", "", "Stale"},
+	})
+	require.NoError(t, err)
+	require.Len(t, decision.Updates, 1)
+	assert.Equal(t, "Existing", decision.Updates[0].Name)
+	assert.Equal(t, "Existing", decision.Updates[0].NewSpec.Name,
+		"normalize should force NewSpec.Name to match the update target")
+	assert.Equal(t, "refreshed", decision.Updates[0].NewSpec.Description)
+	assert.Equal(t, []string{"step1", "step2"}, decision.Updates[0].NewSpec.Steps)
+	require.Len(t, decision.Deletions, 1, "duplicate deletions should be collapsed")
+	assert.Equal(t, "Stale", decision.Deletions[0])
+}
+
+func TestNormalizeReviewDecision_DropsUpdateWithEmptyName(t *testing.T) {
+	decision, err := normalizeReviewDecision(&ReviewDecision{
+		Updates: []*SkillUpdate{{
+			Name: "",
+			NewSpec: &SkillSpec{
+				Description: "ok",
+				WhenToUse:   "ok",
+				Steps:       []string{"go"},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, decision.Updates)
+}
+
+func TestNormalizeReviewDecision_NameCollisionPriority(t *testing.T) {
+	// Same name shows up in skills, updates, and deletions. Deletions wins,
+	// then Updates, then Skills.
+	decision, err := normalizeReviewDecision(&ReviewDecision{
+		Skills: []*SkillSpec{{
+			Name:        "Conflict",
+			Description: "from skills",
+			WhenToUse:   "when",
+			Steps:       []string{"a"},
+		}},
+		Updates: []*SkillUpdate{{
+			Name: "conflict", // case-insensitive collision with above
+			NewSpec: &SkillSpec{
+				Description: "from updates",
+				WhenToUse:   "when",
+				Steps:       []string{"b"},
+			},
+		}},
+		Deletions: []string{"CONFLICT"},
+	})
+	require.NoError(t, err)
+	require.Len(t, decision.Deletions, 1)
+	assert.Equal(t, "CONFLICT", decision.Deletions[0])
+	assert.Empty(t, decision.Updates, "update must lose to deletion")
+	assert.Empty(t, decision.Skills, "skill must lose to deletion")
+}
+
+func TestNormalizeReviewDecision_RejectsSkipWithUpdatesOrDeletions(t *testing.T) {
+	_, err := normalizeReviewDecision(&ReviewDecision{
+		SkipReason: "skip",
+		Deletions:  []string{"X"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skip_reason cannot coexist")
+}
+
+func TestLLMReviewer_Review_RendersOutcomeBlockWhenSet(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	score := 0.42
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+		Outcome: &Outcome{
+			Status:    OutcomeFail,
+			Score:     &score,
+			Notes:     "missing economic_snapshot.json",
+			Evaluator: "skillcraft",
+		},
+	})
+	require.NoError(t, err)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.Contains(t, prompt, "## Session outcome")
+	assert.Contains(t, prompt, "- status: fail")
+	assert.Contains(t, prompt, "- score: 0.4200")
+	assert.Contains(t, prompt, "- evaluator: skillcraft")
+	assert.Contains(t, prompt, "- notes: missing economic_snapshot.json")
+}
+
+func TestLLMReviewer_Review_OmitsOutcomeBlockWhenNil(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+	})
+	require.NoError(t, err)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.NotContains(t, prompt, "## Session outcome")
+}
+
+func TestLLMReviewer_Review_OutcomeWithUnknownStatusRendersUnknownLabel(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+		Outcome:    &Outcome{Notes: "no status reported"},
+	})
+	require.NoError(t, err)
+	prompt := reviewModel.request.Messages[1].Content
+
+	assert.Contains(t, prompt, "## Session outcome")
+	assert.Contains(t, prompt, "- status: unknown")
+}
+
+func TestLLMReviewer_Review_SystemPromptIncludesFailureAwareGuidance(t *testing.T) {
+	reviewModel := &recordingReviewModel{
+		responses: []*model.Response{{
+			Choices: []model.Choice{{Message: model.Message{Content: `{"skip_reason":"x"}`}}},
+		}},
+	}
+	reviewer := NewLLMReviewer(reviewModel)
+
+	_, err := reviewer.Review(context.Background(), &ReviewInput{
+		Transcript: []ReviewMessage{{Role: model.RoleUser, Content: "go"}},
+	})
+	require.NoError(t, err)
+	system := reviewModel.request.Messages[0].Content
+
+	assert.Contains(t, system, "Failure-aware learning")
+	assert.Contains(t, system, "Never describe a step the transcript did not actually execute")
+	assert.Contains(t, system, "On `fail` / `agent_error`")
+	assert.Contains(t, system, "outcome `notes`")
 }

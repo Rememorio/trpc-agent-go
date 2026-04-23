@@ -27,12 +27,12 @@ type mockEvolutionService struct {
 	enqueueErr    error
 	closeCalled   int
 	closeErr      error
-	sess          *session.Session
+	job           evolution.LearningJob
 }
 
-func (m *mockEvolutionService) EnqueueLearningJob(_ context.Context, sess *session.Session) error {
+func (m *mockEvolutionService) EnqueueLearningJob(_ context.Context, job evolution.LearningJob) error {
 	m.enqueueCalled = true
-	m.sess = sess
+	m.job = job
 	return m.enqueueErr
 }
 
@@ -76,13 +76,15 @@ func TestEnqueueEvolutionLearningJob(t *testing.T) {
 		require.False(t, mockSvc.enqueueCalled)
 	})
 
-	t.Run("enqueues job with session", func(t *testing.T) {
+	t.Run("enqueues job with session and nil outcome", func(t *testing.T) {
 		mockSvc := &mockEvolutionService{}
 		r := &runner{evolutionService: mockSvc}
 		sess := session.NewSession("app", "user", "sess")
 		r.enqueueEvolutionLearningJob(context.Background(), sess)
 		require.True(t, mockSvc.enqueueCalled)
-		require.Same(t, sess, mockSvc.sess)
+		require.Same(t, sess, mockSvc.job.Session)
+		require.Nil(t, mockSvc.job.Outcome,
+			"runner hook must not invent an outcome; only the caller knows the verdict")
 	})
 
 	t.Run("handles enqueue error gracefully", func(t *testing.T) {
@@ -112,9 +114,11 @@ func TestRunner_WithEvolutionService_Integration(t *testing.T) {
 	}
 
 	require.True(t, mockEvolutionSvc.enqueueCalled)
-	require.NotNil(t, mockEvolutionSvc.sess)
-	require.Equal(t, "test-app", mockEvolutionSvc.sess.AppName)
-	require.Equal(t, "user", mockEvolutionSvc.sess.UserID)
+	require.NotNil(t, mockEvolutionSvc.job.Session)
+	require.Equal(t, "test-app", mockEvolutionSvc.job.Session.AppName)
+	require.Equal(t, "user", mockEvolutionSvc.job.Session.UserID)
+	require.Nil(t, mockEvolutionSvc.job.Outcome,
+		"runner-driven hook must not synthesize an outcome")
 }
 
 func TestRunnerClose_ClosesEvolutionService(t *testing.T) {

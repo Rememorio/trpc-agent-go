@@ -16,10 +16,8 @@ import (
 	"context"
 	"time"
 
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
-	"trpc.group/trpc-go/trpc-agent-go/skill"
 )
 
 // SessionStateKeyLastReviewAt stores the last reviewed timestamp in session
@@ -27,33 +25,149 @@ import (
 const SessionStateKeyLastReviewAt = "evolution:last_review_at"
 
 // Service reviews completed sessions and persists reusable procedures.
+//
+// EnqueueLearningJob takes the work as a LearningJob struct so callers can
+// optionally attach an evaluator Outcome (benchmark runners, RLHF
+// pipelines, "thumbs down" feedback, etc.). Online services without an
+// evaluator pass LearningJob{Session: sess}; the reviewer then behaves
+// as a transcript-only reviewer.
 type Service interface {
-	EnqueueLearningJob(ctx context.Context, sess *session.Session) error
+	EnqueueLearningJob(ctx context.Context, job LearningJob) error
 	Close() error
+}
+
+// LearningJob is the unit of work submitted to the async reviewer.
+//
+// The exported shape carries only Session and (optionally) Outcome; the
+// per-job context is captured internally by the worker so callers do
+// not have to thread it through this struct.
+type LearningJob struct {
+	// Session is the session whose recent delta should be reviewed. Required.
+	Session *session.Session
+
+	// Outcome is the optional caller-observed verdict for this session.
+	// Online services without an evaluator leave this nil; benchmark
+	// runners and RLHF pipelines fill it so the reviewer can decide
+	// whether a failed run is worth learning from (and how).
+	//
+	// When non-nil, the reviewer renders an explicit "## Session outcome"
+	// section in its prompt and switches to failure-aware learning rules
+	// (capture pitfalls from failures; never invent steps the agent did
+	// not actually execute). When nil, the reviewer prompt is identical
+	// to the transcript-only baseline.
+	Outcome *Outcome
+}
+
+// OutcomeStatus is a typed enum that classifies the evaluator verdict.
+// Empty string means "no signal" and is treated as "unknown".
+type OutcomeStatus string
+
+// Recommended OutcomeStatus values. Callers may use other strings if
+// their evaluator reports a domain-specific status; the reviewer prompt
+// renders the value verbatim either way.
+const (
+	OutcomeUnknown    OutcomeStatus = ""
+	OutcomeSuccess    OutcomeStatus = "success"
+	OutcomePartial    OutcomeStatus = "partial"
+	OutcomeFail       OutcomeStatus = "fail"
+	OutcomeAgentError OutcomeStatus = "agent_error"
+)
+
+// Outcome carries the evaluator verdict that drives failure-aware
+// reviewer decisions. It mirrors the contextual signal that an
+// in-flow reviewer (e.g. Hermes's main-conversation skill review)
+// would naturally read off the agent's natural-language self-report;
+// trpc-agent-go's reviewer is a transcript replay and cannot infer
+// pass/fail from tool calls alone, so callers with an evaluator should
+// pass this through.
+type Outcome struct {
+	// Status is the evaluator verdict; "" means "no signal".
+	Status OutcomeStatus `json:"status,omitempty"`
+
+	// Score is an optional numeric metric. Callers using a 0..1 scale
+	// pass it directly; callers using 0..100 should normalize first.
+	Score *float64 `json:"score,omitempty"`
+
+	// Notes is a short evaluator one-liner (e.g.
+	// "economic_snapshot.json not found"). A best-effort redactor runs
+	// before the reviewer prompt is built, but callers should still avoid
+	// attaching raw secrets or sensitive PII when possible.
+	Notes string `json:"notes,omitempty"`
+
+	// Evaluator names the source of the verdict ("skillcraft",
+	// "user-thumbsdown", "regression-test", ...). Reviewer prompt may
+	// weigh different evaluators differently in the future; today it
+	// is rendered for traceability only.
+	Evaluator string `json:"evaluator,omitempty"`
 }
 
 // ReviewInput holds everything the reviewer needs to decide what to extract.
 type ReviewInput struct {
-	AppName        string          `json:"app_name"`
-	UserID         string          `json:"user_id"`
-	SessionID      string          `json:"session_id"`
-	Messages       []model.Message `json:"messages,omitempty"`
-	Transcript     []ReviewMessage `json:"transcript,omitempty"`
-	ExistingSkills []skill.Summary `json:"existing_skills,omitempty"`
+	AppName    string          `json:"app_name"`
+	UserID     string          `json:"user_id"`
+	SessionID  string          `json:"session_id"`
+	Messages   []model.Message `json:"messages,omitempty"`
+	Transcript []ReviewMessage `json:"transcript,omitempty"`
+	// ExistingSkills carries the reviewer-facing view of the current skill
+	// library. Each entry includes the skill name, description, and a
+	// truncated body excerpt so the reviewer can detect substantive
+	// duplicates instead of relying on name/description matching alone.
+	// The Worker controls the per-skill body budget via
+	// WorkerConfig.ExistingSkillBodyMaxChars (set 0 to omit bodies).
+	ExistingSkills []ExistingSkill `json:"existing_skills,omitempty"`
+	// Outcome is the caller-observed evaluator verdict for the session
+	// being reviewed (nil when no evaluator was attached). The reviewer
+	// uses it to switch into failure-aware learning when set; when nil
+	// the prompt has no "## Session outcome" section and the reviewer
+	// behaves as a transcript-only baseline.
+	Outcome *Outcome `json:"outcome,omitempty"`
+}
+
+// ExistingSkill is the reviewer-facing view of one skill currently in the
+// repository. It is intentionally a flat, transport-friendly struct so
+// reviewer implementations (LLM-backed, rule-based, mocks) and tests can
+// construct it directly without depending on the skill package.
+//
+// BodyExcerpt is the head of the SKILL.md body truncated to the
+// WorkerConfig.ExistingSkillBodyMaxChars budget. It is meant for
+// substantive duplicate detection (does the proposed workflow already
+// exist with different parameters?) and is intentionally not the full
+// body — that would explode the reviewer prompt as the library grows.
+// An empty BodyExcerpt means the worker chose not to include bodies
+// (budget = 0) or the on-disk body could not be loaded.
+type ExistingSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	BodyExcerpt string `json:"body_excerpt,omitempty"`
 }
 
 // ReviewDecision is the structured output of the reviewer model.
+//
+// Note: evolution intentionally does NOT extract or persist durable facts.
+// Fact-style memory is the responsibility of `memory.Service` + the
+// auto-memory extractor (see memory/<backend>.WithExtractor); evolution
+// owns only the skill library.
 type ReviewDecision struct {
 	SkipReason string       `json:"skip_reason,omitempty"`
-	Facts      []*FactEntry `json:"facts,omitempty"`
 	Skills     []*SkillSpec `json:"skills,omitempty"`
+	// Updates replace an existing skill in full. Each entry's Name must
+	// match a skill currently in the repository; entries that do not are
+	// dropped during normalization.
+	Updates []*SkillUpdate `json:"updates,omitempty"`
+	// Deletions remove existing skills from the repository by name.
+	Deletions []string `json:"deletions,omitempty"`
 }
 
-// FactEntry describes a durable fact to persist via memory.Service.
-type FactEntry struct {
-	Memory   string           `json:"memory"`
-	Topics   []string         `json:"topics,omitempty"`
-	Metadata *memory.Metadata `json:"metadata,omitempty"`
+// SkillUpdate replaces an existing skill in full. Patch-style updates can
+// be added later without breaking this shape (see SkillPatch).
+type SkillUpdate struct {
+	// Name must match the Name of an existing skill in the repository.
+	Name string `json:"name"`
+	// NewSpec is the full replacement skill body. NewSpec.Name is forced to
+	// match Name during apply so the on-disk directory does not move.
+	NewSpec *SkillSpec `json:"new_spec"`
+	// Reason is a free-form audit string explaining why the update is needed.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SkillSpec describes a reusable skill.
@@ -92,10 +206,4 @@ type ReviewContext struct {
 	ToolCallCount     int
 	HasUserCorrection bool
 	HasRecoveredError bool
-}
-
-// LearningJob is the unit of work processed by the async worker.
-type LearningJob struct {
-	Ctx     context.Context
-	Session *session.Session
 }

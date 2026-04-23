@@ -112,3 +112,46 @@ func TestYamlEscape(t *testing.T) {
 	assert.Equal(t, `"has: colon"`, yamlEscape("has: colon"))
 	assert.Equal(t, `"has # hash"`, yamlEscape("has # hash"))
 }
+
+func TestFilePublisher_DeleteSkill(t *testing.T) {
+	dir := t.TempDir()
+	pub := NewFilePublisher(dir)
+	require.NoError(t, pub.UpsertSkill(context.Background(), &SkillSpec{
+		Name:  "Doomed",
+		Steps: []string{"do"},
+	}))
+	target := filepath.Join(dir, "doomed")
+	_, err := os.Stat(target)
+	require.NoError(t, err, "directory should exist before delete")
+
+	require.NoError(t, pub.DeleteSkill(context.Background(), "Doomed"))
+	_, err = os.Stat(target)
+	assert.True(t, os.IsNotExist(err), "directory should be gone after delete")
+}
+
+func TestFilePublisher_DeleteSkill_Missing_NoError(t *testing.T) {
+	dir := t.TempDir()
+	pub := NewFilePublisher(dir)
+	assert.NoError(t, pub.DeleteSkill(context.Background(), "Nonexistent"),
+		"deleting a missing skill must be idempotent")
+}
+
+func TestFilePublisher_DeleteSkill_EmptyName(t *testing.T) {
+	dir := t.TempDir()
+	pub := NewFilePublisher(dir)
+	assert.Error(t, pub.DeleteSkill(context.Background(), ""))
+}
+
+func TestFilePublisher_DeleteSkill_RefusesRoot(t *testing.T) {
+	dir := t.TempDir()
+	pub := NewFilePublisher(dir)
+	// Inputs that sanitize to a non-root name but still exist beneath root
+	// must succeed (idempotent), but a name that would target root itself
+	// must be refused. We simulate by passing a name equal to filepath.Base
+	// of the root after sanitization is impossible (sanitize lowercases and
+	// strips), so instead we verify the root directory is still present
+	// after a no-op delete of an unrelated name.
+	require.NoError(t, pub.DeleteSkill(context.Background(), "missing"))
+	_, err := os.Stat(dir)
+	assert.NoError(t, err, "root directory must remain intact after delete")
+}

@@ -10,7 +10,6 @@
 package evolution
 
 import (
-	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/skill"
 )
 
@@ -18,16 +17,16 @@ import (
 type Option func(*serviceOpts)
 
 type serviceOpts struct {
-	managedSkillsDir   string
-	skillRepo          skill.Repository
-	memoryService      memory.Service
-	policy             Policy
-	publisher          Publisher
-	workerNum          int
-	queueSize          int
-	reviewerOptions    []LLMReviewerOption
-	customReviewer     Reviewer
-	hasReviewerOptions bool
+	managedSkillsDir          string
+	skillRepo                 skill.Repository
+	policy                    Policy
+	publisher                 Publisher
+	workerNum                 int
+	queueSize                 int
+	existingSkillBodyMaxChars int
+	reviewerOptions           []LLMReviewerOption
+	customReviewer            Reviewer
+	hasReviewerOptions        bool
 }
 
 // WithManagedSkillsDir sets the root directory where managed skill files are
@@ -41,11 +40,6 @@ func WithManagedSkillsDir(dir string) Option {
 // summaries into the reviewer and to call Refresh after new skills are written.
 func WithSkillRepository(repo skill.Repository) Option {
 	return func(o *serviceOpts) { o.skillRepo = repo }
-}
-
-// WithMemoryService sets the memory service for persisting extracted facts.
-func WithMemoryService(svc memory.Service) Option {
-	return func(o *serviceOpts) { o.memoryService = svc }
 }
 
 // WithPolicy overrides the default trigger policy.
@@ -66,6 +60,20 @@ func WithWorkerNum(n int) Option {
 // WithQueueSize sets the per-worker job queue buffer size.
 func WithQueueSize(n int) Option {
 	return func(o *serviceOpts) { o.queueSize = n }
+}
+
+// WithExistingSkillBodyMaxChars sets the per-skill body excerpt budget the
+// worker uses when snapshotting the skill library for the reviewer. A
+// positive value caps each excerpt at that many characters; 0 falls back
+// to DefaultExistingSkillBodyMaxChars; a negative value disables bodies
+// entirely so the reviewer only sees `name: description` (cheap mode).
+//
+// Increase this when SKILL.md bodies are long enough that the head
+// excerpt misses meaningful procedural content; decrease it (or set
+// negative) when the skill library is large and the reviewer prompt is
+// already near the model's context limit.
+func WithExistingSkillBodyMaxChars(n int) Option {
+	return func(o *serviceOpts) { o.existingSkillBodyMaxChars = n }
 }
 
 // WithReviewerOptions forwards LLMReviewerOption values to the default

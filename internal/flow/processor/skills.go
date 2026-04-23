@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/event"
@@ -46,11 +47,22 @@ const (
 	defaultSkillLoadMode = SkillLoadModeTurn
 )
 
+var skillOverviewStopwords = map[string]struct{}{
+	"the": {}, "and": {}, "for": {}, "with": {}, "from": {}, "into": {},
+	"this": {}, "that": {}, "your": {}, "you": {}, "must": {}, "should": {},
+	"need": {}, "task": {}, "tasks": {}, "using": {}, "use": {}, "user": {},
+	"final": {}, "json": {}, "file": {}, "files": {}, "output": {}, "result": {},
+	"results": {}, "tool": {}, "tools": {}, "workspace": {}, "required": {},
+	"include": {}, "save": {}, "write": {}, "create": {}, "build": {},
+	"easy": {}, "medium": {}, "hard": {},
+}
+
 type skillsRequestProcessorOptions struct {
 	toolingGuidance   *string
 	loadMode          string
 	toolResultMode    bool
 	maxLoadedSkills   int
+	maxOverviewSkills int
 	toolProfile       string
 	toolFlags         skillprofile.Flags
 	toolFlagsResolver func(*agent.Invocation) skillprofile.Flags
@@ -167,6 +179,28 @@ func WithMaxLoadedSkills(max int) SkillsRequestProcessorOption {
 	}
 }
 
+// WithMaxOverviewSkills caps how many skill summaries (name +
+// description) are rendered into the system-prompt overview.
+//
+// When max <= 0, no cap is applied (default behavior) and every skill
+// summary is rendered.
+//
+// When max > 0 and the repository exposes more than max skills, only
+// the first max are rendered with full descriptions. The remaining
+// skill names are listed as a compact "Additional skills" tail so the
+// agent can still discover them via skill_load. Truncation is
+// deterministic — repository order is preserved, so tests and prompt
+// caching stay stable.
+//
+// Use this when a large managed-skill library risks pushing the system
+// prompt close to the model's context window. Capping the overview
+// trades full per-skill context for a discovery-only tail of names.
+func WithMaxOverviewSkills(max int) SkillsRequestProcessorOption {
+	return func(o *skillsRequestProcessorOptions) {
+		o.maxOverviewSkills = max
+	}
+}
+
 // SkillsRequestProcessor injects skill overviews and loaded contents.
 //
 // Behavior:
@@ -185,6 +219,7 @@ type SkillsRequestProcessor struct {
 	loadMode          string
 	toolResultMode    bool
 	maxLoadedSkills   int
+	maxOverviewSkills int
 	toolFlags         skillprofile.Flags
 	toolFlagsResolver func(*agent.Invocation) skillprofile.Flags
 }
@@ -224,6 +259,7 @@ func NewSkillsRequestProcessor(
 		loadMode:          normalizeSkillLoadMode(options.loadMode),
 		toolResultMode:    options.toolResultMode,
 		maxLoadedSkills:   options.maxLoadedSkills,
+		maxOverviewSkills: options.maxOverviewSkills,
 		toolFlags:         flags,
 		toolFlagsResolver: options.toolFlagsResolver,
 	}
@@ -669,14 +705,36 @@ func (p *SkillsRequestProcessor) injectOverview(
 	if len(sums) == 0 {
 		return
 	}
+	sums = prioritizeSummariesForRequest(sums, req.Messages)
+	rendered, truncated := p.applyOverviewCap(sums)
+	flags := p.toolFlagsForInvocation(inv)
 	var b strings.Builder
 	b.WriteString(skillsOverviewHeader)
+	if len(truncated) > 0 {
+		fmt.Fprintf(&b, " (showing %d of %d; remaining names listed below)",
+			len(rendered), len(sums))
+	}
 	b.WriteString("\n")
-	for _, s := range sums {
+	if flags.Load && !flags.Run {
+		b.WriteString("The short lines below are routing summaries only. ")
+		b.WriteString("If one looks relevant, call skill_load before relying on it or repeating domain-specific tool work.\n")
+	}
+	for _, s := range rendered {
 		line := fmt.Sprintf("- %s: %s\n", s.Name, s.Description)
 		b.WriteString(line)
 	}
-	flags := p.toolFlagsForInvocation(inv)
+	if len(truncated) > 0 {
+		// Render the truncated tail as names only so the agent can
+		// still discover and skill_load them, paying just one
+		// comma-separated line of tokens instead of full descriptions.
+		b.WriteString("Additional skills (use skill_load by name to access): ")
+		names := make([]string, 0, len(truncated))
+		for _, s := range truncated {
+			names = append(names, s.Name)
+		}
+		b.WriteString(strings.Join(names, ", "))
+		b.WriteString("\n")
+	}
 	if capability := p.capabilityGuidanceText(flags); capability != "" {
 		b.WriteString(capability)
 	}
@@ -700,6 +758,145 @@ func (p *SkillsRequestProcessor) injectOverview(
 	// No system message yet: create one at the front.
 	msg := model.NewSystemMessage(overview)
 	req.Messages = append([]model.Message{msg}, req.Messages...)
+}
+
+// applyOverviewCap splits the available summaries into a "rendered"
+// slice (full description) and a "truncated" slice (names only). When
+// no cap is configured or every summary fits, truncated is empty.
+func (p *SkillsRequestProcessor) applyOverviewCap(
+	sums []skill.Summary,
+) (rendered, truncated []skill.Summary) {
+	if p.maxOverviewSkills <= 0 || len(sums) <= p.maxOverviewSkills {
+		return sums, nil
+	}
+	return sums[:p.maxOverviewSkills], sums[p.maxOverviewSkills:]
+}
+
+func prioritizeSummariesForRequest(
+	sums []skill.Summary,
+	messages []model.Message,
+) []skill.Summary {
+	if len(sums) < 2 {
+		return sums
+	}
+	queryWeights := overviewQueryWeights(messages)
+	if len(queryWeights) == 0 {
+		return sums
+	}
+	type scoredSummary struct {
+		summary skill.Summary
+		score   int
+	}
+	scored := make([]scoredSummary, len(sums))
+	maxScore := 0
+	for i, s := range sums {
+		score := overviewSummaryScore(s, queryWeights)
+		if score > maxScore {
+			maxScore = score
+		}
+		scored[i] = scoredSummary{summary: s, score: score}
+	}
+	if maxScore == 0 {
+		return sums
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+	out := make([]skill.Summary, len(scored))
+	for i, item := range scored {
+		out[i] = item.summary
+	}
+	return out
+}
+
+func overviewQueryWeights(messages []model.Message) map[string]int {
+	if len(messages) == 0 {
+		return nil
+	}
+	var query strings.Builder
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != model.RoleUser {
+			continue
+		}
+		if text := strings.TrimSpace(overviewMessageText(msg)); text != "" {
+			if query.Len() > 0 {
+				query.WriteString("\n")
+			}
+			query.WriteString(text)
+			break
+		}
+	}
+	if query.Len() == 0 {
+		return nil
+	}
+	weights := make(map[string]int)
+	for _, token := range overviewTokens(query.String()) {
+		weights[token]++
+	}
+	return weights
+}
+
+func overviewSummaryScore(
+	summary skill.Summary,
+	queryWeights map[string]int,
+) int {
+	if len(queryWeights) == 0 {
+		return 0
+	}
+	nameTokens := make(map[string]struct{})
+	for _, token := range overviewTokens(summary.Name) {
+		nameTokens[token] = struct{}{}
+	}
+	descTokens := make(map[string]struct{})
+	for _, token := range overviewTokens(summary.Description) {
+		descTokens[token] = struct{}{}
+	}
+	score := 0
+	for token, weight := range queryWeights {
+		if _, ok := nameTokens[token]; ok {
+			score += 3 * weight
+			continue
+		}
+		if _, ok := descTokens[token]; ok {
+			score += weight
+		}
+	}
+	return score
+}
+
+func overviewTokens(text string) []string {
+	text = strings.ToLower(text)
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if len(field) < 3 {
+			continue
+		}
+		if _, stop := skillOverviewStopwords[field]; stop {
+			continue
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+func overviewMessageText(msg model.Message) string {
+	if msg.Content != "" {
+		return msg.Content
+	}
+	var parts []string
+	for _, part := range msg.ContentParts {
+		if part.Text != nil {
+			parts = append(parts, *part.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (p *SkillsRequestProcessor) toolFlagsForInvocation(
@@ -738,6 +935,10 @@ func (p *SkillsRequestProcessor) capabilityGuidanceText(
 		b.WriteString("knowledge loading only.\n")
 		b.WriteString("- Built-in skill execution tools are unavailable in ")
 		b.WriteString("the current mode.\n")
+		b.WriteString("- The short skill summaries above are routing hints ")
+		b.WriteString("only. If a skill seems relevant, call skill_load ")
+		b.WriteString("before relying on it or before repeating a workflow ")
+		b.WriteString("pattern across multiple entities/items.\n")
 		b.WriteString("- If a loaded skill describes scripts, shell commands, ")
 		b.WriteString("workspace paths, generated files, or interactive ")
 		b.WriteString("flows, treat that content as reference only. Use ")
@@ -801,6 +1002,12 @@ func defaultKnowledgeOnlyGuidance(flags skillprofile.Flags) string {
 	b.WriteString("- Use skills for progressive disclosure only: load ")
 	b.WriteString("SKILL.md first, then inspect only the documentation ")
 	b.WriteString("needed for the current task.\n")
+	b.WriteString("- Treat the overview lines above as routing hints, not ")
+	b.WriteString("as a sufficient checklist. If a skill looks relevant, ")
+	b.WriteString("call skill_load before you rely on it.\n")
+	b.WriteString("- Prefer loading one plausible skill early over ")
+	b.WriteString("re-reading the same task pattern and repeating the ")
+	b.WriteString("same domain tool calls without new information.\n")
 	appendKnowledgeGuidance(&b, flags)
 	b.WriteString("- Treat loaded skill content as domain guidance. Do ")
 	b.WriteString("not claim you executed scripts, shell commands, or ")
@@ -980,6 +1187,8 @@ func appendKnowledgeGuidance(
 		b.WriteString("- If you need docs, request them directly with ")
 		b.WriteString("skill_load.docs or include_all_docs.\n")
 	}
+	b.WriteString("- When one skill is clearly relevant, prefer loading it ")
+	b.WriteString("before repeating the same domain workflow from scratch.\n")
 	b.WriteString("- Avoid include_all_docs unless the user asks or the ")
 	b.WriteString("task genuinely needs the full doc set.\n")
 }
