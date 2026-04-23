@@ -2985,6 +2985,141 @@ func TestModel_GenerateContent_StreamingUnexpectedEOFAfterContentChunkStillRetur
 	}
 }
 
+func TestModel_GenerateContent_StreamingUnexpectedEOFWithFinishReasonInReasoningChunkRecovers(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		// Simulate DeepSeek behavior: finish_reason is in a chunk that also
+		// carries reasoning_content (which causes accumulateChunk to skip it),
+		// followed by a usage-only chunk with empty choices, then a truncated
+		// connection (no [DONE] and no proper chunked terminator).
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			// Chunk 1: reasoning content start
+			"data: "+`{"id":"deepseek-reason","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-v3","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"Let me think..."},"finish_reason":null}]}`+"\n\n",
+			// Chunk 2: regular content
+			"data: "+`{"id":"deepseek-reason","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-v3","choices":[{"index":0,"delta":{"content":"Hello, world!"},"finish_reason":null}]}`+"\n\n",
+			// Chunk 3: finish_reason stop (no reasoning_content)
+			"data: "+`{"id":"deepseek-reason","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-v3","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\n",
+			// Chunk 4: usage-only chunk with empty choices (DeepSeek style)
+			"data: "+`{"id":"deepseek-reason","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-v3","choices":[],"usage":{"completion_tokens":50,"prompt_tokens":100,"total_tokens":150}}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("deepseek-v3",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	// The EOF should be recovered because we saw finish_reason:"stop" in the stream.
+	require.Nil(t, finalResponse.Error, "expected no error since finish_reason was seen in stream")
+	require.True(t, finalResponse.Done || !finalResponse.IsPartial)
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.NoError(t, callbackErr)
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
+	}
+}
+
+func TestModel_GenerateContent_StreamingUnexpectedEOFWithReasoningContentButNoFinishReasonReturnsError(t *testing.T) {
+	callbackErrCh := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		// Simulate a truly truncated stream: reasoning + content but no
+		// finish_reason was ever sent before connection was lost.
+		writeTruncatedChunkedSSE(
+			t,
+			w,
+			"data: "+`{"id":"deepseek-trunc","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-v3","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":"Thinking..."},"finish_reason":null}]}`+"\n\n",
+			"data: "+`{"id":"deepseek-trunc","object":"chat.completion.chunk","created":1699200000,"model":"deepseek-v3","choices":[{"index":0,"delta":{"content":"partial response"},"finish_reason":null}]}`+"\n\n",
+		)
+	}))
+	defer server.Close()
+
+	m := New("deepseek-v3",
+		WithBaseURL(server.URL),
+		WithAPIKey("test-key"),
+		WithChatStreamCompleteCallback(func(
+			ctx context.Context,
+			req *openaigo.ChatCompletionNewParams,
+			acc *openaigo.ChatCompletionAccumulator,
+			streamErr error,
+		) {
+			callbackErrCh <- streamErr
+		}),
+	)
+
+	req := &model.Request{
+		Messages: []model.Message{
+			model.NewUserMessage("hi"),
+		},
+		GenerationConfig: model.GenerationConfig{
+			Stream: true,
+		},
+	}
+
+	responseChan, err := m.GenerateContent(context.Background(), req)
+	require.NoError(t, err)
+
+	var responses []*model.Response
+	for response := range responseChan {
+		responses = append(responses, response)
+	}
+
+	require.NotEmpty(t, responses)
+	finalResponse := responses[len(responses)-1]
+	// No finish_reason was ever seen, so the EOF should NOT be recovered.
+	require.NotNil(t, finalResponse.Error)
+	require.Equal(t, model.ErrorTypeStreamError, finalResponse.Error.Type)
+	require.Contains(t, finalResponse.Error.Message, "unexpected EOF")
+
+	select {
+	case callbackErr := <-callbackErrCh:
+		require.Error(t, callbackErr)
+	case <-time.After(time.Second):
+		t.Fatal("stream complete callback was not called")
+	}
+}
+
 func TestAllAccumulatedChoicesFinished(t *testing.T) {
 	tests := []struct {
 		name string
@@ -3322,13 +3457,14 @@ func TestNormalizeStreamingError(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		streamErr error
-		acc       openai.ChatCompletionAccumulator
-		lastChunk openai.ChatCompletionChunk
-		sawChunk  bool
-		wantNil   bool
-		wantErr   error
+		name            string
+		streamErr       error
+		acc             openai.ChatCompletionAccumulator
+		lastChunk       openai.ChatCompletionChunk
+		sawChunk        bool
+		sawFinishReason bool
+		wantNil         bool
+		wantErr         error
 	}{
 		{
 			name:      "nil error remains nil",
@@ -3389,11 +3525,47 @@ func TestNormalizeStreamingError(t *testing.T) {
 			sawChunk:  true,
 			wantErr:   io.ErrUnexpectedEOF,
 		},
+		{
+			name:      "sawFinishReason recovers eof even when acc has no finish_reason",
+			streamErr: io.ErrUnexpectedEOF,
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								Content: "some content",
+							},
+						},
+					},
+				},
+			},
+			sawChunk:        true,
+			sawFinishReason: true,
+			wantNil:         true,
+		},
+		{
+			name:      "no finish_reason seen and no acc finish still returns eof",
+			streamErr: io.ErrUnexpectedEOF,
+			acc: openai.ChatCompletionAccumulator{
+				ChatCompletion: openai.ChatCompletion{
+					Choices: []openai.ChatCompletionChoice{
+						{
+							Message: openai.ChatCompletionMessage{
+								Content: "partial content",
+							},
+						},
+					},
+				},
+			},
+			sawChunk:        true,
+			sawFinishReason: false,
+			wantErr:         io.ErrUnexpectedEOF,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeStreamingError(tt.streamErr, tt.acc, tt.lastChunk, tt.sawChunk)
+			got := normalizeStreamingError(tt.streamErr, tt.acc, tt.lastChunk, tt.sawChunk, tt.sawFinishReason)
 			if tt.wantNil {
 				require.NoError(t, got)
 				return

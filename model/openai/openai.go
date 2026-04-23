@@ -1297,6 +1297,10 @@ func (m *Model) handleStreamingResponseWithEmitter(
 	nextToolCallIndex := 0
 	var lastChunk openai.ChatCompletionChunk
 	var sawChunk bool
+	// Track whether any chunk carried a finish_reason. The accumulator may
+	// skip reasoning-content chunks, so finish_reason might not be recorded
+	// in acc even though the stream already delivered it.
+	var sawFinishReason bool
 
 	for stream.Next() {
 		chunk := stream.Current()
@@ -1321,6 +1325,9 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		m.accumulateChunk(chunk, &acc, &reasoningBuf)
 		lastChunk = snapshotChunkForEOFRecovery(chunk)
 		sawChunk = true
+		if !sawFinishReason && chunkHasFinishReason(chunk) {
+			sawFinishReason = true
+		}
 
 		// Suppress chunks that carry no meaningful visible delta (including
 		// tool_call deltas, which we'll surface only in the final response).
@@ -1341,7 +1348,7 @@ func (m *Model) handleStreamingResponseWithEmitter(
 		}
 	}
 
-	streamErr := normalizeStreamingError(stream.Err(), acc, lastChunk, sawChunk)
+	streamErr := normalizeStreamingError(stream.Err(), acc, lastChunk, sawChunk, sawFinishReason)
 
 	// Call the stream complete callback before the final response is emitted.
 	m.handleStreamCompleteCallback(ctx, chatRequest, acc, streamErr)
@@ -2084,6 +2091,7 @@ func normalizeStreamingError(
 	acc openai.ChatCompletionAccumulator,
 	lastChunk openai.ChatCompletionChunk,
 	sawChunk bool,
+	sawFinishReason bool,
 ) error {
 	if streamErr == nil {
 		return nil
@@ -2094,10 +2102,30 @@ func normalizeStreamingError(
 	if allAccumulatedChoicesFinished(acc) {
 		return nil
 	}
+	// Some providers (e.g. DeepSeek via third-party gateways) include the
+	// finish_reason chunk together with reasoning_content. Because the
+	// accumulator skips chunks that carry reasoning content to avoid SDK
+	// panics, the finish_reason never gets recorded in acc even though the
+	// response is actually complete. We track whether *any* chunk in the
+	// stream carried a finish_reason to handle this case.
+	if sawFinishReason {
+		return nil
+	}
 	if len(acc.Choices) == 1 && hasRecoverableToolCallBoundary(acc, lastChunk, sawChunk) {
 		return nil
 	}
 	return streamErr
+}
+
+// chunkHasFinishReason returns true when at least one choice in the chunk
+// carries a non-empty finish_reason.
+func chunkHasFinishReason(chunk openai.ChatCompletionChunk) bool {
+	for _, c := range chunk.Choices {
+		if c.FinishReason != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func allAccumulatedChoicesFinished(acc openai.ChatCompletionAccumulator) bool {
