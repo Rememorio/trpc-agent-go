@@ -16,8 +16,7 @@ import (
 )
 
 // SummaryDispatchPolicy controls which branch summaries are allowed to run and
-// whether an allowed branch update should also refresh the full-session
-// summary.
+// whether branch-triggered updates should also refresh the full-session summary.
 type SummaryDispatchPolicy struct {
 	FilterAllowlist    map[string]struct{}
 	CascadeFullSession bool
@@ -40,13 +39,17 @@ func (p SummaryDispatchPolicy) SummaryTargets(filterKey string) []string {
 	if filterKey == session.SummaryFilterKeyAllContents {
 		return []string{session.SummaryFilterKeyAllContents}
 	}
-	if !p.allowsBranch(filterKey) {
+	targets := make([]string, 0, 2)
+	if p.allowsBranch(filterKey) {
+		targets = append(targets, filterKey)
+	}
+	if p.CascadeFullSession {
+		targets = append(targets, session.SummaryFilterKeyAllContents)
+	}
+	if len(targets) == 0 {
 		return nil
 	}
-	if !p.CascadeFullSession {
-		return []string{filterKey}
-	}
-	return []string{filterKey, session.SummaryFilterKeyAllContents}
+	return targets
 }
 
 // AllowsFilterKey reports whether the given filterKey may be summarized when a

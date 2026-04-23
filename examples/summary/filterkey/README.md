@@ -59,6 +59,7 @@ go run ./examples/summary/filterkey -model deepseek-chat -max-words 100 -streami
 - When `-allowlist` is empty, all non-empty branch filterKeys can trigger summaries.
 - When `-cascade-full=false`, `/list` no longer shows the `(full session)` summary unless you generate it separately.
 - The current chat filterKey can still be switched freely with `/key`; disallowed keys just stop producing new summaries.
+- In code, an explicit empty allowlist such as `WithSummaryFilterAllowlist("")` blocks branch summary targets. With cascade enabled, branch-triggered jobs still refresh only the full-session summary.
 - Allowlist matching is hierarchical and segment-aware, not a raw string prefix check.
 - Examples:
   - Allowing `filterkey-demo-app/calc` matches `filterkey-demo-app/calc` and `filterkey-demo-app/calc/history`.

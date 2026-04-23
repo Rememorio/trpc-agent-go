@@ -870,14 +870,32 @@ func TestSummaryDispatchPolicy_SummaryTargets(t *testing.T) {
 			want:      []string{"app/billing"},
 		},
 		{
-			name:      "allowlist miss returns no targets",
+			name:      "allowlist miss still cascades to full session",
 			policy:    NewSummaryDispatchPolicy([]string{"app/support"}, true),
+			filterKey: "app/billing",
+			want:      []string{""},
+		},
+		{
+			name:      "allowlist miss returns no targets when cascade disabled",
+			policy:    NewSummaryDispatchPolicy([]string{"app/support"}, false),
 			filterKey: "app/billing",
 			want:      nil,
 		},
 		{
-			name:      "explicit empty allowlist blocks branch summaries",
+			name:      "explicit empty allowlist cascades full session only",
 			policy:    NewSummaryDispatchPolicy([]string{}, true),
+			filterKey: "app/billing",
+			want:      []string{""},
+		},
+		{
+			name:      "empty string allowlist entry cascades full session only",
+			policy:    NewSummaryDispatchPolicy([]string{""}, true),
+			filterKey: "app/billing",
+			want:      []string{""},
+		},
+		{
+			name:      "explicit empty allowlist returns no targets when cascade disabled",
+			policy:    NewSummaryDispatchPolicy([]string{}, false),
 			filterKey: "app/billing",
 			want:      nil,
 		},
@@ -1033,12 +1051,36 @@ func TestCreateSessionSummaryWithCascade(t *testing.T) {
 			},
 		},
 		{
-			name:        "allowlist miss skips all work",
+			name:        "allowlist miss only creates full-session summary",
 			filterKey:   "user-messages",
 			force:       false,
 			policy:      NewSummaryDispatchPolicy([]string{"billing"}, true),
 			events:      multiFilterKeyEvents,
+			expectCalls: []string{""},
+			expectError: false,
+			createSummaryFunc: func(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
+				return nil
+			},
+		},
+		{
+			name:        "allowlist miss skips all work when cascade disabled",
+			filterKey:   "user-messages",
+			force:       false,
+			policy:      NewSummaryDispatchPolicy([]string{"billing"}, false),
+			events:      multiFilterKeyEvents,
 			expectCalls: nil,
+			expectError: false,
+			createSummaryFunc: func(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
+				return nil
+			},
+		},
+		{
+			name:        "empty string allowlist only creates full-session summary",
+			filterKey:   "user-messages",
+			force:       false,
+			policy:      NewSummaryDispatchPolicy([]string{""}, true),
+			events:      multiFilterKeyEvents,
+			expectCalls: []string{""},
 			expectError: false,
 			createSummaryFunc: func(ctx context.Context, sess *session.Session, filterKey string, force bool) error {
 				return nil

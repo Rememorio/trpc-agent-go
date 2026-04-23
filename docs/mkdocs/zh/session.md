@@ -2381,7 +2381,20 @@ sessionService := inmemory.NewSessionService(
 )
 ```
 
-- `WithSummaryFilterAllowlist(...)` 只作用于非空分支 key。
+- `WithSummaryFilterAllowlist(...)` 只控制非空分支摘要目标，不会阻止 `session.SummaryFilterKeyAllContents` 这个全量摘要目标。
+- `WithCascadeFullSessionSummary(...)` 控制非空分支触发摘要时，是否同时刷新全量会话摘要。
+- 如果只想保留 branch 触发出来的全量摘要，不写任何 branch 摘要，可以显式传入空 allowlist，并保持默认 cascade 开启：
+
+```go
+sessionService, err := mysql.NewService(
+    mysql.WithMySQLClientDSN(dsn),
+    mysql.WithSummarizer(summarizer),
+    mysql.WithSummaryFilterAllowlist(""),
+)
+```
+
+- `mysql.WithSummaryFilterAllowlist("")` 和 `mysql.WithSummaryFilterAllowlist()` 都表示“不允许任何 branch key”；在默认 cascade 行为下，仍然会刷新全量会话摘要。
+- 如果同时设置 `mysql.WithCascadeFullSessionSummary(false)`，非空 branch 触发时就没有任何摘要目标，因此不会生成摘要。
 - allowlist 使用带分隔符的层级匹配，不是原始字符串前缀匹配。框架内部会先给两边补上 filter key 分隔符（`"/"`），再判断两者是否处于同一条祖先/子孙层级路径上。
 - 例子：
   - 放行 `my-app/tool` 时，会匹配 `my-app/tool` 和 `my-app/tool/search`。
@@ -2390,7 +2403,7 @@ sessionService := inmemory.NewSessionService(
   - 放行 `my-app/tool` 时，不会匹配 `other-app/tool`。
 - 即使配置了 allowlist，`session.SummaryFilterKeyAllContents` 仍然可以被直接用于生成全量会话摘要。
 - 不配置 allowlist 时会保持兼容行为，所有分支 `FilterKey` 都可以触发摘要。
-- 显式传入空 allowlist 会阻止所有分支摘要，但仍保留直接生成全量摘要的能力。
+- 显式传入空 allowlist 会阻止 branch 摘要目标；如果 cascade 开启，branch 触发时仍会刷新全量会话摘要。
 
 #### 完整示例
 
