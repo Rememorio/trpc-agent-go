@@ -75,6 +75,67 @@ func TestMCPDynamicHeaders_AppliedPerRequest(t *testing.T) {
 	require.Equal(t, "dynamic-call-token", callHeaders.Get("X-Static"))
 }
 
+func TestMCPDynamicHeaders_ComposesWithUserBeforeRequest(t *testing.T) {
+	handler := &recordingMCPHTTPHandler{}
+	toolSet := NewMCPToolSet(
+		ConnectionConfig{
+			Transport: "streamable",
+			ServerURL: "http://mcp.test",
+		},
+		WithMCPOptions(
+			tmcp.WithClientGetSSEEnabled(false),
+			tmcp.WithHTTPReqHandler(handler),
+			tmcp.WithHTTPBeforeRequest(
+				func(ctx context.Context, req *http.Request) error {
+					req.Header.Set("Authorization", "Bearer stale")
+					req.Header.Set("X-User-Hook", "set")
+					return nil
+				},
+			),
+		),
+		WithDynamicHeaders(func(ctx context.Context) (map[string]string, error) {
+			token, _ := ctx.Value(dynamicHeaderContextKey{}).(string)
+			if token == "" {
+				return nil, nil
+			}
+			return map[string]string{
+				"Authorization": "Bearer " + token,
+				"X-Dynamic":     token,
+			}, nil
+		}),
+	)
+	defer func() { _ = toolSet.Close() }()
+
+	initCtx := context.WithValue(
+		context.Background(),
+		dynamicHeaderContextKey{},
+		"init-token",
+	)
+	require.NoError(t, toolSet.sessionManager.connect(initCtx))
+
+	callCtx := context.WithValue(
+		context.Background(),
+		dynamicHeaderContextKey{},
+		"call-token",
+	)
+	_, err := toolSet.sessionManager.callTool(
+		callCtx,
+		"echo",
+		map[string]any{"q": "hello"},
+	)
+	require.NoError(t, err)
+
+	initHeaders := handler.headersForMethod(t, "initialize")
+	require.Equal(t, "set", initHeaders.Get("X-User-Hook"))
+	require.Equal(t, "Bearer init-token", initHeaders.Get("Authorization"))
+	require.Equal(t, "init-token", initHeaders.Get("X-Dynamic"))
+
+	callHeaders := handler.headersForMethod(t, "tools/call")
+	require.Equal(t, "set", callHeaders.Get("X-User-Hook"))
+	require.Equal(t, "Bearer call-token", callHeaders.Get("Authorization"))
+	require.Equal(t, "call-token", callHeaders.Get("X-Dynamic"))
+}
+
 type recordingMCPHTTPHandler struct {
 	mu       sync.Mutex
 	requests []recordedMCPRequest
@@ -113,29 +174,25 @@ func (h *recordingMCPHTTPHandler) Handle(
 
 	switch envelope.Method {
 	case "initialize":
-		return mcpHTTPResponse(http.StatusOK, `{
-			"jsonrpc":"2.0",
-			"id":1,
-			"result":{
-				"protocolVersion":"2025-03-26",
-				"serverInfo":{"name":"test","version":"1.0.0"},
-				"capabilities":{}
-			}
-		}`), nil
+		return mcpJSONRPCResponse(http.StatusOK, envelope.ID, map[string]any{
+			"protocolVersion": "2025-03-26",
+			"serverInfo": map[string]any{
+				"name":    "test",
+				"version": "1.0.0",
+			},
+			"capabilities": map[string]any{},
+		}), nil
 	case "tools/call":
-		return mcpHTTPResponse(http.StatusOK, `{
-			"jsonrpc":"2.0",
-			"id":3,
-			"result":{
-				"content":[{"type":"text","text":"ok"}]
-			}
-		}`), nil
+		return mcpJSONRPCResponse(http.StatusOK, envelope.ID, map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "ok",
+			}},
+		}), nil
 	default:
-		return mcpHTTPResponse(http.StatusOK, `{
-			"jsonrpc":"2.0",
-			"id":2,
-			"result":{"tools":[]}
-		}`), nil
+		return mcpJSONRPCResponse(http.StatusOK, envelope.ID, map[string]any{
+			"tools": []any{},
+		}), nil
 	}
 }
 
@@ -164,4 +221,13 @@ func mcpHTTPResponse(status int, body string) *http.Response {
 		Header:     header,
 		Body:       io.NopCloser(strings.NewReader(body)),
 	}
+}
+
+func mcpJSONRPCResponse(status int, id any, result any) *http.Response {
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"result":  result,
+	})
+	return mcpHTTPResponse(status, string(body))
 }

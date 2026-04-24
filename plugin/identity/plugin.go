@@ -32,6 +32,12 @@ const (
 // Plugin is a Runner plugin that transparently resolves and injects user
 // identity into every tool call.
 //
+// Resolved identity is stored in Invocation state during BeforeAgent and then
+// attached to each tool-call context during BeforeTool. Sensitive fields such
+// as Identity.Headers and Identity.EnvVars stay in context so HTTP clients and
+// command executors can consume them at request or execution time without
+// copying secrets into model-visible tool arguments.
+//
 // Usage:
 //
 //	provider := identity.ProviderFunc(func(ctx context.Context, uid, sid string) (*identity.Identity, error) {
@@ -53,20 +59,11 @@ type Plugin struct {
 var _ plugin.Plugin = (*Plugin)(nil)
 
 type pluginOptions struct {
-	envInjection bool // inject EnvVars into env-capable tool args. Default true.
 	argInjection bool // inject _identity key into all tool args. Default false.
 }
 
 // Option configures a Plugin.
 type Option func(*pluginOptions)
-
-// WithEnvInjection enables or disables automatic environment-variable injection.
-// When enabled, the plugin injects Identity.EnvVars into tool arguments when
-// the tool declaration exposes an "env" object field, such as workspace_exec,
-// skill_run, and exec_command. Default: true.
-func WithEnvInjection(enable bool) Option {
-	return func(o *pluginOptions) { o.envInjection = enable }
-}
 
 // WithArgInjection enables injection of identity-related fields into generic
 // tool JSON arguments (adds "_identity" key). Default: false.
@@ -75,8 +72,11 @@ func WithArgInjection(enable bool) Option {
 }
 
 // NewPlugin creates a new identity Plugin with the given Provider.
+//
+// By default, NewPlugin only propagates identity through context. Tool
+// arguments are left unchanged unless WithArgInjection(true) is enabled.
 func NewPlugin(provider Provider, opts ...Option) *Plugin {
-	o := pluginOptions{envInjection: true}
+	o := pluginOptions{}
 	for _, fn := range opts {
 		fn(&o)
 	}
@@ -111,6 +111,11 @@ func (p *Plugin) beforeAgent(
 	}
 
 	inv := args.Invocation
+	if existing, ok := inv.GetState(StateKey); ok {
+		if _, ok := existing.(*Identity); ok {
+			return nil, nil
+		}
+	}
 	userID := ""
 	sessionID := ""
 	if inv.Session != nil {
@@ -157,88 +162,13 @@ func (p *Plugin) beforeTool(
 		Context: NewContext(ctx, id),
 	}
 
-	rawArgs := args.Arguments
-	modified := false
-
-	if p.opts.envInjection && len(id.EnvVars) > 0 && acceptsEnvArgument(args) {
-		nextArgs, ok := p.tryInjectEnvVars(rawArgs, id)
-		if ok {
-			rawArgs = nextArgs
-			modified = true
-		}
-	}
-
 	if p.opts.argInjection {
-		nextArgs, ok := p.tryInjectIdentityArg(rawArgs, id)
+		nextArgs, ok := p.tryInjectIdentityArg(args.Arguments, id)
 		if ok {
-			rawArgs = nextArgs
-			modified = true
+			result.ModifiedArguments = nextArgs
 		}
-	}
-
-	if modified {
-		result.ModifiedArguments = rawArgs
 	}
 	return result, nil
-}
-
-func acceptsEnvArgument(args *tool.BeforeToolArgs) bool {
-	if args == nil {
-		return false
-	}
-	if declarationAcceptsEnv(args.Declaration) {
-		return true
-	}
-	switch args.ToolName {
-	case "workspace_exec", "skill_run", "exec_command", "hostexec_exec_command":
-		return true
-	default:
-		return false
-	}
-}
-
-func declarationAcceptsEnv(decl *tool.Declaration) bool {
-	if decl == nil || decl.InputSchema == nil {
-		return false
-	}
-	prop, ok := decl.InputSchema.Properties["env"]
-	if !ok || prop == nil {
-		return false
-	}
-	return prop.Type == "" || prop.Type == "object"
-}
-
-// tryInjectEnvVars modifies the JSON arguments to include identity environment
-// variables. Existing tool-call env values take precedence.
-func (p *Plugin) tryInjectEnvVars(rawArgs []byte, id *Identity) ([]byte, bool) {
-	if len(id.EnvVars) == 0 {
-		return nil, false
-	}
-
-	m, ok := decodeObjectArgs(rawArgs)
-	if !ok {
-		return nil, false
-	}
-
-	env, ok := m["env"].(map[string]any)
-	if !ok {
-		if _, exists := m["env"]; exists && m["env"] != nil {
-			return nil, false
-		}
-		env = make(map[string]any)
-	}
-	for k, v := range id.EnvVars {
-		if _, alreadySet := env[k]; !alreadySet {
-			env[k] = v
-		}
-	}
-	m["env"] = env
-
-	modified, err := json.Marshal(m)
-	if err != nil {
-		return nil, false
-	}
-	return modified, true
 }
 
 // tryInjectIdentityArg adds an "_identity" key to generic tool arguments.
@@ -248,26 +178,38 @@ func (p *Plugin) tryInjectIdentityArg(rawArgs []byte, id *Identity) ([]byte, boo
 		return nil, false
 	}
 
-	m["_identity"] = map[string]any{
-		"user_id":   id.UserID,
-		"token":     id.Token,
-		"signature": id.Signature,
+	idMap := make(map[string]any, 3)
+	if id.UserID != "" {
+		idMap["user_id"] = id.UserID
 	}
+	if id.Token != "" {
+		idMap["token"] = id.Token
+	}
+	if id.Signature != "" {
+		idMap["signature"] = id.Signature
+	}
+	if len(idMap) == 0 {
+		return nil, false
+	}
+	m["_identity"] = idMap
 
 	modified, err := json.Marshal(m)
 	if err != nil {
+		log.Debugf("[identity] tryInjectIdentityArg: marshal args: %v", err)
 		return nil, false
 	}
 	return modified, true
 }
 
 func decodeObjectArgs(rawArgs []byte) (map[string]any, bool) {
-	if len(bytes.TrimSpace(rawArgs)) == 0 {
+	trimmed := bytes.TrimSpace(rawArgs)
+	if len(trimmed) == 0 {
 		return map[string]any{}, true
 	}
 
 	var decoded any
-	if err := json.Unmarshal(rawArgs, &decoded); err != nil {
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		log.Debugf("[identity] decodeObjectArgs: invalid JSON args: %v", err)
 		return nil, false
 	}
 
@@ -280,6 +222,7 @@ func decodeObjectArgs(rawArgs []byte) (map[string]any, bool) {
 		}
 		return typed, true
 	default:
+		log.Debugf("[identity] decodeObjectArgs: expected object args, got %T", decoded)
 		return nil, false
 	}
 }

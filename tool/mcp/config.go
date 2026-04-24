@@ -195,6 +195,10 @@ func WithName(name string) ToolSetOption {
 // observe request-scoped headers. Otherwise only tools/call is guaranteed to
 // use the current run context.
 //
+// When combined with WithMCPOptions(mcp.WithHTTPBeforeRequest(...)), user
+// callbacks run first and dynamic headers are applied last so request-scoped
+// identity can override earlier header values.
+//
 // Example:
 //
 //	mcp.WithDynamicHeaders(func(ctx context.Context) (map[string]string, error) {

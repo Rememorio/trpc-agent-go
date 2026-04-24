@@ -23,6 +23,15 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
 
+func requireBeforeAgent(t *testing.T, p *Plugin, inv *agent.Invocation) {
+	t.Helper()
+	_, err := p.beforeAgent(
+		context.Background(),
+		&agent.BeforeAgentArgs{Invocation: inv},
+	)
+	require.NoError(t, err)
+}
+
 func TestPlugin_Name(t *testing.T) {
 	p := NewPlugin(nil)
 	assert.Equal(t, "identity", p.Name())
@@ -37,7 +46,8 @@ func TestPlugin_ImplementsInterface(t *testing.T) {
 
 func TestIdentity_ContextRoundTrip(t *testing.T) {
 	id := &Identity{UserID: "eve", Token: "t"}
-	ctx := NewContext(context.Background(), id)
+	var nilCtx context.Context
+	ctx := NewContext(nilCtx, id)
 	got, ok := FromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "eve", got.UserID)
@@ -45,8 +55,8 @@ func TestIdentity_ContextRoundTrip(t *testing.T) {
 	_, ok = FromContext(context.Background())
 	assert.False(t, ok)
 
-	var nilCtx context.Context
-	_, ok = FromContext(nilCtx)
+	var nilFromCtx context.Context
+	_, ok = FromContext(nilFromCtx)
 	assert.False(t, ok)
 }
 
@@ -111,13 +121,36 @@ func TestPlugin_BeforeAgent_ResolvesIdentity(t *testing.T) {
 	assert.Equal(t, "tok-123", got.Token)
 }
 
+func TestPlugin_BeforeAgent_ReusesExistingIdentity(t *testing.T) {
+	called := false
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		called = true
+		return &Identity{UserID: uid}, nil
+	}))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "alice", ID: "sess-1"},
+	}
+	inv.SetState(StateKey, &Identity{UserID: "already-set"})
+
+	_, err := p.beforeAgent(
+		context.Background(),
+		&agent.BeforeAgentArgs{Invocation: inv},
+	)
+	require.NoError(t, err)
+	require.False(t, called)
+
+	val, ok := inv.GetState(StateKey)
+	require.True(t, ok)
+	require.Equal(t, "already-set", val.(*Identity).UserID)
+}
+
 func TestPlugin_BeforeAgent_NilProvider(t *testing.T) {
 	p := NewPlugin(nil)
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "x", ID: "s"},
 	}
-	_, err := p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
-	require.NoError(t, err)
+	requireBeforeAgent(t, p, inv)
 }
 
 func TestPlugin_BeforeAgent_NilArgs(t *testing.T) {
@@ -139,7 +172,7 @@ func TestPlugin_BeforeTool_InjectsContext(t *testing.T) {
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "bob", ID: "s1"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
@@ -156,7 +189,7 @@ func TestPlugin_BeforeTool_InjectsContext(t *testing.T) {
 	assert.Equal(t, "bob", got.UserID)
 }
 
-func TestPlugin_BeforeTool_InjectsEnvVars(t *testing.T) {
+func TestPlugin_BeforeTool_ContextCarriesEnvVars(t *testing.T) {
 	id := &Identity{
 		UserID:  "charlie",
 		EnvVars: map[string]string{"USER_ACCESS_TOKEN": "user-999", "BIZ_USER_ID": "charlie"},
@@ -169,7 +202,7 @@ func TestPlugin_BeforeTool_InjectsEnvVars(t *testing.T) {
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "charlie", ID: "s2"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
@@ -178,113 +211,29 @@ func TestPlugin_BeforeTool_InjectsEnvVars(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	require.NotNil(t, result.ModifiedArguments)
-
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
-
-	env, ok := m["env"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "user-999", env["USER_ACCESS_TOKEN"])
-	assert.Equal(t, "charlie", env["BIZ_USER_ID"])
-	assert.Equal(t, "ls -la", m["command"])
+	require.Nil(t, result.ModifiedArguments)
+	require.Equal(
+		t,
+		id.EnvVars,
+		EnvVarsFromContext(result.Context),
+	)
 }
 
-func TestPlugin_BeforeTool_PreservesExistingEnvVars(t *testing.T) {
-	id := &Identity{
-		UserID:  "dave",
-		EnvVars: map[string]string{"NEW_VAR": "new", "EXISTING": "override-attempt"},
-	}
+func TestPlugin_BeforeTool_NilArgs(t *testing.T) {
+	p := NewPlugin(nil)
+	result, err := p.beforeTool(context.Background(), nil)
+	require.NoError(t, err)
+	require.Nil(t, result)
+}
 
-	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
-		return id, nil
-	}))
-
-	inv := &agent.Invocation{
-		Session: &session.Session{UserID: "dave", ID: "s3"},
-	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
-	ctx := agent.NewInvocationContext(context.Background(), inv)
-
-	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+func TestPlugin_BeforeTool_NoInvocationInContext(t *testing.T) {
+	p := NewPlugin(nil)
+	result, err := p.beforeTool(context.Background(), &tool.BeforeToolArgs{
 		ToolName:  "workspace_exec",
-		Arguments: []byte(`{"command":"echo hi","env":{"EXISTING":"keep-me"}}`),
+		Arguments: []byte(`{"command":"pwd"}`),
 	})
 	require.NoError(t, err)
-	require.NotNil(t, result.ModifiedArguments)
-
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
-
-	env := m["env"].(map[string]any)
-	assert.Equal(t, "keep-me", env["EXISTING"])
-	assert.Equal(t, "new", env["NEW_VAR"])
-}
-
-func TestPlugin_BeforeTool_InjectsEnvVarsForEnvCapableDeclaration(t *testing.T) {
-	id := &Identity{
-		UserID:  "erin",
-		EnvVars: map[string]string{"USER_ACCESS_TOKEN": "user-abc"},
-	}
-
-	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
-		return id, nil
-	}))
-
-	inv := &agent.Invocation{
-		Session: &session.Session{UserID: "erin", ID: "s4"},
-	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
-	ctx := agent.NewInvocationContext(context.Background(), inv)
-
-	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
-		ToolName:  "custom_runner",
-		Arguments: []byte(`{"command":"whoami"}`),
-		Declaration: &tool.Declaration{
-			InputSchema: &tool.Schema{
-				Type: "object",
-				Properties: map[string]*tool.Schema{
-					"env": {Type: "object"},
-				},
-			},
-		},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result.ModifiedArguments)
-
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
-	env := m["env"].(map[string]any)
-	require.Equal(t, "user-abc", env["USER_ACCESS_TOKEN"])
-}
-
-func TestPlugin_BeforeTool_InjectsEnvVarsForSkillRun(t *testing.T) {
-	id := &Identity{
-		UserID:  "grace",
-		EnvVars: map[string]string{"USER_ACCESS_TOKEN": "user-skill"},
-	}
-
-	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
-		return id, nil
-	}))
-
-	inv := &agent.Invocation{
-		Session: &session.Session{UserID: "grace", ID: "s5"},
-	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
-	ctx := agent.NewInvocationContext(context.Background(), inv)
-
-	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
-		ToolName:  "skill_run",
-		Arguments: []byte(`{"skill":"deploy","command":"./run.sh"}`),
-	})
-	require.NoError(t, err)
-	require.NotNil(t, result.ModifiedArguments)
-
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
-	env := m["env"].(map[string]any)
-	require.Equal(t, "user-skill", env["USER_ACCESS_TOKEN"])
+	require.Nil(t, result)
 }
 
 func TestPlugin_BeforeTool_NoModificationForNonExecTools(t *testing.T) {
@@ -297,7 +246,7 @@ func TestPlugin_BeforeTool_NoModificationForNonExecTools(t *testing.T) {
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "eve", ID: "s4"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
@@ -314,12 +263,12 @@ func TestPlugin_BeforeTool_ArgInjection(t *testing.T) {
 
 	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
 		return id, nil
-	}), WithArgInjection(true), WithEnvInjection(false))
+	}), WithArgInjection(true))
 
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "frank", ID: "s5"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
@@ -340,7 +289,7 @@ func TestPlugin_BeforeTool_ArgInjection(t *testing.T) {
 	assert.Equal(t, "hello", m["query"])
 }
 
-func TestPlugin_BeforeTool_EnvAndArgInjectionCompose(t *testing.T) {
+func TestPlugin_BeforeTool_ContextAndArgInjectionCompose(t *testing.T) {
 	id := &Identity{
 		UserID:    "harry",
 		Token:     "tok-harry",
@@ -355,7 +304,7 @@ func TestPlugin_BeforeTool_EnvAndArgInjectionCompose(t *testing.T) {
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "harry", ID: "s6"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
@@ -363,44 +312,38 @@ func TestPlugin_BeforeTool_EnvAndArgInjectionCompose(t *testing.T) {
 		Arguments: []byte(`{"command":"env"}`),
 	})
 	require.NoError(t, err)
+	require.NotNil(t, result)
 	require.NotNil(t, result.ModifiedArguments)
+	require.Equal(
+		t,
+		id.EnvVars,
+		EnvVarsFromContext(result.Context),
+	)
 
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
-	env := m["env"].(map[string]any)
-	require.Equal(t, "user-harry", env["USER_ACCESS_TOKEN"])
 	idMap := m["_identity"].(map[string]any)
 	require.Equal(t, "harry", idMap["user_id"])
 	require.Equal(t, "tok-harry", idMap["token"])
+	require.NotContains(t, m, "env")
 }
 
-func TestPlugin_BeforeTool_InjectsEnvVarsIntoEmptyArguments(t *testing.T) {
-	id := &Identity{
-		UserID:  "ivy",
-		EnvVars: map[string]string{"USER_ACCESS_TOKEN": "user-empty"},
-	}
+func TestPlugin_BeforeTool_ArgInjectionSupportsEmptyArguments(t *testing.T) {
+	id := &Identity{UserID: "ivy"}
 
 	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
 		return id, nil
-	}))
+	}), WithArgInjection(true))
 
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "ivy", ID: "s7"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
-		ToolName:  "custom_runner",
+		ToolName:  "my_custom_tool",
 		Arguments: nil,
-		Declaration: &tool.Declaration{
-			InputSchema: &tool.Schema{
-				Type: "object",
-				Properties: map[string]*tool.Schema{
-					"env": {Type: "object"},
-				},
-			},
-		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
@@ -408,8 +351,10 @@ func TestPlugin_BeforeTool_InjectsEnvVarsIntoEmptyArguments(t *testing.T) {
 
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
-	env := m["env"].(map[string]any)
-	require.Equal(t, "user-empty", env["USER_ACCESS_TOKEN"])
+	idMap := m["_identity"].(map[string]any)
+	require.Equal(t, "ivy", idMap["user_id"])
+	require.NotContains(t, idMap, "token")
+	require.NotContains(t, idMap, "signature")
 }
 
 func TestPlugin_BeforeTool_ArgInjectionSupportsNullArguments(t *testing.T) {
@@ -417,12 +362,12 @@ func TestPlugin_BeforeTool_ArgInjectionSupportsNullArguments(t *testing.T) {
 
 	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
 		return id, nil
-	}), WithArgInjection(true), WithEnvInjection(false))
+	}), WithArgInjection(true))
 
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "jane", ID: "s8"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
@@ -441,6 +386,104 @@ func TestPlugin_BeforeTool_ArgInjectionSupportsNullArguments(t *testing.T) {
 	require.Equal(t, "sig-jane", idMap["signature"])
 }
 
+func TestPlugin_BeforeTool_ArgInjectionOmitsEmptyFields(t *testing.T) {
+	id := &Identity{UserID: "kate"}
+
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		return id, nil
+	}), WithArgInjection(true))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "kate", ID: "s9"},
+	}
+	requireBeforeAgent(t, p, inv)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+		ToolName:  "my_custom_tool",
+		Arguments: []byte(`{"query":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.ModifiedArguments)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(result.ModifiedArguments, &m))
+	idMap := m["_identity"].(map[string]any)
+	require.Equal(t, "kate", idMap["user_id"])
+	require.NotContains(t, idMap, "token")
+	require.NotContains(t, idMap, "signature")
+}
+
+func TestPlugin_BeforeTool_ArgInjectionSkipsEmptyIdentityPayload(t *testing.T) {
+	id := &Identity{
+		Headers: map[string]string{"Authorization": "Bearer only-headers"},
+		EnvVars: map[string]string{"USER_ACCESS_TOKEN": "only-env"},
+	}
+
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		return id, nil
+	}), WithArgInjection(true))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "luke", ID: "s10"},
+	}
+	requireBeforeAgent(t, p, inv)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+		ToolName:  "my_custom_tool",
+		Arguments: []byte(`{"query":"hello"}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.ModifiedArguments)
+}
+
+func TestPlugin_BeforeTool_ArgInjectionSkipsNonObjectArguments(t *testing.T) {
+	id := &Identity{UserID: "mike", Token: "tok-mike"}
+
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		return id, nil
+	}), WithArgInjection(true))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "mike", ID: "s11"},
+	}
+	requireBeforeAgent(t, p, inv)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+		ToolName:  "my_custom_tool",
+		Arguments: []byte(`["hello"]`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.ModifiedArguments)
+}
+
+func TestPlugin_BeforeTool_ArgInjectionSkipsInvalidJSON(t *testing.T) {
+	id := &Identity{UserID: "nina", Token: "tok-nina"}
+
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		return id, nil
+	}), WithArgInjection(true))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "nina", ID: "s12"},
+	}
+	requireBeforeAgent(t, p, inv)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+		ToolName:  "my_custom_tool",
+		Arguments: []byte(`{`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.ModifiedArguments)
+}
+
 func TestPlugin_BeforeTool_NoIdentityInState(t *testing.T) {
 	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
 		return nil, nil
@@ -449,7 +492,7 @@ func TestPlugin_BeforeTool_NoIdentityInState(t *testing.T) {
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "ghost", ID: "s6"},
 	}
-	p.beforeAgent(context.Background(), &agent.BeforeAgentArgs{Invocation: inv})
+	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{

@@ -16,6 +16,14 @@ import (
 
 // Identity represents a resolved user identity with credentials and metadata
 // that can be injected into tool calls.
+//
+// Identity values are treated as immutable after Provider.Resolve returns.
+// Plugin.beforeAgent stores the returned *Identity in invocation state and
+// beforeTool may read Headers and EnvVars concurrently during parallel tool
+// calls. Providers should not mutate the returned Identity or any of its maps
+// (Headers, EnvVars, Extra) after returning. Helpers such as HeadersFromContext
+// and EnvVarsFromContext clone on read, but they do not make ingress writes
+// race-safe.
 type Identity struct {
 	// UserID is the authenticated user identifier.
 	UserID string
@@ -30,8 +38,8 @@ type Identity struct {
 	// (e.g., MCP SSE/Streamable HTTP, webhook invocations).
 	Headers map[string]string
 
-	// EnvVars are key-value pairs to inject as environment variables
-	// for command-execution tools (e.g., workspace_exec, skill_run).
+	// EnvVars are key-value pairs to expose through context for
+	// command-execution tools (e.g., workspace_exec, skill_run).
 	EnvVars map[string]string
 
 	// Extra holds arbitrary extension data that business code may need.
@@ -41,6 +49,10 @@ type Identity struct {
 // Provider resolves the current user identity from the execution context.
 // Implementations typically extract identity from HTTP request headers, JWT
 // claims, session stores, or business-specific signing services.
+//
+// The returned Identity must be treated as immutable after Resolve returns.
+// If an implementation needs to keep mutating its own source data, it should
+// deep-clone before returning.
 type Provider interface {
 	Resolve(ctx context.Context, userID string, sessionID string) (*Identity, error)
 }

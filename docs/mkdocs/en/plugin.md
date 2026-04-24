@@ -198,19 +198,22 @@ runnerInstance := runner.NewRunner(
 )
 ```
 
-The plugin stores the resolved identity in the invocation context before the
-agent runs. Before each tool call it attaches the identity to the tool context
-and, when the tool schema contains an `env` object field, injects
-`Identity.EnvVars` into the tool arguments without overriding explicit
-tool-call env values. This covers tools such as `workspace_exec`, `skill_run`,
-and `exec_command`. MCP HTTP transports can read the same context via
-`WithDynamicHeaders` to inject per-request headers.
+The plugin stores the resolved identity in invocation state before the agent
+runs. Before each tool call it attaches that identity to the tool context.
+MCP HTTP transports can read `Identity.Headers` from the same context via
+`WithDynamicHeaders` and inject per-request headers. Command-execution tools
+should read `Identity.EnvVars` from context at execution time so secrets never
+enter model-visible tool arguments. For `workspace_exec` and `skill_run`, wrap
+the executor with `codeexecutor.NewEnvInjectingCodeExecutor(exec,
+identity.EnvVarsFromContext)`. OpenClaw `exec_command` reads the same context
+directly.
 
 When you register that MCP ToolSet through `llmagent.WithToolSets(...)`, enable
 `llmagent.WithRefreshToolSetsOnRun(true)` if `initialize` / `tools/list` must
-also see request-scoped headers. If you need a fixed discovery context instead,
-call `toolSet.Tools(ctx)` yourself and pass the resulting tools via
-`llmagent.WithTools(...)`.
+also see request-scoped headers. That adds a fresh `initialize` /
+`tools/list` pass to each run, so enable it only when needed. If you need a
+fixed discovery context instead, call `toolSet.Tools(ctx)` yourself and pass
+the resulting tools via `llmagent.WithTools(...)`.
 
 ## How Plugins Execute
 

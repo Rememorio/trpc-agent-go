@@ -15,8 +15,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"golang.org/x/sync/singleflight"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -284,31 +286,120 @@ func (m *mcpSessionManager) buildHTTPOptions() []mcp.ClientOption {
 		options = append(options, mcp.WithHTTPHeaders(headers))
 	}
 
-	// Inject dynamic headers via WithHTTPBeforeRequest when configured.
-	// This enables per-request header injection (e.g., user-specific auth tokens)
-	// by reading headers from the request context at call time.
-	if m.dynamicHeaderFunc != nil {
-		fn := m.dynamicHeaderFunc
-		options = append(options, mcp.WithHTTPBeforeRequest(
-			func(ctx context.Context, req *http.Request) error {
-				dynamicHeaders, err := fn(ctx)
-				if err != nil {
-					return fmt.Errorf("dynamic header injection: %w", err)
-				}
-				for k, v := range dynamicHeaders {
-					req.Header.Set(k, v)
-				}
-				return nil
-			},
-		))
+	// Add MCP options if configured.
+	userOptions, userBeforeRequest := splitHTTPBeforeRequestOptions(m.mcpOptions)
+	if len(userOptions) > 0 {
+		options = append(options, userOptions...)
 	}
 
-	// Add MCP options if configured.
-	if len(m.mcpOptions) > 0 {
-		options = append(options, m.mcpOptions...)
+	// Run user-provided before-request hooks first, then apply dynamic headers
+	// last so request-scoped identity headers can override earlier values.
+	beforeRequest := composeHTTPBeforeRequestFuncs(
+		userBeforeRequest,
+		dynamicHTTPBeforeRequestFunc(m.dynamicHeaderFunc),
+	)
+	if beforeRequest != nil {
+		options = append(options, mcp.WithHTTPBeforeRequest(beforeRequest))
 	}
 
 	return options
+}
+
+func composeHTTPBeforeRequestFuncs(
+	funcs ...mcp.HTTPBeforeRequestFunc,
+) mcp.HTTPBeforeRequestFunc {
+	filtered := make([]mcp.HTTPBeforeRequestFunc, 0, len(funcs))
+	for _, fn := range funcs {
+		if fn != nil {
+			filtered = append(filtered, fn)
+		}
+	}
+	switch len(filtered) {
+	case 0:
+		return nil
+	case 1:
+		return filtered[0]
+	default:
+		return func(ctx context.Context, req *http.Request) error {
+			for _, fn := range filtered {
+				if err := fn(ctx, req); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+}
+
+func dynamicHTTPBeforeRequestFunc(
+	fn DynamicHeaderFunc,
+) mcp.HTTPBeforeRequestFunc {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, req *http.Request) error {
+		dynamicHeaders, err := fn(ctx)
+		if err != nil {
+			return fmt.Errorf("dynamic header injection: %w", err)
+		}
+		for k, v := range dynamicHeaders {
+			req.Header.Set(k, v)
+		}
+		return nil
+	}
+}
+
+func splitHTTPBeforeRequestOptions(
+	options []mcp.ClientOption,
+) ([]mcp.ClientOption, mcp.HTTPBeforeRequestFunc) {
+	if len(options) == 0 {
+		return nil, nil
+	}
+
+	filtered := make([]mcp.ClientOption, 0, len(options))
+	var beforeRequest mcp.HTTPBeforeRequestFunc
+	for _, option := range options {
+		fn, ok := extractHTTPBeforeRequestOption(option)
+		if !ok {
+			filtered = append(filtered, option)
+			continue
+		}
+		beforeRequest = composeHTTPBeforeRequestFuncs(beforeRequest, fn)
+	}
+	if len(filtered) == 0 {
+		filtered = nil
+	}
+	return filtered, beforeRequest
+}
+
+// mcp.ClientOption is opaque, so we detect WithHTTPBeforeRequest by applying
+// each option to a temporary client and checking whether it populated the
+// internal before-request hook. This lets us chain user hooks with
+// WithDynamicHeaders instead of letting the last option win.
+func extractHTTPBeforeRequestOption(
+	option mcp.ClientOption,
+) (mcp.HTTPBeforeRequestFunc, bool) {
+	if option == nil {
+		return nil, false
+	}
+
+	client, err := mcp.NewClient("http://mcp.invalid", defaultClientInfo)
+	if err != nil {
+		return nil, false
+	}
+	option(client)
+
+	field := reflect.ValueOf(client).Elem().FieldByName("httpBeforeRequestFunc")
+	if !field.IsValid() || field.IsNil() {
+		return nil, false
+	}
+
+	field = reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+	fn, ok := field.Interface().(mcp.HTTPBeforeRequestFunc)
+	if !ok || fn == nil {
+		return nil, false
+	}
+	return fn, true
 }
 
 // createTimeoutContext creates a context with timeout if configured and no existing deadline.
