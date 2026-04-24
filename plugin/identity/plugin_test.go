@@ -10,6 +10,7 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -415,6 +416,34 @@ func TestPlugin_BeforeTool_ArgInjectionOmitsEmptyFields(t *testing.T) {
 	require.NotContains(t, idMap, "signature")
 }
 
+func TestPlugin_BeforeTool_ArgInjectionPreservesLargeIntegers(t *testing.T) {
+	id := &Identity{UserID: "luke", Token: "tok-luke"}
+
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		return id, nil
+	}), WithArgInjection(true))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "luke", ID: "s10"},
+	}
+	requireBeforeAgent(t, p, inv)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+		ToolName:  "my_custom_tool",
+		Arguments: []byte(`{"id":9223372036854775807}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.ModifiedArguments)
+
+	dec := json.NewDecoder(bytes.NewReader(result.ModifiedArguments))
+	dec.UseNumber()
+	var m map[string]any
+	require.NoError(t, dec.Decode(&m))
+	require.Equal(t, "9223372036854775807", m["id"].(json.Number).String())
+}
+
 func TestPlugin_BeforeTool_ArgInjectionSkipsEmptyIdentityPayload(t *testing.T) {
 	id := &Identity{
 		Headers: map[string]string{"Authorization": "Bearer only-headers"},
@@ -440,7 +469,7 @@ func TestPlugin_BeforeTool_ArgInjectionSkipsEmptyIdentityPayload(t *testing.T) {
 	require.Nil(t, result.ModifiedArguments)
 }
 
-func TestPlugin_BeforeTool_ArgInjectionSkipsNonObjectArguments(t *testing.T) {
+func TestPlugin_BeforeTool_ArgInjectionSkipsReservedIdentityKey(t *testing.T) {
 	id := &Identity{UserID: "mike", Token: "tok-mike"}
 
 	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
@@ -455,14 +484,14 @@ func TestPlugin_BeforeTool_ArgInjectionSkipsNonObjectArguments(t *testing.T) {
 
 	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
 		ToolName:  "my_custom_tool",
-		Arguments: []byte(`["hello"]`),
+		Arguments: []byte(`{"_identity":{"source":"user"}}`),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Nil(t, result.ModifiedArguments)
 }
 
-func TestPlugin_BeforeTool_ArgInjectionSkipsInvalidJSON(t *testing.T) {
+func TestPlugin_BeforeTool_ArgInjectionSkipsNonObjectArguments(t *testing.T) {
 	id := &Identity{UserID: "nina", Token: "tok-nina"}
 
 	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
@@ -471,6 +500,28 @@ func TestPlugin_BeforeTool_ArgInjectionSkipsInvalidJSON(t *testing.T) {
 
 	inv := &agent.Invocation{
 		Session: &session.Session{UserID: "nina", ID: "s12"},
+	}
+	requireBeforeAgent(t, p, inv)
+	ctx := agent.NewInvocationContext(context.Background(), inv)
+
+	result, err := p.beforeTool(ctx, &tool.BeforeToolArgs{
+		ToolName:  "my_custom_tool",
+		Arguments: []byte(`["hello"]`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Nil(t, result.ModifiedArguments)
+}
+
+func TestPlugin_BeforeTool_ArgInjectionSkipsInvalidJSON(t *testing.T) {
+	id := &Identity{UserID: "olivia", Token: "tok-olivia"}
+
+	p := NewPlugin(ProviderFunc(func(ctx context.Context, uid, sid string) (*Identity, error) {
+		return id, nil
+	}), WithArgInjection(true))
+
+	inv := &agent.Invocation{
+		Session: &session.Session{UserID: "olivia", ID: "s13"},
 	}
 	requireBeforeAgent(t, p, inv)
 	ctx := agent.NewInvocationContext(context.Background(), inv)

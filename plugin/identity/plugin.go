@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/log"
@@ -66,7 +67,9 @@ type pluginOptions struct {
 type Option func(*pluginOptions)
 
 // WithArgInjection enables injection of identity-related fields into generic
-// tool JSON arguments (adds "_identity" key). Default: false.
+// tool JSON arguments (adds a reserved "_identity" key). If tool arguments
+// already contain "_identity", injection is skipped to avoid clobbering
+// caller-provided data. Default: false.
 func WithArgInjection(enable bool) Option {
 	return func(o *pluginOptions) { o.argInjection = enable }
 }
@@ -191,6 +194,10 @@ func (p *Plugin) tryInjectIdentityArg(rawArgs []byte, id *Identity) ([]byte, boo
 	if len(idMap) == 0 {
 		return nil, false
 	}
+	if _, exists := m["_identity"]; exists {
+		log.Debugf("[identity] tryInjectIdentityArg: reserved _identity key already present")
+		return nil, false
+	}
 	m["_identity"] = idMap
 
 	modified, err := json.Marshal(m)
@@ -208,8 +215,14 @@ func decodeObjectArgs(rawArgs []byte) (map[string]any, bool) {
 	}
 
 	var decoded any
-	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
 		log.Debugf("[identity] decodeObjectArgs: invalid JSON args: %v", err)
+		return nil, false
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		log.Debugf("[identity] decodeObjectArgs: trailing JSON input")
 		return nil, false
 	}
 
