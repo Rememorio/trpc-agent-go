@@ -10,6 +10,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -90,6 +91,16 @@ type SessionReconnectConfig struct {
 	MaxReconnectAttempts int `json:"max_reconnect_attempts"`
 }
 
+// DynamicHeaderFunc is called before each MCP HTTP request (tool call, list tools, etc.)
+// to obtain additional headers that should be merged into the outgoing request.
+// This enables per-request header injection based on the current execution context,
+// such as injecting user-specific Authorization tokens resolved at runtime.
+//
+// The returned headers are merged on top of the static ConnectionConfig.Headers
+// (dynamic headers take precedence on key conflicts).
+// Returning (nil, nil) is safe and means no extra headers are needed.
+type DynamicHeaderFunc func(ctx context.Context) (map[string]string, error)
+
 // toolSetConfig holds internal configuration for ToolSet.
 type toolSetConfig struct {
 	connectionConfig       ConnectionConfig
@@ -97,6 +108,7 @@ type toolSetConfig struct {
 	mcpOptions             []mcp.ClientOption      // MCP client options.
 	sessionReconnectConfig *SessionReconnectConfig // Session reconnection configuration.
 	name                   string                  // ToolSet name for identification and conflict resolution.
+	dynamicHeaderFunc      DynamicHeaderFunc       // Optional dynamic header injection function.
 }
 
 // ToolSetOption is a function type for configuring ToolSet.
@@ -170,6 +182,29 @@ func WithSessionReconnectConfig(config SessionReconnectConfig) ToolSetOption {
 func WithName(name string) ToolSetOption {
 	return func(c *toolSetConfig) {
 		c.name = name
+	}
+}
+
+// WithDynamicHeaders sets a function that is called before each MCP HTTP request
+// to obtain additional headers. This enables per-request identity injection
+// (e.g., user-specific Authorization tokens) without requiring the MCP client
+// to be re-created for each user.
+//
+// When this ToolSet is wired into llmagent via WithToolSets, enable
+// llmagent.WithRefreshToolSetsOnRun(true) if initialize/listTools must also
+// observe request-scoped headers. Otherwise only tools/call is guaranteed to
+// use the current run context.
+//
+// Example:
+//
+//	mcp.WithDynamicHeaders(func(ctx context.Context) (map[string]string, error) {
+//	    id, ok := identity.FromContext(ctx)
+//	    if !ok { return nil, nil }
+//	    return id.Headers, nil
+//	})
+func WithDynamicHeaders(fn DynamicHeaderFunc) ToolSetOption {
+	return func(c *toolSetConfig) {
+		c.dynamicHeaderFunc = fn
 	}
 }
 

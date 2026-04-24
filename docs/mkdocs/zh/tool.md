@@ -722,6 +722,38 @@ if err := mcpToolSet.Init(ctx); err != nil {
 }
 ```
 
+#### 动态 HTTP Header
+
+对 SSE 和 Streamable HTTP 传输，`WithDynamicHeaders` 可以在每一次 MCP HTTP
+请求发出前，从当前调用的 context 动态注入 header。一个长生命周期 MCP ToolSet
+服务多个已登录用户时，可以用它按用户注入 token、JWT 或业务签名：
+
+```go
+mcpToolSet := mcp.NewMCPToolSet(
+    mcp.ConnectionConfig{
+        Transport: "streamable_http",
+        ServerURL: "http://localhost:3000/mcp",
+    },
+    mcp.WithDynamicHeaders(func(ctx context.Context) (map[string]string, error) {
+        token, ok := tokenFromContext(ctx)
+        if !ok {
+            return nil, nil
+        }
+        return map[string]string{
+            "Authorization": "Bearer " + token,
+        }, nil
+    }),
+)
+```
+
+动态 header 会在静态 `ConnectionConfig.Headers` 之后合并，因此同名 header
+以动态值为准。
+
+如果你是通过 `llmagent.WithToolSets(...)` 挂载这个 ToolSet，并且希望
+`initialize` / `tools/list` 也能拿到请求级 header，建议同时配合
+`llmagent.WithRefreshToolSetsOnRun(true)`，或者先手动 `toolSet.Tools(ctx)`，
+再通过 `llmagent.WithTools(...)` 注入。
+
 ### 会话重连支持
 
 MCP ToolSet 支持自动会话重连，当服务器重启或会话过期时自动恢复连接。

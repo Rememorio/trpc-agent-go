@@ -192,6 +192,63 @@ runnerInstance := runner.NewRunner(
 defer runnerInstance.Close()
 ```
 
+## 工具身份注入
+
+插件可以通过 `BeforeTool` 和 `AfterTool` 对所有工具调用增加前置或后置处理。
+对于已经在 Web 层拿到当前用户身份的业务场景，`plugin/identity` 提供了一套可复用的
+身份透传插件：
+
+```go
+import (
+	"context"
+
+	"trpc.group/trpc-go/trpc-agent-go/plugin/identity"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	toolmcp "trpc.group/trpc-go/trpc-agent-go/tool/mcp"
+)
+
+provider := identity.ProviderFunc(func(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+) (*identity.Identity, error) {
+	return &identity.Identity{
+		UserID: userID,
+		Headers: map[string]string{
+			"Authorization": "Bearer " + resolveAccessToken(userID),
+		},
+		EnvVars: map[string]string{
+			"USER_ACCESS_TOKEN": resolveUserAccessToken(userID),
+		},
+	}, nil
+})
+
+mcpTools := toolmcp.NewMCPToolSet(
+	toolmcp.ConnectionConfig{
+		Transport: "streamable",
+		ServerURL: "https://mcp.example.com",
+	},
+	toolmcp.WithDynamicHeaders(identity.HeadersFromContext),
+)
+
+runnerInstance := runner.NewRunner(
+	"my-app",
+	agentInstance,
+	runner.WithPlugins(identity.NewPlugin(provider)),
+)
+```
+
+插件会在 Agent 运行前解析身份并写入 Invocation 状态；每次工具调用前，它会把身份放进
+工具调用的 context，并在工具 schema 声明了 `env` object 字段时，把
+`Identity.EnvVars` 注入工具参数，同时不覆盖模型或业务显式传入的 env。这样可以覆盖
+`workspace_exec`、`skill_run`、`exec_command` 等工具。MCP HTTP 传输则可以通过
+`WithDynamicHeaders` 从同一个 context 中读取身份，按请求动态注入 header。
+
+如果你是通过 `llmagent.WithToolSets(...)` 挂载这个 MCP ToolSet，并且希望
+`initialize` / `tools/list` 也拿到请求级身份 header，记得同时开启
+`llmagent.WithRefreshToolSetsOnRun(true)`。如果你更希望用一个固定的发现上下文，
+则可以手动调用 `toolSet.Tools(ctx)`，再通过 `llmagent.WithTools(...)` 注入。
+
 ## 插件是如何执行的？
 
 ### 作用域与传播

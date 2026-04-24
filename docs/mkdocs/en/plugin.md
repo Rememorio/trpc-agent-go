@@ -152,6 +152,66 @@ runnerInstance := runner.NewRunner(
 defer runnerInstance.Close()
 ```
 
+## Tool Identity Injection
+
+Plugins can add pre-processing or post-processing to every tool call through
+`BeforeTool` and `AfterTool`. For web applications that already know the
+current user, `plugin/identity` provides a reusable identity propagation plugin:
+
+```go
+import (
+	"context"
+
+	"trpc.group/trpc-go/trpc-agent-go/plugin/identity"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	toolmcp "trpc.group/trpc-go/trpc-agent-go/tool/mcp"
+)
+
+provider := identity.ProviderFunc(func(
+	ctx context.Context,
+	userID string,
+	sessionID string,
+) (*identity.Identity, error) {
+	return &identity.Identity{
+		UserID: userID,
+		Headers: map[string]string{
+			"Authorization": "Bearer " + resolveAccessToken(userID),
+		},
+		EnvVars: map[string]string{
+			"USER_ACCESS_TOKEN": resolveUserAccessToken(userID),
+		},
+	}, nil
+})
+
+mcpTools := toolmcp.NewMCPToolSet(
+	toolmcp.ConnectionConfig{
+		Transport: "streamable",
+		ServerURL: "https://mcp.example.com",
+	},
+	toolmcp.WithDynamicHeaders(identity.HeadersFromContext),
+)
+
+runnerInstance := runner.NewRunner(
+	"my-app",
+	agentInstance,
+	runner.WithPlugins(identity.NewPlugin(provider)),
+)
+```
+
+The plugin stores the resolved identity in the invocation context before the
+agent runs. Before each tool call it attaches the identity to the tool context
+and, when the tool schema contains an `env` object field, injects
+`Identity.EnvVars` into the tool arguments without overriding explicit
+tool-call env values. This covers tools such as `workspace_exec`, `skill_run`,
+and `exec_command`. MCP HTTP transports can read the same context via
+`WithDynamicHeaders` to inject per-request headers.
+
+When you register that MCP ToolSet through `llmagent.WithToolSets(...)`, enable
+`llmagent.WithRefreshToolSetsOnRun(true)` if `initialize` / `tools/list` must
+also see request-scoped headers. If you need a fixed discovery context instead,
+call `toolSet.Tools(ctx)` yourself and pass the resulting tools via
+`llmagent.WithTools(...)`.
+
 ## How Plugins Execute
 
 ### Scope and propagation

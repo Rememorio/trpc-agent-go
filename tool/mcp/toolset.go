@@ -72,7 +72,7 @@ func NewMCPToolSet(config ConnectionConfig, opts ...ToolSetOption) *ToolSet {
 	}
 
 	// Create session manager
-	sessionManager := newMCPSessionManager(cfg.connectionConfig, cfg.mcpOptions, cfg.sessionReconnectConfig)
+	sessionManager := newMCPSessionManager(cfg.connectionConfig, cfg.mcpOptions, cfg.sessionReconnectConfig, cfg.dynamicHeaderFunc)
 
 	toolSet := &ToolSet{
 		config:         cfg,
@@ -181,6 +181,7 @@ type mcpSessionManager struct {
 	config                 ConnectionConfig
 	mcpOptions             []mcp.ClientOption      // MCP client options
 	sessionReconnectConfig *SessionReconnectConfig // Session reconnection configuration
+	dynamicHeaderFunc      DynamicHeaderFunc       // Optional per-request header injection
 	client                 mcp.Connector
 	mu                     sync.RWMutex
 	connected              bool
@@ -189,11 +190,12 @@ type mcpSessionManager struct {
 }
 
 // newMCPSessionManager creates a new MCP session manager.
-func newMCPSessionManager(config ConnectionConfig, mcpOptions []mcp.ClientOption, sessionReconnectConfig *SessionReconnectConfig) *mcpSessionManager {
+func newMCPSessionManager(config ConnectionConfig, mcpOptions []mcp.ClientOption, sessionReconnectConfig *SessionReconnectConfig, dynamicHeaderFunc DynamicHeaderFunc) *mcpSessionManager {
 	manager := &mcpSessionManager{
 		config:                 config,
 		mcpOptions:             mcpOptions,
 		sessionReconnectConfig: sessionReconnectConfig,
+		dynamicHeaderFunc:      dynamicHeaderFunc,
 	}
 
 	return manager
@@ -257,44 +259,56 @@ func (m *mcpSessionManager) createClient() (mcp.Connector, error) {
 		return mcp.NewStdioClient(config, clientInfo)
 
 	case transportSSE:
-		var options []mcp.ClientOption
-
-		if len(m.config.Headers) > 0 {
-			headers := http.Header{}
-			for k, v := range m.config.Headers {
-				headers.Set(k, v)
-			}
-			options = append(options, mcp.WithHTTPHeaders(headers))
-		}
-
-		// Add MCP options if configured.
-		if len(m.mcpOptions) > 0 {
-			options = append(options, m.mcpOptions...)
-		}
-
+		options := m.buildHTTPOptions()
 		return mcp.NewSSEClient(m.config.ServerURL, clientInfo, options...)
 
 	case transportStreamable:
-		var options []mcp.ClientOption
-
-		if len(m.config.Headers) > 0 {
-			headers := http.Header{}
-			for k, v := range m.config.Headers {
-				headers.Set(k, v)
-			}
-			options = append(options, mcp.WithHTTPHeaders(headers))
-		}
-
-		// Add MCP options if configured.
-		if len(m.mcpOptions) > 0 {
-			options = append(options, m.mcpOptions...)
-		}
-
+		options := m.buildHTTPOptions()
 		return mcp.NewClient(m.config.ServerURL, clientInfo, options...)
 
 	default:
 		return nil, fmt.Errorf("unsupported transport: %s", m.config.Transport)
 	}
+}
+
+// buildHTTPOptions builds MCP client options for HTTP-based transports (SSE, Streamable).
+// It merges static headers, dynamic header injection, and user-provided MCP options.
+func (m *mcpSessionManager) buildHTTPOptions() []mcp.ClientOption {
+	var options []mcp.ClientOption
+
+	if len(m.config.Headers) > 0 {
+		headers := http.Header{}
+		for k, v := range m.config.Headers {
+			headers.Set(k, v)
+		}
+		options = append(options, mcp.WithHTTPHeaders(headers))
+	}
+
+	// Inject dynamic headers via WithHTTPBeforeRequest when configured.
+	// This enables per-request header injection (e.g., user-specific auth tokens)
+	// by reading headers from the request context at call time.
+	if m.dynamicHeaderFunc != nil {
+		fn := m.dynamicHeaderFunc
+		options = append(options, mcp.WithHTTPBeforeRequest(
+			func(ctx context.Context, req *http.Request) error {
+				dynamicHeaders, err := fn(ctx)
+				if err != nil {
+					return fmt.Errorf("dynamic header injection: %w", err)
+				}
+				for k, v := range dynamicHeaders {
+					req.Header.Set(k, v)
+				}
+				return nil
+			},
+		))
+	}
+
+	// Add MCP options if configured.
+	if len(m.mcpOptions) > 0 {
+		options = append(options, m.mcpOptions...)
+	}
+
+	return options
 }
 
 // createTimeoutContext creates a context with timeout if configured and no existing deadline.
