@@ -380,6 +380,21 @@ func TestSessionSummarizer_GenerateSummary_ModelError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to generate summary")
 }
 
+func TestSessionSummarizer_GenerateSummary_NilResponseChannel(t *testing.T) {
+	s := NewSummarizer(&nilResponseChannelModel{})
+
+	sess := &session.Session{
+		ID: "test-nil-channel",
+		Events: []event.Event{
+			{Response: &model.Response{Choices: []model.Choice{{Message: model.Message{Content: "test"}}}}, Timestamp: time.Now()},
+		},
+	}
+
+	_, err := s.Summarize(context.Background(), sess)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model returned nil response channel")
+}
+
 func TestSessionSummarizer_GenerateSummary_ResponseError(t *testing.T) {
 	responseErrorModel := &responseErrorModel{}
 	s := NewSummarizer(responseErrorModel)
@@ -939,6 +954,16 @@ type blockingResponseModel struct{}
 func (b *blockingResponseModel) Info() model.Info { return model.Info{Name: "blocking-response"} }
 func (b *blockingResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
 	return make(chan *model.Response), nil
+}
+
+type nilResponseChannelModel struct{}
+
+func (n *nilResponseChannelModel) Info() model.Info {
+	return model.Info{Name: "nil-response-channel"}
+}
+
+func (n *nilResponseChannelModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	return nil, nil
 }
 
 func TestFormatResponseError(t *testing.T) {

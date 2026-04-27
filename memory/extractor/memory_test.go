@@ -68,6 +68,21 @@ func (m *blockingModel) Info() model.Info {
 	return model.Info{Name: m.name}
 }
 
+type nilChannelModel struct {
+	name string
+}
+
+func (m *nilChannelModel) GenerateContent(
+	ctx context.Context,
+	request *model.Request,
+) (<-chan *model.Response, error) {
+	return nil, nil
+}
+
+func (m *nilChannelModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
 // newMockModelWithToolCalls creates a mock model that returns tool calls.
 func newMockModelWithToolCalls(toolCalls []model.ToolCall) *mockModel {
 	return &mockModel{
@@ -164,6 +179,18 @@ func TestExtractor_Extract_ModelError(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "model call failed")
+	assert.Nil(t, ops)
+}
+
+func TestExtractor_Extract_NilResponseChannel(t *testing.T) {
+	e := NewExtractor(&nilChannelModel{name: "nil-channel"})
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("remember that I like tea"),
+	}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "model returned nil response channel")
 	assert.Nil(t, ops)
 }
 
