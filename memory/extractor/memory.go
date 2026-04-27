@@ -142,12 +142,12 @@ func (e *memoryExtractor) Extract(
 			return nil, fmt.Errorf("model call failed: %w", err)
 		}
 	}
-
-	// Parse tool calls into operations.
-	var ops []*Operation
 	if rspChan == nil {
 		return nil, errors.New("model returned nil response channel")
 	}
+
+	// Parse tool calls into operations.
+	var ops []*Operation
 	for {
 		select {
 		case <-ctx.Done():
