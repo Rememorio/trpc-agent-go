@@ -465,7 +465,7 @@ func TestSessionSummarizer_Summarize_ContextTimeoutWhileWaitingForResponse(t *te
 	start := time.Now()
 	_, err := s.Summarize(ctx, sess)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "context deadline exceeded")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
@@ -953,6 +953,7 @@ type blockingResponseModel struct{}
 
 func (b *blockingResponseModel) Info() model.Info { return model.Info{Name: "blocking-response"} }
 func (b *blockingResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	// The channel is intentionally never closed to exercise context timeout handling.
 	return make(chan *model.Response), nil
 }
 

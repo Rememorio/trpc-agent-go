@@ -61,6 +61,7 @@ func (m *blockingModel) GenerateContent(
 	ctx context.Context,
 	request *model.Request,
 ) (<-chan *model.Response, error) {
+	// The channel is intentionally never closed to exercise context timeout handling.
 	return make(chan *model.Response), nil
 }
 
@@ -206,7 +207,7 @@ func TestExtractor_Extract_ContextTimeoutWhileWaitingForResponse(t *testing.T) {
 	}, nil)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "context deadline exceeded")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Nil(t, ops)
 	assert.Less(t, time.Since(start), 500*time.Millisecond)
 }
