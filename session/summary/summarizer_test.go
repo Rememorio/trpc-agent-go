@@ -433,6 +433,27 @@ func TestSessionSummarizer_GenerateSummary_EmptyResponse(t *testing.T) {
 	assert.Contains(t, err.Error(), "generated empty summary")
 }
 
+func TestSessionSummarizer_Summarize_ContextTimeoutWhileWaitingForResponse(t *testing.T) {
+	s := NewSummarizer(&blockingResponseModel{})
+	sess := &session.Session{
+		ID: "timeout",
+		Events: []event.Event{{
+			Author:    "user",
+			Response:  &model.Response{Choices: []model.Choice{{Message: model.Message{Content: "test"}}}},
+			Timestamp: time.Now(),
+		}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := s.Summarize(ctx, sess)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context deadline exceeded")
+	assert.Less(t, time.Since(start), 500*time.Millisecond)
+}
+
 func TestSessionSummarizer_ShouldSummarize_EmptyEvents(t *testing.T) {
 	s := NewSummarizer(&fakeModel{}, WithEventThreshold(10))
 	sess := &session.Session{Events: []event.Event{}}
@@ -909,6 +930,15 @@ func (e *emptyResponseModel) GenerateContent(ctx context.Context, req *model.Req
 	ch <- &model.Response{Done: true, Choices: []model.Choice{{Message: model.Message{Content: ""}}}}
 	close(ch)
 	return ch, nil
+}
+
+// blockingResponseModel simulates a non-cooperative provider that neither
+// sends a response nor closes the response channel after ctx cancellation.
+type blockingResponseModel struct{}
+
+func (b *blockingResponseModel) Info() model.Info { return model.Info{Name: "blocking-response"} }
+func (b *blockingResponseModel) GenerateContent(ctx context.Context, req *model.Request) (<-chan *model.Response, error) {
+	return make(chan *model.Response), nil
 }
 
 func TestFormatResponseError(t *testing.T) {

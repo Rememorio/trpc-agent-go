@@ -53,6 +53,21 @@ func (m *mockModel) Info() model.Info {
 	return model.Info{Name: m.name}
 }
 
+type blockingModel struct {
+	name string
+}
+
+func (m *blockingModel) GenerateContent(
+	ctx context.Context,
+	request *model.Request,
+) (<-chan *model.Response, error) {
+	return make(chan *model.Response), nil
+}
+
+func (m *blockingModel) Info() model.Info {
+	return model.Info{Name: m.name}
+}
+
 // newMockModelWithToolCalls creates a mock model that returns tool calls.
 func newMockModelWithToolCalls(toolCalls []model.ToolCall) *mockModel {
 	return &mockModel{
@@ -150,6 +165,23 @@ func TestExtractor_Extract_ModelError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "model call failed")
 	assert.Nil(t, ops)
+}
+
+func TestExtractor_Extract_ContextTimeoutWhileWaitingForResponse(t *testing.T) {
+	e := NewExtractor(&blockingModel{name: "blocking-model"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	ops, err := e.Extract(ctx, []model.Message{
+		model.NewUserMessage("remember that I like coffee"),
+	}, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context deadline exceeded")
+	assert.Nil(t, ops)
+	assert.Less(t, time.Since(start), 500*time.Millisecond)
 }
 
 func TestExtractor_Extract_ResponseError(t *testing.T) {
