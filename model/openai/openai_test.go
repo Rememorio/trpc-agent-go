@@ -647,6 +647,14 @@ func TestOptions_Validation(t *testing.T) {
 	}
 }
 
+func TestWithContextWindow(t *testing.T) {
+	m := New("test-model", WithContextWindow(204800))
+	require.Equal(t, 204800, m.Info().ContextWindow)
+
+	m = New("test-model", WithContextWindow(0))
+	require.Zero(t, m.Info().ContextWindow)
+}
+
 // stubTool implements tool.Tool for testing purposes.
 type stubTool struct{ decl *tool.Declaration }
 

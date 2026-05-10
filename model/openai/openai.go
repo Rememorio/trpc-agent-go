@@ -247,6 +247,7 @@ type Model struct {
 	batchBaseURL               string
 	enableTokenTailoring       bool                    // Enable automatic token tailoring.
 	maxInputTokens             int                     // Max input tokens for token tailoring.
+	contextWindow              int                     // Context window for this model instance.
 	tokenCounter               model.TokenCounter      // Token counter for token tailoring.
 	tailoringStrategy          model.TailoringStrategy // Tailoring strategy for token tailoring.
 	// Token tailoring budget parameters (instance-level overrides).
@@ -329,6 +330,7 @@ func New(name string, opts ...Option) *Model {
 		batchMetadata:              o.BatchMetadata,
 		batchBaseURL:               o.BatchBaseURL,
 		enableTokenTailoring:       o.EnableTokenTailoring,
+		contextWindow:              o.ContextWindow,
 		tokenCounter:               o.TokenCounter,
 		tailoringStrategy:          o.TailoringStrategy,
 		maxInputTokens:             o.MaxInputTokens,
@@ -366,7 +368,8 @@ func isDeepSeekBaseURL(raw string) bool {
 // Info implements the model.Model interface.
 func (m *Model) Info() model.Info {
 	return model.Info{
-		Name: m.name,
+		Name:          m.name,
+		ContextWindow: m.contextWindow,
 	}
 }
 
@@ -535,7 +538,10 @@ func (m *Model) applyTokenTailoring(ctx context.Context, request *model.Request)
 	// Determine max input tokens using priority: user config > auto calculation > default.
 	maxInputTokens := m.maxInputTokens
 	outputReserveTokens := m.effectiveOutputReserveTokens(request)
-	contextWindow := imodel.ResolveContextWindow(m.name)
+	contextWindow := m.contextWindow
+	if contextWindow <= 0 {
+		contextWindow = imodel.ResolveContextWindow(m.name)
+	}
 	autoBudget := maxInputTokens <= 0
 	if autoBudget {
 		// Auto-calculate based on model context window with custom or default parameters.
