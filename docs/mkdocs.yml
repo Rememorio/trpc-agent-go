@@ -22,7 +22,17 @@ nav:
       - Model: model.md
       - Callbacks: callbacks.md
       - Plugins: plugin.md
-      - Memory: memory.md
+      - Memory:
+          - Overview: memory/index.md
+          - In-Memory: memory/inmemory.md
+          - SQLite: memory/sqlite.md
+          - SQLiteVec: memory/sqlitevec.md
+          - Redis: memory/redis.md
+          - MySQL: memory/mysql.md
+          - MySQL Vector: memory/mysqlvec.md
+          - PostgreSQL: memory/postgres.md
+          - pgvector: memory/pgvector.md
+          - mem0: memory/mem0.md
       - Artifact: artifact.md
       - Skill: skill.md
       - Tool: tool.md
@@ -103,7 +113,17 @@ plugins:
                 - Model: model.md
                 - Callbacks: callbacks.md
                 - Plugins: plugin.md
-                - Memory: memory.md
+                - Memory:
+                    - 概述: memory/index.md
+                    - InMemory: memory/inmemory.md
+                    - SQLite: memory/sqlite.md
+                    - SQLiteVec: memory/sqlitevec.md
+                    - Redis: memory/redis.md
+                    - MySQL: memory/mysql.md
+                    - MySQL Vector: memory/mysqlvec.md
+                    - PostgreSQL: memory/postgres.md
+                    - pgvector: memory/pgvector.md
+                    - mem0: memory/mem0.md
                 - Artifact: artifact.md
                 - Skill: skill.md
                 - Tool: tool.md
