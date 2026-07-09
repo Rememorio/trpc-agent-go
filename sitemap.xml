@@ -92,6 +92,13 @@
         <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/dify/"/>
     </url>
     <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/dynamic-workflow/</loc>
+        <lastmod>2026-07-09</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/dynamic-workflow/"/>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/dynamic-workflow/"/>
+    </url>
+    <url>
         <loc>https://trpc-group.github.io/trpc-agent-go/ecosystem/</loc>
         <lastmod>2026-07-09</lastmod>
         <changefreq>daily</changefreq>
@@ -678,6 +685,13 @@
         <changefreq>daily</changefreq>
         <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/dify/"/>
         <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/dify/"/>
+    </url>
+    <url>
+        <loc>https://trpc-group.github.io/trpc-agent-go/zh/dynamic-workflow/</loc>
+        <lastmod>2026-07-09</lastmod>
+        <changefreq>daily</changefreq>
+        <xhtml:link rel="alternate" hreflang="zh" href="https://trpc-group.github.io/trpc-agent-go/zh/dynamic-workflow/"/>
+        <xhtml:link rel="alternate" hreflang="en" href="https://trpc-group.github.io/trpc-agent-go/dynamic-workflow/"/>
     </url>
     <url>
         <loc>https://trpc-group.github.io/trpc-agent-go/zh/ecosystem/</loc>
