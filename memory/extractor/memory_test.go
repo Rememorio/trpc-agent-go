@@ -233,6 +233,9 @@ func TestExtractor_AssistantResultExtractionOption(t *testing.T) {
 	assert.Contains(t, prompt, "MANDATORY DIRECT-RESULT CHECK")
 	assert.Contains(t, prompt, "requested extraction, classification, or transformation")
 	assert.Contains(t, prompt, "Do not store general definitions")
+	assert.Contains(t, prompt, "distinct follow-up questions")
+	assert.Contains(t, prompt, "Do not copy an entire")
+	assert.Contains(t, prompt, "few self-contained result memories")
 	assert.Contains(t, prompt, `must begin with "Assistant result:"`)
 	assert.Contains(t, prompt, assistantResultAddToolName)
 }
