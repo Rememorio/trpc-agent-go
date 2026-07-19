@@ -538,6 +538,7 @@ func (s *Service) ReadMemories(
 const (
 	minKindFallbackResults = 3
 	hybridOverfetchFactor  = 4
+	hybridKindRRFWeight    = 0.25
 )
 
 // SearchMemories searches memories for a user using vector similarity.
@@ -601,20 +602,33 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search: run keyword search and merge with vector results
-	// using Reciprocal Rank Fusion (RRF) to improve recall for exact
-	// entity names, book titles, etc.
+	// Hybrid search fuses global vector and keyword rankings with weak
+	// per-kind rankings. The weak contribution improves minority-kind recall
+	// without allowing memory kind to dominate semantic relevance.
 	if opts.HybridSearch {
 		keywordResults, kwErr := s.executeKeywordSearch(
 			ctx, userKey, opts, candidateLimit,
 		)
+		rankings := []weightedSearchRanking{{results: results, weight: 1}}
 		if kwErr == nil && len(keywordResults) > 0 {
-			rrfK := opts.HybridRRFK
-			if rrfK <= 0 {
-				rrfK = defaultRRFK
-			}
-			results = mergeHybridResults(
-				results, keywordResults, rrfK, candidateLimit,
+			rankings = append(rankings, weightedSearchRanking{
+				results: keywordResults,
+				weight:  1,
+			})
+		}
+		for _, kindResults := range rankedResultsByMemoryKind(results) {
+			rankings = append(rankings, weightedSearchRanking{
+				results: kindResults,
+				weight:  hybridKindRRFWeight,
+			})
+		}
+		rrfK := opts.HybridRRFK
+		if rrfK <= 0 {
+			rrfK = defaultRRFK
+		}
+		if len(rankings) > 1 {
+			results = mergeWeightedSearchRankings(
+				rankings, rrfK, candidateLimit,
 			)
 		}
 	}
@@ -667,6 +681,83 @@ func expandedHybridSearchLimit(limit int) int {
 		return maxInt
 	}
 	return limit * hybridOverfetchFactor
+}
+
+func rankedResultsByMemoryKind(
+	results []*memory.Entry,
+) [][]*memory.Entry {
+	byKind := make(map[string][]*memory.Entry)
+	for _, entry := range results {
+		if entry == nil || entry.Memory == nil {
+			continue
+		}
+		kind := imemory.EffectiveKind(entry.Memory)
+		if kind == "" {
+			continue
+		}
+		key := string(kind)
+		byKind[key] = append(byKind[key], entry)
+	}
+	if len(byKind) < 2 {
+		return nil
+	}
+	kinds := make([]string, 0, len(byKind))
+	for kind := range byKind {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	rankings := make([][]*memory.Entry, 0, len(kinds))
+	for _, kind := range kinds {
+		rankings = append(rankings, byKind[kind])
+	}
+	return rankings
+}
+
+type weightedSearchRanking struct {
+	results []*memory.Entry
+	weight  float64
+}
+
+func mergeWeightedSearchRankings(
+	rankings []weightedSearchRanking,
+	k int,
+	maxResults int,
+) []*memory.Entry {
+	if k <= 0 {
+		k = defaultRRFK
+	}
+	type scoredEntry struct {
+		entry *memory.Entry
+		score float64
+	}
+	scores := make(map[string]*scoredEntry)
+	for _, ranking := range rankings {
+		if ranking.weight <= 0 {
+			continue
+		}
+		for rank, entry := range ranking.results {
+			if entry == nil || entry.ID == "" {
+				continue
+			}
+			score := ranking.weight / float64(k+rank+1)
+			if existing, ok := scores[entry.ID]; ok {
+				existing.score += score
+				continue
+			}
+			cloned := *entry
+			scores[entry.ID] = &scoredEntry{entry: &cloned, score: score}
+		}
+	}
+	merged := make([]*memory.Entry, 0, len(scores))
+	for _, scored := range scores {
+		scored.entry.Score = scored.score
+		merged = append(merged, scored.entry)
+	}
+	imemory.SortSearchResults(merged, false)
+	if maxResults > 0 && len(merged) > maxResults {
+		merged = merged[:maxResults]
+	}
+	return merged
 }
 
 // executeVectorSearch runs a single vector similarity search against pgvector.

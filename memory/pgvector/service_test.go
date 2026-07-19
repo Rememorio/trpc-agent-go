@@ -2500,6 +2500,48 @@ func TestExpandedHybridSearchLimit(t *testing.T) {
 	assert.Equal(t, maxInt, expandedHybridSearchLimit(maxInt))
 }
 
+func TestRankedResultsByMemoryKind(t *testing.T) {
+	entries := []*memory.Entry{
+		{ID: "fact-1", Memory: &memory.Memory{Kind: memory.KindFact}},
+		{ID: "episode-1", Memory: &memory.Memory{Kind: memory.KindEpisode}},
+		{ID: "fact-2", Memory: &memory.Memory{}},
+		nil,
+	}
+	rankings := rankedResultsByMemoryKind(entries)
+	require.Len(t, rankings, 2)
+	assert.Equal(t, []string{"episode-1"}, entryIDs(rankings[0]))
+	assert.Equal(t, []string{"fact-1", "fact-2"}, entryIDs(rankings[1]))
+	assert.Nil(t, rankedResultsByMemoryKind(entries[:1]))
+}
+
+func TestMergeWeightedSearchRankings(t *testing.T) {
+	entry := func(id string) *memory.Entry {
+		return &memory.Entry{ID: id, Memory: &memory.Memory{Memory: id}}
+	}
+	results := mergeWeightedSearchRankings(
+		[]weightedSearchRanking{
+			{results: []*memory.Entry{entry("a"), entry("b")}, weight: 1},
+			{results: []*memory.Entry{entry("b"), entry("c")}, weight: 0.5},
+			{results: []*memory.Entry{entry("ignored")}, weight: 0},
+		},
+		60,
+		2,
+	)
+	require.Len(t, results, 2)
+	assert.Equal(t, "b", results[0].ID)
+	assert.InDelta(t, 1.0/62.0+0.5/61.0, results[0].Score, 1e-12)
+	assert.Equal(t, "a", results[1].ID)
+	assert.InDelta(t, 1.0/61.0, results[1].Score, 1e-12)
+}
+
+func entryIDs(entries []*memory.Entry) []string {
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+	}
+	return ids
+}
+
 func TestMergeSearchResults(t *testing.T) {
 	primary := []*memory.Entry{
 		{ID: "mem-1", Memory: &memory.Memory{Memory: "episode one", Kind: memory.KindEpisode}},
