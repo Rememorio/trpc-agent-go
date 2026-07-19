@@ -663,21 +663,14 @@ recommendations, estimates, and answers from facts confirmed by the user.
   requested by the user, emit a memory for that result even when the response
   is educational, generally applicable, or based on non-personal material.
   Do not emit only the user's goal while dropping the answer to that goal.
-- Choose memory boundaries for later retrieval. Split a response into separate
-  assistant-result memories when it contains multiple facets that could answer
-  distinct follow-up questions. Make each result self-contained by restating
-  its subject, relationship, and named items. Do not copy an entire
-  multi-section answer into one memory, and do not split every sentence.
 - Keep a cohesive result in one memory when splitting it would lose set
-  membership, ordering, or item-to-detail relationships, such as a shortlist,
-  ranking, or item-to-property mapping. A long response may therefore yield a
-  few self-contained result memories while omitting supporting explanation.
+  membership, ordering, or item-to-detail relationships. For a long response,
+  store one concise memory containing the requested answer rather than every
+  supporting explanation.
 - Example: if a user asks which materials to compare and the assistant answers
   "steel for strength, aluminum for weight, and wood for cost", store one
-  memory containing all three material-to-property recommendations. If the
-  same response also gives a maintenance schedule, store that independently
-  retrievable result in a separate memory. Merely storing that the user is
-  comparing materials is incomplete.
+  memory containing all three material-to-property recommendations. Merely
+  storing that the user is comparing materials is incomplete.
 - Preserve exact names, quantities, negation, modality, and relationships.
 - Every number, amount, range, percentage, date, duration, and measurement in
   a result must appear in the assistant's direct response. Never invent a
