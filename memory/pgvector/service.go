@@ -538,7 +538,7 @@ func (s *Service) ReadMemories(
 const (
 	minKindFallbackResults = 3
 	hybridOverfetchFactor  = 4
-	hybridKindRRFWeight    = 0.5
+	hybridKindRRFWeight    = 0.75
 )
 
 // SearchMemories searches memories for a user using vector similarity.
