@@ -2491,6 +2491,15 @@ func TestMergeHybridResults(t *testing.T) {
 	assert.Greater(t, results[0].Score, results[1].Score)
 }
 
+func TestExpandedHybridSearchLimit(t *testing.T) {
+	assert.Equal(t, 120, expandedHybridSearchLimit(30))
+	assert.Equal(t, 0, expandedHybridSearchLimit(0))
+	assert.Equal(t, -1, expandedHybridSearchLimit(-1))
+
+	maxInt := int(^uint(0) >> 1)
+	assert.Equal(t, maxInt, expandedHybridSearchLimit(maxInt))
+}
+
 func TestMergeSearchResults(t *testing.T) {
 	primary := []*memory.Entry{
 		{ID: "mem-1", Memory: &memory.Memory{Memory: "episode one", Kind: memory.KindEpisode}},

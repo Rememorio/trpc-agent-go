@@ -535,7 +535,10 @@ func (s *Service) ReadMemories(
 
 // minKindFallbackResults is the threshold below which a kind-filtered
 // search triggers a fallback unfiltered search when KindFallback is enabled.
-const minKindFallbackResults = 3
+const (
+	minKindFallbackResults = 3
+	hybridOverfetchFactor  = 4
+)
 
 // SearchMemories searches memories for a user using vector similarity.
 // Options may include WithSearchOptions for advanced filtering
@@ -572,8 +575,12 @@ func (s *Service) SearchMemories(
 	if opts.MaxResults > 0 {
 		maxResults = opts.MaxResults
 	}
+	candidateLimit := maxResults
+	if opts.HybridSearch {
+		candidateLimit = expandedHybridSearchLimit(maxResults)
+	}
 
-	results, err := s.executeVectorSearch(ctx, userKey, opts, vector, maxResults)
+	results, err := s.executeVectorSearch(ctx, userKey, opts, vector, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -585,10 +592,12 @@ func (s *Service) SearchMemories(
 		fallbackOpts.Kind = ""
 		fallbackOpts.KindFallback = false
 		fallbackResults, fallbackErr := s.executeVectorSearch(
-			ctx, userKey, fallbackOpts, vector, maxResults,
+			ctx, userKey, fallbackOpts, vector, candidateLimit,
 		)
 		if fallbackErr == nil && len(fallbackResults) > 0 {
-			results = mergeSearchResults(results, fallbackResults, opts.Kind, maxResults)
+			results = mergeSearchResults(
+				results, fallbackResults, opts.Kind, candidateLimit,
+			)
 		}
 	}
 
@@ -596,13 +605,17 @@ func (s *Service) SearchMemories(
 	// using Reciprocal Rank Fusion (RRF) to improve recall for exact
 	// entity names, book titles, etc.
 	if opts.HybridSearch {
-		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
+		keywordResults, kwErr := s.executeKeywordSearch(
+			ctx, userKey, opts, candidateLimit,
+		)
 		if kwErr == nil && len(keywordResults) > 0 {
 			rrfK := opts.HybridRRFK
 			if rrfK <= 0 {
 				rrfK = defaultRRFK
 			}
-			results = mergeHybridResults(results, keywordResults, rrfK, maxResults)
+			results = mergeHybridResults(
+				results, keywordResults, rrfK, candidateLimit,
+			)
 		}
 	}
 
@@ -643,6 +656,17 @@ func (s *Service) SearchMemories(
 	}
 
 	return results, nil
+}
+
+func expandedHybridSearchLimit(limit int) int {
+	if limit <= 0 {
+		return limit
+	}
+	maxInt := int(^uint(0) >> 1)
+	if limit > maxInt/hybridOverfetchFactor {
+		return maxInt
+	}
+	return limit * hybridOverfetchFactor
 }
 
 // executeVectorSearch runs a single vector similarity search against pgvector.
