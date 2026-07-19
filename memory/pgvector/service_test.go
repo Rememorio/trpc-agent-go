@@ -2534,6 +2534,33 @@ func TestMergeWeightedSearchRankings(t *testing.T) {
 	assert.InDelta(t, 1.0/61.0, results[1].Score, 1e-12)
 }
 
+func TestBackfillDiverseTail(t *testing.T) {
+	entry := func(id string) *memory.Entry {
+		return &memory.Entry{ID: id, Memory: &memory.Memory{Memory: id}}
+	}
+	base := []*memory.Entry{entry("a"), entry("b"), entry("c"), entry("d")}
+	diverse := []*memory.Entry{entry("a"), entry("d"), entry("e")}
+
+	results := backfillDiverseTail(base, diverse, 3, 1)
+	assert.Equal(t, []string{"a", "b", "d"}, entryIDs(results))
+	assert.Equal(t, []string{"a", "b", "c", "d"}, entryIDs(base))
+	assert.Same(t, base[3], results[2])
+	assert.Equal(t, []string{"a", "b", "c"}, entryIDs(
+		backfillDiverseTail(
+			base,
+			[]*memory.Entry{entry("a"), entry("b"), entry("e")},
+			3,
+			1,
+		),
+	))
+	assert.Equal(t, []string{"a", "b"}, entryIDs(
+		backfillDiverseTail(base[:2], diverse, 3, 1),
+	))
+	assert.Equal(t, []string{"a", "b", "c", "d"}, entryIDs(
+		backfillDiverseTail(base, diverse, 3, 0),
+	))
+}
+
 func entryIDs(entries []*memory.Entry) []string {
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {

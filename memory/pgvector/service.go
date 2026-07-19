@@ -539,6 +539,7 @@ const (
 	minKindFallbackResults = 3
 	hybridOverfetchFactor  = 4
 	hybridKindRRFWeight    = 0.25
+	hybridKindTailSlots    = 1
 )
 
 // SearchMemories searches memories for a user using vector similarity.
@@ -602,21 +603,23 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search fuses global vector and keyword rankings with weak
-	// per-kind rankings. The weak contribution improves minority-kind recall
-	// without allowing memory kind to dominate semantic relevance.
+	var kindDiversityResults []*memory.Entry
+	// Hybrid search preserves the global vector and keyword ranking. A weak
+	// per-kind ranking is retained only as a source for tail backfill.
 	if opts.HybridSearch {
+		vectorResults := results
 		keywordResults, kwErr := s.executeKeywordSearch(
 			ctx, userKey, opts, candidateLimit,
 		)
-		rankings := []weightedSearchRanking{{results: results, weight: 1}}
+		rankings := []weightedSearchRanking{{results: vectorResults, weight: 1}}
 		if kwErr == nil && len(keywordResults) > 0 {
 			rankings = append(rankings, weightedSearchRanking{
 				results: keywordResults,
 				weight:  1,
 			})
 		}
-		for _, kindResults := range rankedResultsByMemoryKind(results) {
+		kindRankings := rankedResultsByMemoryKind(vectorResults)
+		for _, kindResults := range kindRankings {
 			rankings = append(rankings, weightedSearchRanking{
 				results: kindResults,
 				weight:  hybridKindRRFWeight,
@@ -626,8 +629,13 @@ func (s *Service) SearchMemories(
 		if rrfK <= 0 {
 			rrfK = defaultRRFK
 		}
-		if len(rankings) > 1 {
-			results = mergeWeightedSearchRankings(
+		if len(keywordResults) > 0 && kwErr == nil {
+			results = mergeHybridResults(
+				vectorResults, keywordResults, rrfK, candidateLimit,
+			)
+		}
+		if len(kindRankings) > 0 {
+			kindDiversityResults = mergeWeightedSearchRankings(
 				rankings, rrfK, candidateLimit,
 			)
 		}
@@ -664,6 +672,15 @@ func (s *Service) SearchMemories(
 	// Content-based deduplication of near-identical memories.
 	if opts.Deduplicate && len(results) > 1 {
 		results = deduplicateResults(results)
+		kindDiversityResults = deduplicateResults(kindDiversityResults)
+	}
+	if len(kindDiversityResults) > 0 {
+		results = backfillDiverseTail(
+			results,
+			kindDiversityResults,
+			maxResults,
+			hybridKindTailSlots,
+		)
 	}
 	if maxResults > 0 && len(results) > maxResults {
 		results = results[:maxResults]
@@ -758,6 +775,58 @@ func mergeWeightedSearchRankings(
 		merged = merged[:maxResults]
 	}
 	return merged
+}
+
+func backfillDiverseTail(
+	base []*memory.Entry,
+	diverse []*memory.Entry,
+	maxResults int,
+	slots int,
+) []*memory.Entry {
+	if maxResults <= 0 || slots <= 0 || len(base) == 0 || len(diverse) == 0 {
+		return base
+	}
+	limit := min(maxResults, len(base))
+	if limit == len(base) {
+		return base
+	}
+	result := append([]*memory.Entry(nil), base[:limit]...)
+	seen := make(map[string]struct{}, len(result))
+	for _, entry := range result {
+		if entry != nil {
+			seen[entry.ID] = struct{}{}
+		}
+	}
+	tail := make(map[string]*memory.Entry, len(base)-limit)
+	for _, entry := range base[limit:] {
+		if entry != nil && entry.ID != "" {
+			tail[entry.ID] = entry
+		}
+	}
+	candidates := make([]*memory.Entry, 0, slots)
+	for _, entry := range diverse {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		if _, exists := seen[entry.ID]; exists {
+			continue
+		}
+		baseEntry, exists := tail[entry.ID]
+		if !exists {
+			continue
+		}
+		candidates = append(candidates, baseEntry)
+		seen[entry.ID] = struct{}{}
+		if len(candidates) == slots {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return result
+	}
+	replace := min(len(candidates), len(result))
+	copy(result[len(result)-replace:], candidates[:replace])
+	return result
 }
 
 // executeVectorSearch runs a single vector similarity search against pgvector.
