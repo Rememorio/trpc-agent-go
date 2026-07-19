@@ -537,6 +537,10 @@ func (s *Service) ReadMemories(
 // search triggers a fallback unfiltered search when KindFallback is enabled.
 const minKindFallbackResults = 3
 
+// deduplicationOversampleFactor leaves enough candidates to refill results
+// removed by content deduplication before applying the caller's final limit.
+const deduplicationOversampleFactor = 2
+
 // SearchMemories searches memories for a user using vector similarity.
 // Options may include WithSearchOptions for advanced filtering
 // (kind, time range, hybrid search, etc.).
@@ -572,8 +576,9 @@ func (s *Service) SearchMemories(
 	if opts.MaxResults > 0 {
 		maxResults = opts.MaxResults
 	}
+	candidateLimit := deduplicationCandidateLimit(maxResults, opts.Deduplicate)
 
-	results, err := s.executeVectorSearch(ctx, userKey, opts, vector, maxResults)
+	results, err := s.executeVectorSearch(ctx, userKey, opts, vector, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -585,10 +590,12 @@ func (s *Service) SearchMemories(
 		fallbackOpts.Kind = ""
 		fallbackOpts.KindFallback = false
 		fallbackResults, fallbackErr := s.executeVectorSearch(
-			ctx, userKey, fallbackOpts, vector, maxResults,
+			ctx, userKey, fallbackOpts, vector, candidateLimit,
 		)
 		if fallbackErr == nil && len(fallbackResults) > 0 {
-			results = mergeSearchResults(results, fallbackResults, opts.Kind, maxResults)
+			results = mergeSearchResults(
+				results, fallbackResults, opts.Kind, candidateLimit,
+			)
 		}
 	}
 
@@ -596,13 +603,17 @@ func (s *Service) SearchMemories(
 	// using Reciprocal Rank Fusion (RRF) to improve recall for exact
 	// entity names, book titles, etc.
 	if opts.HybridSearch {
-		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
+		keywordResults, kwErr := s.executeKeywordSearch(
+			ctx, userKey, opts, candidateLimit,
+		)
 		if kwErr == nil && len(keywordResults) > 0 {
 			rrfK := opts.HybridRRFK
 			if rrfK <= 0 {
 				rrfK = defaultRRFK
 			}
-			results = mergeHybridResults(results, keywordResults, rrfK, maxResults)
+			results = mergeHybridResults(
+				results, keywordResults, rrfK, candidateLimit,
+			)
 		}
 	}
 
@@ -643,6 +654,17 @@ func (s *Service) SearchMemories(
 	}
 
 	return results, nil
+}
+
+func deduplicationCandidateLimit(maxResults int, deduplicate bool) int {
+	if !deduplicate || maxResults <= 0 {
+		return maxResults
+	}
+	maxInt := int(^uint(0) >> 1)
+	if maxResults > maxInt/deduplicationOversampleFactor {
+		return maxResults
+	}
+	return maxResults * deduplicationOversampleFactor
 }
 
 // executeVectorSearch runs a single vector similarity search against pgvector.
@@ -716,6 +738,24 @@ func (s *Service) executeVectorSearch(
 // defaultRRFK is the standard Reciprocal Rank Fusion constant.
 const defaultRRFK = imemory.DefaultHybridRRFK
 
+// keywordFallbackTSQuerySQL turns normalized lexemes into alternatives. It is
+// used only when no adjacent content phrase matches.
+const keywordFallbackTSQuerySQL = "to_tsquery('english', replace(strip(" +
+	"to_tsvector('english', $1))::text, ' ', ' | '))"
+
+const keywordPhraseTSQuerySQL = "websearch_to_tsquery('english', $1)"
+
+const maxKeywordPhraseTokens = 16
+
+var keywordQuestionStopwords = map[string]struct{}{
+	"about": {}, "can": {}, "could": {}, "did": {}, "do": {},
+	"does": {}, "had": {}, "has": {}, "have": {}, "how": {},
+	"i": {}, "me": {}, "mine": {}, "my": {}, "please": {},
+	"remind": {}, "should": {}, "tell": {}, "what": {}, "when": {},
+	"where": {}, "which": {}, "who": {}, "why": {}, "would": {},
+	"you": {}, "your": {}, "yours": {},
+}
+
 // executeKeywordSearch runs a full-text search using PostgreSQL
 // tsvector/tsquery alongside the vector search results.
 func (s *Service) executeKeywordSearch(
@@ -728,6 +768,39 @@ func (s *Service) executeKeywordSearch(
 	if query == "" {
 		return []*memory.Entry{}, nil
 	}
+	var phraseResults []*memory.Entry
+	if phraseQuery := buildKeywordPhraseQuery(query); phraseQuery != "" {
+		results, err := s.executeKeywordSearchQuery(
+			ctx, userKey, opts, maxResults,
+			phraseQuery, keywordPhraseTSQuerySQL,
+		)
+		if err == nil {
+			phraseResults = results
+		}
+		if maxResults > 0 && len(phraseResults) >= maxResults {
+			return results, nil
+		}
+	}
+	fallbackResults, err := s.executeKeywordSearchQuery(
+		ctx, userKey, opts, maxResults,
+		query, keywordFallbackTSQuerySQL,
+	)
+	if err != nil {
+		return phraseResults, nil
+	}
+	return mergeKeywordSearchResults(
+		phraseResults, fallbackResults, maxResults,
+	), nil
+}
+
+func (s *Service) executeKeywordSearchQuery(
+	ctx context.Context,
+	userKey memory.UserKey,
+	opts memory.SearchOptions,
+	maxResults int,
+	query string,
+	tsQuerySQL string,
+) ([]*memory.Entry, error) {
 
 	var searchQuery strings.Builder
 	args := []any{query, userKey.AppName, userKey.UserID}
@@ -737,10 +810,11 @@ func (s *Service) executeKeywordSearch(
 		"SELECT memory_id, app_name, user_id, memory_content, topics, "+
 			"memory_kind, event_time, participants, location, "+
 			"created_at, updated_at, "+
-			"ts_rank(search_vector, plainto_tsquery('english', $1)) AS similarity "+
+			"coalesce(ts_rank(search_vector, %s), 0) + "+
+			"coalesce(ts_rank(topic_search_vector, %s), 0) AS similarity "+
 			"FROM %s WHERE app_name = $2 AND user_id = $3 "+
-			"AND search_vector @@ plainto_tsquery('english', $1)",
-		s.tableName,
+			"AND (search_vector @@ %s OR topic_search_vector @@ %s)",
+		tsQuerySQL, tsQuerySQL, s.tableName, tsQuerySQL, tsQuerySQL,
 	)
 	if s.opts.softDelete {
 		searchQuery.WriteString(" AND deleted_at IS NULL")
@@ -782,11 +856,80 @@ func (s *Service) executeKeywordSearch(
 		return nil
 	}, searchQuery.String(), args...)
 
-	if err != nil {
-		// Keyword search failure is non-fatal; log and return empty.
-		return []*memory.Entry{}, nil
+	return results, err
+}
+
+func buildKeywordPhraseQuery(query string) string {
+	tokens := imemory.BuildSearchTokens(query)
+	filtered := make([]string, 0, min(len(tokens), maxKeywordPhraseTokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(strings.ToLower(token))
+		if token == "" {
+			continue
+		}
+		if _, ok := keywordQuestionStopwords[token]; ok {
+			continue
+		}
+		if len(filtered) == maxKeywordPhraseTokens {
+			break
+		}
+		filtered = append(filtered, token)
 	}
-	return results, nil
+	if len(filtered) < 2 {
+		return ""
+	}
+
+	phrases := make([]string, 0, len(filtered)-1)
+	seen := make(map[string]struct{}, len(filtered)-1)
+	for index := 0; index+1 < len(filtered); index++ {
+		left := escapeWebSearchPhraseToken(filtered[index])
+		right := escapeWebSearchPhraseToken(filtered[index+1])
+		if left == "" || right == "" {
+			continue
+		}
+		phrase := `"` + left + " " + right + `"`
+		if _, ok := seen[phrase]; ok {
+			continue
+		}
+		seen[phrase] = struct{}{}
+		phrases = append(phrases, phrase)
+	}
+	return strings.Join(phrases, " OR ")
+}
+
+func escapeWebSearchPhraseToken(token string) string {
+	token = strings.ReplaceAll(token, `\`, " ")
+	token = strings.ReplaceAll(token, `"`, " ")
+	return strings.Join(strings.Fields(token), " ")
+}
+
+func mergeKeywordSearchResults(
+	phraseResults []*memory.Entry,
+	fallbackResults []*memory.Entry,
+	maxResults int,
+) []*memory.Entry {
+	capacity := len(phraseResults) + len(fallbackResults)
+	if maxResults > 0 {
+		capacity = min(capacity, maxResults)
+	}
+	merged := make([]*memory.Entry, 0, capacity)
+	seen := make(map[string]struct{}, len(phraseResults)+len(fallbackResults))
+	for _, results := range [][]*memory.Entry{phraseResults, fallbackResults} {
+		for _, result := range results {
+			if result == nil {
+				continue
+			}
+			if _, ok := seen[result.ID]; ok {
+				continue
+			}
+			seen[result.ID] = struct{}{}
+			merged = append(merged, result)
+			if maxResults > 0 && len(merged) == maxResults {
+				return merged
+			}
+		}
+	}
+	return merged
 }
 
 // mergeHybridResults combines vector and keyword search results using
