@@ -18,16 +18,10 @@ import (
 
 const temporalEventTailSlots = 1
 
-var temporalOrderingTerms = map[string]struct{}{
+var temporalSequenceTerms = map[string]struct{}{
 	"chronological":   {},
 	"chronologically": {},
 	"chronology":      {},
-	"earliest":        {},
-	"latest":          {},
-	"newest":          {},
-	"oldest":          {},
-	"order":           {},
-	"reverse":         {},
 	"sequence":        {},
 	"timeline":        {},
 }
@@ -87,15 +81,18 @@ func temporalOrderingDirection(
 	query string,
 ) (temporalEventOrder, bool) {
 	tokens := focusedTokens(query)
-	hasOrderingCue := false
+	hasSequenceCue := false
 	earliest := -1
 	latest := -1
+	order := false
 	reverse := false
 	for index, token := range tokens {
-		if _, ok := temporalOrderingTerms[token]; ok {
-			hasOrderingCue = true
+		if _, ok := temporalSequenceTerms[token]; ok {
+			hasSequenceCue = true
 		}
 		switch token {
+		case "order":
+			order = true
 		case "reverse":
 			reverse = true
 		case "earliest", "oldest":
@@ -108,7 +105,8 @@ func temporalOrderingDirection(
 			}
 		}
 	}
-	if !hasOrderingCue {
+	if !hasSequenceCue && !(earliest >= 0 && latest >= 0) &&
+		!(order && reverse) {
 		return temporalEventAscending, false
 	}
 	if reverse || latest >= 0 && (earliest < 0 || latest < earliest) {

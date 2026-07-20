@@ -82,6 +82,19 @@ func TestRankResultsByTemporalEventCoverage(t *testing.T) {
 	assert.Nil(t, rankResultsByTemporalEventCoverage(
 		"Which museum did I visit?", results,
 	))
+	assert.Nil(t, rankResultsByTemporalEventCoverage(
+		"What did I order at the museum cafe?", results,
+	))
+	assert.Nil(t, rankResultsByTemporalEventCoverage(
+		"Which museum did I visit latest?", results,
+	))
+
+	got = rankResultsByTemporalEventCoverage(
+		"List the museum visit sequence.", results,
+	)
+	require.Len(t, got, 3)
+	assert.Equal(t, []string{"science", "contemporary", "metropolitan"},
+		temporalEntryIDs(got))
 }
 
 func TestBackfillTemporalEventTail(t *testing.T) {
