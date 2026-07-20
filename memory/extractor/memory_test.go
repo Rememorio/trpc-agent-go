@@ -238,6 +238,10 @@ func TestExtractor_AssistantResultExtractionOption(t *testing.T) {
 	assert.Contains(t, prompt, "A rationale or a")
 	assert.Contains(t, prompt,
 		"disclaimer that the assistant has no personal opinion")
+	assert.Contains(t, prompt, "relation-specific and self-contained")
+	assert.Contains(t, prompt, "independently referable sub-results")
+	assert.Contains(t, prompt,
+		"Recommended PostgreSQL as the project database")
 	assert.Contains(t, prompt, "Plan B best balances")
 	assert.Contains(t, prompt, "reliability and cost")
 	assert.Contains(t, prompt, "Do not store general definitions")

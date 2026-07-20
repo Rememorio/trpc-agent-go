@@ -38,6 +38,11 @@ eligible result and emit no tool call otherwise.
   conclusions, ordered plans, and cohesive lists or mappings.
 - A requested structured extraction remains eligible even when its source is
   non-personal or the response is framed as analysis or opinion.
+- Make each result relation-specific and self-contained: include the action,
+  requested category or criterion, and exact result instead of a generic label
+  such as tips, resources, or advice.
+- Store independently referable sub-results separately, while keeping one
+  requested set, order, or mapping cohesive.
 - Preserve exact names, ordering, negation, quantities, and item-to-detail
   relationships. Keep a cohesive result together when splitting loses those
   relationships.

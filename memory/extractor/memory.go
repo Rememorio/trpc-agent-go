@@ -707,6 +707,15 @@ recommendations, estimates, and answers from facts confirmed by the user.
   personal, objectively verifiable, or free of analysis. A rationale or a
   disclaimer that the assistant has no personal opinion does not make an
   otherwise concrete named answer into generic background.
+- Make each result relation-specific and self-contained: state what the
+  assistant recommended, selected, calculated, classified, or otherwise
+  concluded, the requested category or criterion, and the exact result. Do not
+  title a memory only as generic tips, resources, or advice when the response
+  contains a narrower result that the user could ask about independently.
+- When a long answer contains multiple independently referable sub-results,
+  store those sub-results separately. Keep items together when they form one
+  requested set, order, or mapping; do not merge independent recommendations
+  merely because they appeared in the same response.
 - Keep a cohesive result in one memory when splitting it would lose set
   membership, ordering, or item-to-detail relationships. For a long response,
   store one concise memory containing the requested answer rather than every
@@ -720,6 +729,10 @@ recommendations, estimates, and answers from facts confirmed by the user.
   followed by supporting reasons, store "Assistant result: Plan B best balances
   reliability and cost." The analytical framing and supporting explanation do
   not disqualify the selected conclusion.
+- Example: if broad project setup advice includes choosing PostgreSQL as the
+  database among unrelated tips, separately store "Assistant result:
+  Recommended PostgreSQL as the project database." Do not bury that direct
+  recommendation inside a generic summary of all setup tips.
 - Preserve exact names, quantities, negation, modality, and relationships.
 - Every number, amount, range, percentage, date, duration, and measurement in
   a result must appear in the assistant's direct response. Never invent a
