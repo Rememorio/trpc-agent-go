@@ -538,6 +538,7 @@ func (s *Service) ReadMemories(
 const (
 	minKindFallbackResults = 3
 	hybridOverfetchFactor  = 4
+	hybridKindTailSlots    = 1
 )
 
 // SearchMemories searches memories for a user using vector similarity.
@@ -601,28 +602,39 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search fuses global vector, keyword, and per-kind vector rankings.
-	// The per-kind rankings normalize rank for minority memory kinds without a
-	// fixed quota.
+	var kindDiversityResults []*memory.Entry
+	// Hybrid search keeps semantic rankings in the head. Per-kind rankings are
+	// retained separately and may replace only the final result as a low-risk
+	// diversity fallback.
 	if opts.HybridSearch {
+		vectorResults := results
 		keywordResults, kwErr := s.executeKeywordSearch(
 			ctx, userKey, opts, candidateLimit,
 		)
 		rankings := make([][]*memory.Entry, 0, 4)
-		rankings = append(rankings, results)
+		rankings = append(rankings, vectorResults)
 		if kwErr == nil && len(keywordResults) > 0 {
 			rankings = append(rankings, keywordResults)
 		}
-		if focusedResults := rankResultsByFocusedPassage(query, results); len(focusedResults) > 0 {
+		if focusedResults := rankResultsByFocusedPassage(query, vectorResults); len(focusedResults) > 0 {
 			rankings = append(rankings, focusedResults)
 		}
-		rankings = append(rankings, rankedResultsByMemoryKind(results)...)
+		kindRankings := rankedResultsByMemoryKind(vectorResults)
 		rrfK := opts.HybridRRFK
 		if rrfK <= 0 {
 			rrfK = defaultRRFK
 		}
 		if len(rankings) > 1 {
 			results = imemory.MergeRankedResults(rankings, rrfK, candidateLimit)
+		}
+		if len(kindRankings) > 0 {
+			diversityRankings := make([][]*memory.Entry, 0,
+				len(rankings)+len(kindRankings))
+			diversityRankings = append(diversityRankings, rankings...)
+			diversityRankings = append(diversityRankings, kindRankings...)
+			kindDiversityResults = imemory.MergeRankedResults(
+				diversityRankings, rrfK, candidateLimit,
+			)
 		}
 	}
 
@@ -657,6 +669,17 @@ func (s *Service) SearchMemories(
 	// Content-based deduplication of near-identical memories.
 	if opts.Deduplicate && len(results) > 1 {
 		results = imemory.DeduplicateResultsPreservingConflicts(results)
+		kindDiversityResults = imemory.DeduplicateResultsPreservingConflicts(
+			kindDiversityResults,
+		)
+	}
+	if len(kindDiversityResults) > 0 {
+		results = backfillDiverseTail(
+			results,
+			kindDiversityResults,
+			maxResults,
+			hybridKindTailSlots,
+		)
 	}
 	if maxResults > 0 && len(results) > maxResults {
 		results = results[:maxResults]
@@ -704,6 +727,58 @@ func rankedResultsByMemoryKind(
 		rankings = append(rankings, byKind[kind])
 	}
 	return rankings
+}
+
+func backfillDiverseTail(
+	base []*memory.Entry,
+	diverse []*memory.Entry,
+	maxResults int,
+	slots int,
+) []*memory.Entry {
+	if maxResults <= 0 || slots <= 0 || len(base) == 0 || len(diverse) == 0 {
+		return base
+	}
+	limit := min(maxResults, len(base))
+	if limit == len(base) {
+		return base
+	}
+	result := append([]*memory.Entry(nil), base[:limit]...)
+	seen := make(map[string]struct{}, len(result))
+	for _, entry := range result {
+		if entry != nil {
+			seen[entry.ID] = struct{}{}
+		}
+	}
+	tail := make(map[string]*memory.Entry, len(base)-limit)
+	for _, entry := range base[limit:] {
+		if entry != nil && entry.ID != "" {
+			tail[entry.ID] = entry
+		}
+	}
+	candidates := make([]*memory.Entry, 0, slots)
+	for _, entry := range diverse {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		if _, exists := seen[entry.ID]; exists {
+			continue
+		}
+		baseEntry, exists := tail[entry.ID]
+		if !exists {
+			continue
+		}
+		candidates = append(candidates, baseEntry)
+		seen[entry.ID] = struct{}{}
+		if len(candidates) == slots {
+			break
+		}
+	}
+	if len(candidates) == 0 {
+		return result
+	}
+	replace := min(len(candidates), len(result))
+	copy(result[len(result)-replace:], candidates[:replace])
+	return result
 }
 
 // executeVectorSearch runs a single vector similarity search against pgvector.
