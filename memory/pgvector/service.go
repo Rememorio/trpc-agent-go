@@ -601,10 +601,12 @@ func (s *Service) SearchMemories(
 		}
 	}
 
+	var temporalEventResults []*memory.Entry
 	// Hybrid search fuses global vector, keyword, and per-kind vector rankings.
 	// The per-kind rankings normalize rank for minority memory kinds without a
 	// fixed quota.
 	if opts.HybridSearch {
+		vectorResults := results
 		keywordResults, kwErr := s.executeKeywordSearch(
 			ctx, userKey, opts, candidateLimit,
 		)
@@ -616,6 +618,9 @@ func (s *Service) SearchMemories(
 		if focusedResults := rankResultsByFocusedPassage(query, results); len(focusedResults) > 0 {
 			rankings = append(rankings, focusedResults)
 		}
+		temporalEventResults = rankResultsByTemporalEventCoverage(
+			query, vectorResults,
+		)
 		rankings = append(rankings, rankedResultsByMemoryKind(results)...)
 		rrfK := opts.HybridRRFK
 		if rrfK <= 0 {
@@ -657,6 +662,17 @@ func (s *Service) SearchMemories(
 	// Content-based deduplication of near-identical memories.
 	if opts.Deduplicate && len(results) > 1 {
 		results = imemory.DeduplicateResultsPreservingConflicts(results)
+		temporalEventResults = imemory.DeduplicateResultsPreservingConflicts(
+			temporalEventResults,
+		)
+	}
+	if len(temporalEventResults) > 0 {
+		results = backfillDiverseTail(
+			results,
+			temporalEventResults,
+			maxResults,
+			temporalEventTailSlots,
+		)
 	}
 	if maxResults > 0 && len(results) > maxResults {
 		results = results[:maxResults]
