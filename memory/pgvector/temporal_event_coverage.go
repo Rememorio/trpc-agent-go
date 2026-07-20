@@ -126,7 +126,7 @@ func termSetsOverlap(left, right map[string]struct{}) bool {
 	return false
 }
 
-func backfillDiverseTail(
+func backfillTemporalEventTail(
 	base []*memory.Entry,
 	diverse []*memory.Entry,
 	maxResults int,
@@ -146,6 +146,12 @@ func backfillDiverseTail(
 			seen[entry.ID] = struct{}{}
 		}
 	}
+	coveredEvents := make(map[string]struct{}, len(result))
+	for _, entry := range result {
+		if key, ok := temporalEventCoverageKey(entry); ok {
+			coveredEvents[key] = struct{}{}
+		}
+	}
 	tail := make(map[string]*memory.Entry, len(base)-limit)
 	for _, entry := range base[limit:] {
 		if entry != nil && entry.ID != "" {
@@ -160,12 +166,20 @@ func backfillDiverseTail(
 		if _, exists := seen[entry.ID]; exists {
 			continue
 		}
+		coverageKey, ok := temporalEventCoverageKey(entry)
+		if !ok {
+			continue
+		}
+		if _, covered := coveredEvents[coverageKey]; covered {
+			continue
+		}
 		baseEntry, exists := tail[entry.ID]
 		if !exists {
 			continue
 		}
 		candidates = append(candidates, baseEntry)
 		seen[entry.ID] = struct{}{}
+		coveredEvents[coverageKey] = struct{}{}
 		if len(candidates) == slots {
 			break
 		}
@@ -176,4 +190,17 @@ func backfillDiverseTail(
 	replace := min(len(candidates), len(result))
 	copy(result[len(result)-replace:], candidates[:replace])
 	return result
+}
+
+func temporalEventCoverageKey(entry *memory.Entry) (string, bool) {
+	if entry == nil || entry.Memory == nil ||
+		imemory.EffectiveKind(entry.Memory) != memory.KindEpisode ||
+		entry.Memory.EventTime == nil {
+		return "", false
+	}
+	location := strings.Join(focusedTokens(entry.Memory.Location), " ")
+	if location == "" {
+		return "", false
+	}
+	return entry.Memory.EventTime.UTC().Format("2006-01-02") + "|" + location, true
 }

@@ -84,28 +84,62 @@ func TestRankResultsByTemporalEventCoverage(t *testing.T) {
 	))
 }
 
-func TestBackfillDiverseTail(t *testing.T) {
+func TestBackfillTemporalEventTail(t *testing.T) {
 	t.Parallel()
-	entry := func(id string) *memory.Entry {
-		return &memory.Entry{ID: id, Memory: &memory.Memory{Memory: id}}
+	eventTime := time.Date(2023, 1, 15, 0, 0, 0, 0, time.UTC)
+	entry := func(id string, location string) *memory.Entry {
+		return &memory.Entry{
+			ID: id,
+			Memory: &memory.Memory{
+				Memory:    id,
+				Kind:      memory.KindEpisode,
+				EventTime: &eventTime,
+				Location:  location,
+			},
+		}
 	}
-	base := []*memory.Entry{entry("a"), entry("b"), entry("c"), entry("d")}
-	diverse := []*memory.Entry{entry("a"), entry("d"), entry("e")}
+	base := []*memory.Entry{
+		entry("a", "Science Museum"),
+		entry("b", "Metropolitan Museum of Art"),
+		entry("c", "Museum of History"),
+		entry("d", "Museum of Contemporary Art"),
+	}
+	diverse := []*memory.Entry{
+		entry("a", "Science Museum"),
+		entry("d", "Museum of Contemporary Art"),
+		entry("e", "Natural History Museum"),
+	}
 
-	results := backfillDiverseTail(base, diverse, 3, 1)
+	results := backfillTemporalEventTail(base, diverse, 3, 1)
 	assert.Equal(t, []string{"a", "b", "d"}, temporalEntryIDs(results))
 	assert.Equal(t, []string{"a", "b", "c", "d"}, temporalEntryIDs(base))
 	assert.Same(t, base[3], results[2])
 	assert.Equal(t, []string{"a", "b", "c"}, temporalEntryIDs(
-		backfillDiverseTail(
+		backfillTemporalEventTail(
 			base,
-			[]*memory.Entry{entry("a"), entry("b"), entry("e")},
+			[]*memory.Entry{
+				entry("a", "Science Museum"),
+				entry("b", "Metropolitan Museum of Art"),
+				entry("e", "Natural History Museum"),
+			},
 			3,
 			1,
 		),
 	))
 	assert.Equal(t, []string{"a", "b"}, temporalEntryIDs(
-		backfillDiverseTail(base[:2], diverse, 3, 1),
+		backfillTemporalEventTail(base[:2], diverse, 3, 1),
+	))
+
+	duplicateEvent := entry("duplicate", "Science Museum")
+	duplicateBase := append(append([]*memory.Entry(nil), base[:3]...),
+		duplicateEvent)
+	assert.Equal(t, []string{"a", "b", "c"}, temporalEntryIDs(
+		backfillTemporalEventTail(
+			duplicateBase,
+			[]*memory.Entry{duplicateEvent},
+			3,
+			1,
+		),
 	))
 }
 

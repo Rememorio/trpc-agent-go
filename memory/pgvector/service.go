@@ -667,7 +667,7 @@ func (s *Service) SearchMemories(
 		)
 	}
 	if len(temporalEventResults) > 0 {
-		results = backfillDiverseTail(
+		results = backfillTemporalEventTail(
 			results,
 			temporalEventResults,
 			maxResults,
