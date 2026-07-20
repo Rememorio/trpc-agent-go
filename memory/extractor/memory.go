@@ -210,6 +210,26 @@ func (e *memoryExtractor) ExtractOperationStages(
 			assistantResults = recovered
 		}
 	}
+	if shouldRefineCompoundAssistantResults(messages, assistantResults) {
+		refinementCtx, refined, refinementErr :=
+			e.refineCompoundAssistantResults(
+				ctx, messages, existing, assistantResults,
+			)
+		if refinementErr != nil {
+			if refinementCtx.Err() != nil {
+				return primary, nil, refinementErr
+			}
+			log.WarnfContext(ctx,
+				"extractor: compound assistant result refinement failed: %v",
+				refinementErr,
+			)
+		} else {
+			ctx = refinementCtx
+			assistantResults = append(assistantResults,
+				uniqueExtractionOperations(assistantResults, refined)...,
+			)
+		}
+	}
 	assistantResults = filterGroundedAssistantResultOperations(
 		ctx, messages, assistantResults,
 	)
