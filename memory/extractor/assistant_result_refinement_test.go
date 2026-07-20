@@ -95,6 +95,8 @@ func TestExtractor_RefinesCompoundAssistantResult(t *testing.T) {
 		"<already_extracted_assistant_results>")
 	assert.Contains(t, m.requests[1].Messages[0].Content,
 		"Assistant result: Setup advice")
+	assert.Contains(t, m.requests[1].Messages[0].Content,
+		"Numbering alone does not make a result ordered")
 }
 
 func TestExtractor_CompoundRefinementMayEmitNoResult(t *testing.T) {

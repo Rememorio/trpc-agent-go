@@ -39,10 +39,13 @@ when the broad result is already sufficient.
 - Make each sub-result self-contained. For example, if setup advice includes
   "Use PostgreSQL or MySQL as relational databases", an eligible refinement is
   "Assistant result: Recommended PostgreSQL or MySQL as relational databases."
+- Numbering alone does not make a result ordered or cohesive. A list item is
+  independently referable when it provides concrete named values for a
+  distinct relation or category, even when it appears inside broader advice.
 - Keep the original broad result. Do not repeat or paraphrase it.
-- Do not split ordered procedures, rankings, cohesive sets, or item-to-detail
-  mappings when each fragment loses the relationship that made the result
-  useful.
+- Keep an ordered procedure, ranking, cohesive set, or item-to-detail mapping
+  together only when the user requested that structure or the items depend on
+  one another. Do not emit every step or list item by default.
 - Do not emit generic tips, headings, requests, explanations, tutorial steps,
   unselected alternatives, or facts not explicitly present in the response.
 - Do not duplicate an existing memory or an already extracted assistant result.
