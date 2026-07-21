@@ -286,6 +286,68 @@ type CompletionTokensDetails struct {
 
 For OpenAI-compatible providers, `completion_tokens_details.reasoning_tokens` is mapped to `Usage.CompletionTokensDetails.ReasoningTokens`. The value may be `0` when the provider does not spend or report reasoning tokens; for reasoning models, set `ReasoningEffort` and/or `ThinkingEnabled` when you want to request reasoning behavior.
 
+## OpenAI Responses API
+
+OpenAI's Responses API is available as a separate first-class adapter. The
+existing `model/openai` package continues to use Chat Completions, so choosing
+Responses is explicit and does not change existing applications.
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model"
+    openairesponses "trpc.group/trpc-go/trpc-agent-go/model/openai/responses"
+)
+
+llm := openairesponses.New("gpt-5.2")
+request := &model.Request{
+    Messages: []model.Message{
+        model.NewDeveloperMessage("Answer concisely."),
+        model.NewUserMessage("Explain Go channels."),
+    },
+    GenerationConfig: model.GenerationConfig{Stream: true},
+}
+
+responseChannel, err := llm.GenerateContent(ctx, request)
+```
+
+The adapter projects text, refusal, reasoning summaries, citations, usage and
+tool calls into the normal framework response types. It also stores the exact,
+ordered Responses output-item ledger under the `openai.responses` provider
+namespace. Use `MetadataFromResponse`, `ItemsFromResponse`,
+`SDKResponseFromResponse`, or `EventFromResponse` when the lossless provider
+view is needed.
+
+The default state mode is local replay: requests use `store:false`, request
+encrypted reasoning output, and resend the retained item ledger on the next
+turn. Server-side state is explicit:
+
+```go
+llm := openairesponses.New(
+    "gpt-5.2",
+    openairesponses.WithStateMode(openairesponses.StateModePreviousResponse),
+)
+
+request := model.NewRequest(messages,
+    openairesponses.WithResponsesOptions(
+        openairesponses.WithConversationID("conv_..."),
+    ),
+)
+```
+
+`previous_response_id` and Conversation modes use response metadata as a
+history boundary, so items already stored by OpenAI are not sent again.
+Provider-native tools and exact input items are available through typed request
+options. Background start/poll/cancel/resume, input-item listing, input-token
+counting, Conversations, standalone compaction, and Responses Batch operations
+are exposed on the adapter. `SDKClient` remains the escape hatch for newly added
+SDK resources.
+
+Provider-executed tools such as web search and code interpreter are retained in
+the item ledger automatically. Client-executed tools such as computer, local
+shell, and apply patch require an application-owned `ClientToolBridge`; the
+adapter deliberately does not provide an unsafe executor or bypass application
+approval and sandbox policy.
+
 ## OpenAI Model
 
 ### Model Name Parameter

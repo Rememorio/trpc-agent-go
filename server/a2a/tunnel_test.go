@@ -67,7 +67,6 @@ func TestNewEventTunnel(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			produce := func(context.Context) (*event.Event, bool) { return nil, false }
 			consume := func([]*event.Event) (bool, error) { return true, nil }
@@ -148,7 +147,6 @@ func TestEventTunnel_Run_BasicFlow(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			var receivedBatches [][]*event.Event
 			var mu sync.Mutex
@@ -612,7 +610,6 @@ func TestEventTunnel_FlushBatch(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			var consumedBatch []*event.Event
 

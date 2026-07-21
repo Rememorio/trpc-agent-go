@@ -852,54 +852,7 @@ func cloneResponseForMutation(rsp *model.Response) *model.Response {
 	if rsp == nil {
 		return nil
 	}
-	clone := rsp.Clone()
-	for i := range clone.Choices {
-		clone.Choices[i].Message = cloneMessage(rsp.Choices[i].Message)
-		clone.Choices[i].Delta = cloneMessage(rsp.Choices[i].Delta)
-	}
-	return clone
-}
-
-func cloneMessage(msg model.Message) model.Message {
-	clone := msg
-	if msg.ContentParts != nil {
-		clone.ContentParts = make([]model.ContentPart, len(msg.ContentParts))
-		for i, part := range msg.ContentParts {
-			clone.ContentParts[i] = cloneContentPart(part)
-		}
-	}
-	if msg.ToolCalls != nil {
-		clone.ToolCalls = append([]model.ToolCall(nil), msg.ToolCalls...)
-	}
-	return clone
-}
-
-func cloneContentPart(part model.ContentPart) model.ContentPart {
-	clone := part
-	if part.Text != nil {
-		text := *part.Text
-		clone.Text = &text
-	}
-	if part.Image != nil {
-		image := *part.Image
-		image.Data = cloneBytes(part.Image.Data)
-		clone.Image = &image
-	}
-	if part.Audio != nil {
-		audio := *part.Audio
-		audio.Data = cloneBytes(part.Audio.Data)
-		clone.Audio = &audio
-	}
-	if part.File != nil {
-		file := *part.File
-		file.Data = cloneBytes(part.File.Data)
-		clone.File = &file
-	}
-	if part.ContentRef != nil {
-		ref := *part.ContentRef
-		clone.ContentRef = &ref
-	}
-	return clone
+	return rsp.Clone()
 }
 
 func parseDataURL(raw string) ([]byte, string, bool, error) {

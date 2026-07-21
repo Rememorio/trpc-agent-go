@@ -34,7 +34,6 @@ func TestStatusIsTerminal(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, tc.terminal, tc.status.IsTerminal())

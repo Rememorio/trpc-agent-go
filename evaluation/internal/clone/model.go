@@ -31,6 +31,7 @@ func cloneMessage(src *model.Message) (*model.Message, error) {
 		return nil, nil
 	}
 	copied := *src
+	copied.ProviderData = src.ProviderData.Clone()
 	copied.ContentParts = cloneContentParts(src.ContentParts)
 	toolCalls, err := cloneToolCalls(src.ToolCalls)
 	if err != nil {
@@ -58,6 +59,12 @@ func cloneContentParts(src []model.ContentPart) []model.ContentPart {
 		}
 		if part.File != nil {
 			part.File = cloneFile(part.File)
+		}
+		if part.Annotations != nil {
+			part.Annotations = append([]model.Annotation(nil), part.Annotations...)
+			for j := range part.Annotations {
+				part.Annotations[j].ProviderData = src[i].Annotations[j].ProviderData.Clone()
+			}
 		}
 		copied[i] = part
 	}
@@ -109,6 +116,7 @@ func cloneToolCalls(src []model.ToolCall) ([]model.ToolCall, error) {
 			}
 			call.ExtraFields = extraFields.(map[string]any)
 		}
+		call.ProviderData = src[i].ProviderData.Clone()
 		copied[i] = call
 	}
 	return copied, nil

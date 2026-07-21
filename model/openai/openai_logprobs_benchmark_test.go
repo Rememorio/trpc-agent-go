@@ -11,7 +11,7 @@ package openai
 import (
 	"testing"
 
-	openaigo "github.com/openai/openai-go"
+	openaigo "github.com/openai/openai-go/v3"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )

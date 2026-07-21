@@ -11,7 +11,7 @@ The root module path is:
 trpc.group/trpc-go/trpc-agent-go
 ```
 
-The root module requires Go 1.21. Some independent modules, including modules
+The root module requires Go 1.22. Some independent modules, including modules
 under `test/`, require newer Go toolchains.
 
 ## Engineering principles
@@ -188,7 +188,9 @@ Use validation proportional to the affected modules and risk.
 - Test the separate E2E module with `cd test && go test ./...`.
 - Test all library modules with `.github/scripts/run-go-tests.sh`.
 - Check example modules with `.github/scripts/check-examples.sh`.
-- Run lint with `golangci-lint run --timeout=10m`.
+- Run lint with golangci-lint v1.64.8 using
+  `golangci-lint run --timeout=10m`; CI pins this version so local and CI rule
+  semantics stay aligned.
 - Check formatting and `any` usage with
   `gofmt -r 'interface{} -> any' -l .`.
 - Check imports with `goimports -l .`.
@@ -197,6 +199,9 @@ Run targeted tests while iterating and broader validation before delivery.
 
 ## Repository-specific caveats
 
+- CI helper scripts require Bash 4 or newer. Several use namerefs,
+  associative arrays, and `mapfile`; macOS `/bin/bash` 3.2 cannot run them, so
+  macOS developers should invoke the scripts with GNU Bash.
 - The repository contains many independent Go modules. Running `go test ./...`
   from the repository root does not test every module.
 - Tests use mocks and should not require external API credentials. Credentials
@@ -207,5 +212,8 @@ Run targeted tests while iterating and broader validation before delivery.
   `PATH`.
 - Some modules use toolchain directives and may download a newer compatible Go
   toolchain automatically.
+- Prefer the Go version declared by each module when validating compatibility.
+  A substantially newer local toolchain can expose incompatibilities in pinned
+  build-time dependencies that the module's supported toolchain does not have.
 - Every new Go file must include the Tencent Apache 2.0 license header from
   `CONTRIBUTING.md`.

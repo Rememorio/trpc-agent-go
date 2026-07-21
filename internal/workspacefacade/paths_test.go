@@ -53,7 +53,6 @@ func TestNormalizeWorkspaceCWD(t *testing.T) {
 		{name: "rejects absolute disallowed root", in: "/etc/passwd", wantErr: "workspace roots"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := NormalizeWorkspaceCWD(tc.in)
 			if tc.wantErr != "" {

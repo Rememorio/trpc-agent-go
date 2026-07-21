@@ -133,7 +133,6 @@ func TestBlockedBrowserPageReason_DetectsCommonChallenges(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -155,7 +154,6 @@ func TestBlockedBrowserPageReason_IgnoresPlainPageText(t *testing.T) {
 		"Verify your account settings before changing the profile.",
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc, func(t *testing.T) {
 			t.Parallel()
 

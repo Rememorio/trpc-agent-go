@@ -63,6 +63,7 @@ func sanitizeModelMessages(in []model.Message) []model.Message {
 	out := make([]model.Message, 0, len(in))
 	for _, msg := range in {
 		cp := msg
+		cp.ProviderData = msg.ProviderData.Clone()
 		cp.Content = redactSensitiveText(msg.Content)
 		cp.ReasoningContent = redactSensitiveText(msg.ReasoningContent)
 		if len(msg.ContentParts) > 0 {
@@ -80,6 +81,7 @@ func sanitizeModelMessages(in []model.Message) []model.Message {
 			cp.ToolCalls = make([]model.ToolCall, len(msg.ToolCalls))
 			for i, call := range msg.ToolCalls {
 				callCopy := call
+				callCopy.ProviderData = call.ProviderData.Clone()
 				if len(call.Function.Arguments) > 0 {
 					callCopy.Function.Arguments = []byte(
 						redactSensitiveText(string(call.Function.Arguments)),

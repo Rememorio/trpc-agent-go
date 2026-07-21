@@ -14,7 +14,7 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/openai/openai-go/packages/ssestream"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 )
 
 func init() {

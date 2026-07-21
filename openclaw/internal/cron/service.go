@@ -517,7 +517,6 @@ func (s *Service) triggerDue(ctx context.Context) {
 	}
 
 	for _, run := range runs {
-		run := run
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()

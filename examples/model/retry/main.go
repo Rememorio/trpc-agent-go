@@ -17,7 +17,7 @@ import (
 	"log"
 	"time"
 
-	openaiopt "github.com/openai/openai-go/option"
+	openaiopt "github.com/openai/openai-go/v3/option"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 )

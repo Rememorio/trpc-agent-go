@@ -1,6 +1,6 @@
 module trpc.group/trpc-go/trpc-agent-go/examples/graph
 
-go 1.21
+go 1.22
 
 replace (
 	trpc.group/trpc-go/trpc-agent-go => ../../
@@ -42,12 +42,12 @@ require (
 	github.com/lestrrat-go/option v1.0.1 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mohae/deepcopy v0.0.0-20170929034955-c48cc78d4826 // indirect
-	github.com/openai/openai-go v1.12.0 // indirect
+	github.com/openai/openai-go/v3 v3.44.0 // indirect
 	github.com/panjf2000/ants/v2 v2.10.0 // indirect
 	github.com/perimeterx/marshmallow v1.1.5 // indirect
 	github.com/redis/go-redis/v9 v9.17.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
-	github.com/tidwall/gjson v1.14.4 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

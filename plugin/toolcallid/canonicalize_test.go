@@ -334,7 +334,6 @@ func TestCanonicalizeResponse_BestEffortWithMissingFields(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			canonicalized, err := canonicalizeResponse(tc.inv, tc.rsp)

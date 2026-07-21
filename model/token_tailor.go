@@ -300,7 +300,7 @@ func buildUserAnchoredRounds(messages []Message, preservedHead int) []userAnchor
 
 	for i := preservedHead; i < len(messages); i++ {
 		msg := messages[i]
-		if msg.Role == RoleSystem {
+		if isInstructionRole(msg.Role) {
 			continue
 		}
 		hasAnyNonSystem = true
@@ -491,7 +491,7 @@ func buildMinimalSuffixCandidate(messages []Message, preservedHead int) []Messag
 // lastNonSystemIndex finds the last non-system message index.
 func lastNonSystemIndex(messages []Message) int {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != RoleSystem {
+		if !isInstructionRole(messages[i].Role) {
 			return i
 		}
 	}
@@ -718,7 +718,7 @@ func calculatePreservedHeadCount(messages []Message) int {
 	count := 0
 	for _, msg := range messages {
 		// Stop at first non-system message.
-		if msg.Role != RoleSystem {
+		if !isInstructionRole(msg.Role) {
 			break
 		}
 		count++

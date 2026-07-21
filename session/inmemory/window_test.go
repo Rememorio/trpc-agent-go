@@ -34,7 +34,6 @@ func TestSessionService_GetEventWindow(t *testing.T) {
 		windowTestToolEvent("t1", "calc", "three"),
 		windowTestEvent("u2", model.RoleUser, "four"),
 	} {
-		evt := evt
 		require.NoError(t, svc.AppendEvent(ctx, sess, &evt))
 	}
 

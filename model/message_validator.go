@@ -20,11 +20,17 @@ const (
 )
 
 // HasPayload reports whether the message has non-empty Content, ContentParts,
-// or ReasoningContent.
+// ReasoningContent, Refusal, or provider continuation data.
 func HasPayload(msg Message) bool {
 	return msg.Content != "" ||
 		len(msg.ContentParts) > 0 ||
-		msg.ReasoningContent != ""
+		msg.ReasoningContent != "" ||
+		msg.Refusal != "" ||
+		len(msg.ProviderData) > 0
+}
+
+func isInstructionRole(role Role) bool {
+	return role == RoleSystem || role == RoleDeveloper
 }
 
 func roleGroupOf(role Role) roleGroupKind {
@@ -133,7 +139,7 @@ func splitIntoUserAnchoredRounds(messages []Message) ([]Message, [][]Message) {
 	}
 
 	for _, msg := range messages {
-		if msg.Role == RoleSystem {
+		if isInstructionRole(msg.Role) {
 			if inRound {
 				currRound = append(currRound, msg)
 			} else {
@@ -184,7 +190,7 @@ func filterValidRounds(rounds [][]Message) [][]Message {
 func isRoundValid(round []Message) bool {
 	firstNonSystemRole := Role("")
 	for _, msg := range round {
-		if msg.Role == RoleSystem {
+		if isInstructionRole(msg.Role) {
 			continue
 		}
 		firstNonSystemRole = msg.Role
@@ -200,7 +206,7 @@ func isRoundValid(round []Message) bool {
 		hasPrev   bool
 	)
 	for _, msg := range round {
-		if msg.Role == RoleSystem {
+		if isInstructionRole(msg.Role) {
 			continue
 		}
 		group := roleGroupOf(msg.Role)
@@ -232,7 +238,7 @@ func ensureLastMessageIsUserOrTool(messages []Message) []Message {
 	// Remove trailing system messages. This ensures the last message is a
 	// strict user/tool message when possible.
 	end := len(messages)
-	for end > 0 && messages[end-1].Role == RoleSystem {
+	for end > 0 && isInstructionRole(messages[end-1].Role) {
 		end--
 	}
 	messages = messages[:end]

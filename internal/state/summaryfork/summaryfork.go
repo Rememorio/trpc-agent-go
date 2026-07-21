@@ -99,6 +99,7 @@ func cloneRequest(req *model.Request) *model.Request {
 	cloned.GenerationConfig = cloneGenerationConfig(req.GenerationConfig)
 	cloned.StructuredOutput = cloneStructuredOutput(req.StructuredOutput)
 	cloned.ExtraFields = jsonmap.Clone(req.ExtraFields)
+	cloned.ProviderOptions = req.ProviderOptions.Clone()
 	cloned.Headers = cloneHeaders(req.Headers)
 	cloned.Tools = cloneTools(req.Tools)
 	return &cloned
@@ -117,6 +118,7 @@ func cloneMessages(messages []model.Message) []model.Message {
 
 func cloneMessage(msg model.Message) model.Message {
 	cloned := msg
+	cloned.ProviderData = msg.ProviderData.Clone()
 	cloned.ContentParts = cloneContentParts(msg.ContentParts)
 	cloned.ToolCalls = cloneToolCalls(msg.ToolCalls)
 	return cloned
@@ -154,6 +156,12 @@ func cloneContentPart(part model.ContentPart) model.ContentPart {
 		file.Data = append([]byte(nil), part.File.Data...)
 		cloned.File = &file
 	}
+	if part.Annotations != nil {
+		cloned.Annotations = append([]model.Annotation(nil), part.Annotations...)
+		for i := range cloned.Annotations {
+			cloned.Annotations[i].ProviderData = part.Annotations[i].ProviderData.Clone()
+		}
+	}
 	return cloned
 }
 
@@ -173,6 +181,7 @@ func cloneToolCalls(toolCalls []model.ToolCall) []model.ToolCall {
 			cloned[i].Index = &index
 		}
 		cloned[i].ExtraFields = jsonmap.Clone(toolCalls[i].ExtraFields)
+		cloned[i].ProviderData = toolCalls[i].ProviderData.Clone()
 	}
 	return cloned
 }

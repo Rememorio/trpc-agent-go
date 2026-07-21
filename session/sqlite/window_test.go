@@ -38,7 +38,6 @@ func TestService_GetEventWindow(t *testing.T) {
 		sqliteWindowToolEvent("t1", "calc", "three"),
 		sqliteWindowEvent("u2", model.RoleUser, "four"),
 	} {
-		evt := evt
 		require.NoError(t, svc.AppendEvent(ctx, sess, &evt))
 	}
 

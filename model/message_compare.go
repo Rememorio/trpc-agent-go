@@ -30,11 +30,69 @@ func MessagesEqual(a, b Message) bool {
 	if a.ReasoningContent != b.ReasoningContent {
 		return false
 	}
-	if !reflect.DeepEqual(a.ContentParts, b.ContentParts) {
+	if a.ReasoningSignature != b.ReasoningSignature {
 		return false
 	}
-	if !reflect.DeepEqual(a.ToolCalls, b.ToolCalls) {
+	if a.Refusal != b.Refusal {
 		return false
+	}
+	if !providerDataEqual(a.ProviderData, b.ProviderData) {
+		return false
+	}
+	if !contentPartsEqual(a.ContentParts, b.ContentParts) {
+		return false
+	}
+	if !toolCallsEqual(a.ToolCalls, b.ToolCalls) {
+		return false
+	}
+	return true
+}
+
+func contentPartsEqual(a, b []ContentPart) bool {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		aPart := a[i]
+		bPart := b[i]
+		if (aPart.Annotations == nil) != (bPart.Annotations == nil) ||
+			len(aPart.Annotations) != len(bPart.Annotations) {
+			return false
+		}
+		aPart.Annotations = append([]Annotation(nil), aPart.Annotations...)
+		bPart.Annotations = append([]Annotation(nil), bPart.Annotations...)
+		for j := range aPart.Annotations {
+			if !providerDataEqual(
+				aPart.Annotations[j].ProviderData,
+				bPart.Annotations[j].ProviderData,
+			) {
+				return false
+			}
+			aPart.Annotations[j].ProviderData = nil
+			bPart.Annotations[j].ProviderData = nil
+		}
+		if !reflect.DeepEqual(aPart, bPart) {
+			return false
+		}
+	}
+	return true
+}
+
+func toolCallsEqual(a, b []ToolCall) bool {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !providerDataEqual(a[i].ProviderData, b[i].ProviderData) {
+			return false
+		}
+		aCall := a[i]
+		bCall := b[i]
+		aCall.ProviderData = nil
+		bCall.ProviderData = nil
+		if !reflect.DeepEqual(aCall, bCall) {
+			return false
+		}
 	}
 	return true
 }

@@ -149,7 +149,6 @@ func (f *fileToolSet) readFiles(
 	for i := 0; i < n; i++ {
 		relativePath := files[i]
 		wg.Add(1)
-		// Capture the per-iteration path to avoid data race on the loop variable.
 		go func(idx int, rp string) {
 			defer func() {
 				wg.Done()

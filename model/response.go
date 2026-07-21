@@ -53,6 +53,12 @@ const (
 	ObjectTypeChatCompletionChunk = "chat.completion.chunk"
 	// ObjectTypeChatCompletion is the object type for chat completion events.
 	ObjectTypeChatCompletion = "chat.completion"
+	// ObjectTypeResponse is the object type for a terminal Responses API result.
+	ObjectTypeResponse = "response"
+	// ObjectTypeResponseChunk is the object type for projected Responses API deltas.
+	ObjectTypeResponseChunk = "response.chunk"
+	// ObjectTypeResponseEvent is the object type for raw Responses API lifecycle events.
+	ObjectTypeResponseEvent = "response.event"
 )
 
 // Choice represents a single completion choice.
@@ -138,7 +144,8 @@ type Usage struct {
 type PromptTokensDetails struct {
 	// CachedTokens is the number of cached tokens in the prompt.
 	CachedTokens int `json:"cached_tokens"`
-	// CacheCreationTokens is the number of tokens used to create the cache (Anthropic).
+	// CacheCreationTokens is the number of tokens written when creating a prompt
+	// cache entry. Providers may call this cache creation or cache write tokens.
 	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
 	// CacheReadTokens is the number of tokens read from cache (Anthropic).
 	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
@@ -206,6 +213,9 @@ type Response struct {
 
 	// IsPartial indicates if this is a partial response.
 	IsPartial bool `json:"is_partial"`
+
+	// ProviderData stores provider-owned response and lifecycle metadata.
+	ProviderData ProviderData `json:"provider_data,omitempty"`
 }
 
 // Clone creates a deep copy of the response.
@@ -214,9 +224,12 @@ func (rsp *Response) Clone() *Response {
 		return nil
 	}
 	clone := *rsp
+	clone.ProviderData = cloneProviderData(rsp.ProviderData)
 	clone.Choices = make([]Choice, len(rsp.Choices))
 	for i, choice := range rsp.Choices {
 		clone.Choices[i] = choice
+		clone.Choices[i].Message = cloneMessage(choice.Message)
+		clone.Choices[i].Delta = cloneMessage(choice.Delta)
 		clone.Choices[i].Logprobs = cloneLogprobs(choice.Logprobs)
 	}
 	if rsp.Usage != nil {
@@ -250,6 +263,75 @@ func (rsp *Response) Clone() *Response {
 		clone.SystemFingerprint = &fp
 	}
 	return &clone
+}
+
+func cloneMessage(message Message) Message {
+	cloned := message
+	cloned.ProviderData = cloneProviderData(message.ProviderData)
+	if message.ContentParts != nil {
+		cloned.ContentParts = make([]ContentPart, len(message.ContentParts))
+		for i, part := range message.ContentParts {
+			cloned.ContentParts[i] = cloneContentPart(part)
+		}
+	}
+	if message.ToolCalls != nil {
+		cloned.ToolCalls = make([]ToolCall, len(message.ToolCalls))
+		for i, call := range message.ToolCalls {
+			cloned.ToolCalls[i] = call
+			cloned.ToolCalls[i].Function.Arguments = append([]byte(nil), call.Function.Arguments...)
+			cloned.ToolCalls[i].ProviderData = call.ProviderData.Clone()
+			if call.ExtraFields != nil {
+				cloned.ToolCalls[i].ExtraFields = make(map[string]any, len(call.ExtraFields))
+				for key, value := range call.ExtraFields {
+					cloned.ToolCalls[i].ExtraFields[key] = value
+				}
+			}
+		}
+	}
+	return cloned
+}
+
+func cloneContentPart(part ContentPart) ContentPart {
+	cloned := part
+	if part.Text != nil {
+		text := *part.Text
+		cloned.Text = &text
+	}
+	if part.Image != nil {
+		image := *part.Image
+		image.Data = append([]byte(nil), part.Image.Data...)
+		cloned.Image = &image
+	}
+	if part.Audio != nil {
+		audio := *part.Audio
+		audio.Data = append([]byte(nil), part.Audio.Data...)
+		cloned.Audio = &audio
+	}
+	if part.File != nil {
+		file := *part.File
+		file.Data = append([]byte(nil), part.File.Data...)
+		cloned.File = &file
+	}
+	if part.ContentRef != nil {
+		contentRef := *part.ContentRef
+		cloned.ContentRef = &contentRef
+	}
+	if part.Annotations != nil {
+		cloned.Annotations = make([]Annotation, len(part.Annotations))
+		for i, annotation := range part.Annotations {
+			cloned.Annotations[i] = annotation
+			cloned.Annotations[i].ProviderData = cloneProviderData(annotation.ProviderData)
+			if annotation.StartIndex != nil {
+				start := *annotation.StartIndex
+				cloned.Annotations[i].StartIndex = &start
+			}
+			if annotation.EndIndex != nil {
+				end := *annotation.EndIndex
+				cloned.Annotations[i].EndIndex = &end
+			}
+		}
+	}
+	return cloned
 }
 
 func cloneLogprobs(logprobs *Logprobs) *Logprobs {

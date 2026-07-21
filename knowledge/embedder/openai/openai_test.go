@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3/option"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/embedder"
 )
 

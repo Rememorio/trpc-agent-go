@@ -10629,3 +10629,24 @@ func TestMarshalChunkToText_StringPassthrough(t *testing.T) {
 	input := "<-done && x > 0"
 	assert.Equal(t, input, marshalChunkToText(input))
 }
+
+func TestEnsureToolResultMessageNamePropagatesProviderData(t *testing.T) {
+	call := model.ToolCall{
+		ID: "call-1",
+		Function: model.FunctionDefinitionParam{
+			Name: "sandbox_shell",
+		},
+		ProviderData: model.ProviderData{
+			"openai.responses": json.RawMessage(`{"version":1}`),
+		},
+	}
+	result := ensureToolResultMessageName(model.Message{
+		Role:   model.RoleTool,
+		ToolID: call.ID,
+	}, call)
+	require.Equal(t, "sandbox_shell", result.ToolName)
+	require.JSONEq(t, `{"version":1}`, string(result.ProviderData["openai.responses"]))
+
+	result.ProviderData["openai.responses"][11] = '2'
+	require.JSONEq(t, `{"version":1}`, string(call.ProviderData["openai.responses"]))
+}

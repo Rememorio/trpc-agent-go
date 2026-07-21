@@ -82,14 +82,30 @@ func joinMessageText(first, second, separator string) string {
 
 func cloneMessage(msg model.Message) model.Message {
 	cloned := msg
+	cloned.ProviderData = msg.ProviderData.Clone()
 	if len(msg.ContentParts) > 0 {
 		cloned.ContentParts = append(
 			[]model.ContentPart(nil),
 			msg.ContentParts...,
 		)
+		for i := range cloned.ContentParts {
+			if msg.ContentParts[i].Annotations != nil {
+				cloned.ContentParts[i].Annotations = append(
+					[]model.Annotation(nil),
+					msg.ContentParts[i].Annotations...,
+				)
+				for j := range cloned.ContentParts[i].Annotations {
+					cloned.ContentParts[i].Annotations[j].ProviderData =
+						msg.ContentParts[i].Annotations[j].ProviderData.Clone()
+				}
+			}
+		}
 	}
 	if len(msg.ToolCalls) > 0 {
 		cloned.ToolCalls = append([]model.ToolCall(nil), msg.ToolCalls...)
+		for i := range cloned.ToolCalls {
+			cloned.ToolCalls[i].ProviderData = msg.ToolCalls[i].ProviderData.Clone()
+		}
 	}
 	return cloned
 }

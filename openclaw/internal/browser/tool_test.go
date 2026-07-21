@@ -569,7 +569,6 @@ func TestDetectBrowserBackendCrash(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got, _ := detectBrowserBackendCrash(tt.text)
@@ -2153,7 +2152,6 @@ func TestToolCall_ConsolePDFUploadAndDialog(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2328,7 +2326,6 @@ func TestToolCall_ActNavigateRoutesToBrowserNavigate(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2537,7 +2534,6 @@ func TestToolCall_ActRoutesLegacyFields(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2970,7 +2966,6 @@ func TestToolCall_ActPassesTimeoutToBrowserServer(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -3206,7 +3201,6 @@ func TestToolCall_EvaluateActionForcesEvaluateKind(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -3969,7 +3963,6 @@ func TestToolCall_BrowserServerStateActions(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -4051,7 +4044,6 @@ func TestToolCall_BrowserServerStateActionsValidateInputs(
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -4127,7 +4119,6 @@ func TestToolCall_BrowserServerStateActionsRejectMCPDriver(
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -4242,7 +4233,6 @@ func TestToolCall_CookiesAndStorageBranches(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -4296,7 +4286,6 @@ func TestToolCall_CookiesAndStorageValidateInputs(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

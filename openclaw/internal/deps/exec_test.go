@@ -154,7 +154,6 @@ func TestSystemCommandSpec(t *testing.T) {
 		InstallKindDNF,
 		InstallKindYUM,
 	} {
-		manager := manager
 		t.Run(manager, func(t *testing.T) {
 			t.Parallel()
 

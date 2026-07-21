@@ -1762,6 +1762,7 @@ func cloneRequestForContextCompaction(req *model.Request) *model.Request {
 		req.StructuredOutput,
 	)
 	cloned.ExtraFields = cloneJSONMapForContextCompaction(req.ExtraFields)
+	cloned.ProviderOptions = req.ProviderOptions.Clone()
 	if req.Tools != nil {
 		cloned.Tools = make(map[string]tool.Tool, len(req.Tools))
 		for name, t := range req.Tools {
@@ -1785,6 +1786,7 @@ func cloneMessagesForContextCompaction(msgs []model.Message) []model.Message {
 
 func cloneMessageForContextCompaction(msg model.Message) model.Message {
 	cloned := msg
+	cloned.ProviderData = msg.ProviderData.Clone()
 	cloned.ContentParts = cloneContentPartsForContextCompaction(
 		msg.ContentParts,
 	)
@@ -1835,6 +1837,12 @@ func cloneContentPartForContextCompaction(
 		}
 		cloned.File = &file
 	}
+	if part.Annotations != nil {
+		cloned.Annotations = append([]model.Annotation(nil), part.Annotations...)
+		for i := range cloned.Annotations {
+			cloned.Annotations[i].ProviderData = part.Annotations[i].ProviderData.Clone()
+		}
+	}
 	return cloned
 }
 
@@ -1861,6 +1869,7 @@ func cloneToolCallsForContextCompaction(
 		cloned[i].ExtraFields = cloneJSONMapForContextCompaction(
 			toolCalls[i].ExtraFields,
 		)
+		cloned[i].ProviderData = toolCalls[i].ProviderData.Clone()
 	}
 	return cloned
 }

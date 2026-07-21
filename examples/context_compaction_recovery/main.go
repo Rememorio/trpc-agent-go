@@ -23,7 +23,7 @@ import (
 	"sync"
 	"time"
 
-	openaigo "github.com/openai/openai-go"
+	openaigo "github.com/openai/openai-go/v3"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"

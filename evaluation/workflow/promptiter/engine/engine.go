@@ -615,7 +615,6 @@ func runIndexedParallel(
 		if err := groupCtx.Err(); err != nil {
 			break
 		}
-		index := index
 		group.Go(func() error {
 			if err := groupCtx.Err(); err != nil {
 				return err

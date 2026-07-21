@@ -101,7 +101,6 @@ func TestNavigationPolicy_BlocksSearchResultPagesByDefault(
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -143,7 +142,6 @@ func TestNavigationPolicy_DoesNotBlockSourcePagesAsSearchResults(
 	}
 
 	for _, raw := range cases {
-		raw := raw
 		t.Run(raw, func(t *testing.T) {
 			t.Parallel()
 
@@ -374,7 +372,6 @@ func TestNavigationPolicy_AdditionalBranches(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

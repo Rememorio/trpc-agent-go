@@ -10,6 +10,7 @@
 package model
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,15 +58,83 @@ func TestMessagesEqual_ToolFields(t *testing.T) {
 }
 
 func TestMessagesEqual_ReasoningContent(t *testing.T) {
-	a := Message{Role: RoleAssistant, Content: "ok", ReasoningContent: "think1"}
-	b := Message{Role: RoleAssistant, Content: "ok", ReasoningContent: "think1"}
+	a := Message{Role: RoleAssistant, Content: "ok", ReasoningContent: "think1", ReasoningSignature: "sig1"}
+	b := Message{Role: RoleAssistant, Content: "ok", ReasoningContent: "think1", ReasoningSignature: "sig1"}
 	require.True(t, MessagesEqual(a, b), "expected equal when reasoning content same")
-	c := Message{Role: RoleAssistant, Content: "ok", ReasoningContent: "think2"}
+	c := Message{Role: RoleAssistant, Content: "ok", ReasoningContent: "think2", ReasoningSignature: "sig1"}
 	require.False(t, MessagesEqual(a, c), "expected not equal when reasoning content differs")
+	b.ReasoningSignature = "sig2"
+	require.False(t, MessagesEqual(a, b), "expected not equal when reasoning signature differs")
+}
+
+func TestMessagesEqual_NestedProviderData(t *testing.T) {
+	text := "source"
+	a := Message{
+		Role: RoleAssistant,
+		ContentParts: []ContentPart{{
+			Type: ContentTypeText,
+			Text: &text,
+			Annotations: []Annotation{{
+				Type: "url_citation",
+				ProviderData: ProviderData{
+					"openai.responses": json.RawMessage(`{"url":"https://example.com","index":1}`),
+				},
+			}},
+		}},
+		ToolCalls: []ToolCall{{
+			Type: "function",
+			ID:   "call_1",
+			Function: FunctionDefinitionParam{
+				Name:      "lookup",
+				Arguments: []byte(`{"q":"x"}`),
+			},
+			ProviderData: ProviderData{
+				"openai.responses": json.RawMessage(`{"item_id":"fc_1","status":"completed"}`),
+			},
+		}},
+	}
+	b := a
+	b.ContentParts = append([]ContentPart(nil), a.ContentParts...)
+	b.ContentParts[0].Annotations = append([]Annotation(nil), a.ContentParts[0].Annotations...)
+	b.ContentParts[0].Annotations[0].ProviderData = ProviderData{
+		"openai.responses": json.RawMessage(`{ "index": 1, "url": "https://example.com" }`),
+	}
+	b.ToolCalls = append([]ToolCall(nil), a.ToolCalls...)
+	b.ToolCalls[0].ProviderData = ProviderData{
+		"openai.responses": json.RawMessage(`{ "status": "completed", "item_id": "fc_1" }`),
+	}
+	require.True(t, MessagesEqual(a, b))
+
+	b.ToolCalls[0].ProviderData["openai.responses"] = json.RawMessage(`{"item_id":"fc_2"}`)
+	require.False(t, MessagesEqual(a, b))
 }
 
 func TestMessagesEqual_ToolNameDiffers(t *testing.T) {
 	a := Message{Role: RoleTool, ToolID: "1", ToolName: "fn1", Content: "res"}
 	b := Message{Role: RoleTool, ToolID: "1", ToolName: "fn2", Content: "res"}
 	require.False(t, MessagesEqual(a, b), "expected not equal when tool name differs")
+}
+
+func TestMessagesEqual_RefusalAndProviderData(t *testing.T) {
+	a := Message{
+		Role:    RoleAssistant,
+		Refusal: "I cannot help with that.",
+		ProviderData: ProviderData{
+			"openai.responses": json.RawMessage(`{"id":"resp_1","status":"completed"}`),
+		},
+	}
+	b := Message{
+		Role:    RoleAssistant,
+		Refusal: "I cannot help with that.",
+		ProviderData: ProviderData{
+			"openai.responses": json.RawMessage(`{ "status": "completed", "id": "resp_1" }`),
+		},
+	}
+	require.True(t, MessagesEqual(a, b))
+
+	b.Refusal = "different"
+	require.False(t, MessagesEqual(a, b))
+	b.Refusal = a.Refusal
+	b.ProviderData["openai.responses"] = json.RawMessage(`{"id":"resp_2"}`)
+	require.False(t, MessagesEqual(a, b))
 }

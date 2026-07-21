@@ -763,7 +763,10 @@ func toolCallsFromResponse(rsp *model.Response) []model.ToolCall {
 		return nil
 	}
 	out := make([]model.ToolCall, len(calls))
-	copy(out, calls)
+	for i := range calls {
+		out[i] = calls[i]
+		out[i].ProviderData = calls[i].ProviderData.Clone()
+	}
 	return out
 }
 
@@ -927,7 +930,7 @@ func (p *FunctionCallResponseProcessor) executeSingleToolCallSequentialResult(
 	if err != nil {
 		if shouldIgnoreError {
 			// Create error choice for ignorable errors
-			choice := p.createErrorChoice(index, toolCall.ID, err.Error())
+			choice := p.createErrorChoice(index, toolCall, err.Error())
 			choices = []model.Choice{*choice}
 		} else {
 			// Return critical errors (e.g., stop errors) immediately
@@ -1194,7 +1197,7 @@ func (p *FunctionCallResponseProcessor) runParallelToolCall(
 				r,
 			)
 			errorChoice := p.createErrorChoice(
-				index, tc.ID, fmt.Sprintf("tool execution panic: %v", r),
+				index, tc, fmt.Sprintf("tool execution panic: %v", r),
 			)
 			errorChoice.Message.ToolName = tc.Function.Name
 			errorEvent := newToolCallResponseEvent(
@@ -1242,7 +1245,7 @@ func (p *FunctionCallResponseProcessor) runParallelToolCall(
 			err,
 		)
 		errorChoice := p.createErrorChoice(
-			index, tc.ID, fmt.Sprintf("tool execution error: %v", err),
+			index, tc, fmt.Sprintf("tool execution error: %v", err),
 		)
 		errorChoice.Message.ToolName = tc.Function.Name
 		errorEvent := newToolCallResponseEvent(
@@ -1980,6 +1983,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 				fmt.Errorf("%s: %w", ErrorMarshalResult, err)
 		}
 		defaultMsg.ToolName = toolCall.Function.Name
+		defaultMsg.ProviderData = toolCall.ProviderData.Clone()
 		ctx = markSyntheticStateOnlyToolChoice(ctx)
 		choices, cbErr := p.buildToolResultChoices(
 			ctx,
@@ -2012,6 +2016,7 @@ func (p *FunctionCallResponseProcessor) executeToolCall(
 			fmt.Errorf("%s: %w", ErrorMarshalResult, err)
 	}
 	defaultMsg.ToolName = toolCall.Function.Name
+	defaultMsg.ProviderData = toolCall.ProviderData.Clone()
 
 	choices, cbErr := p.buildToolResultChoices(
 		ctx,
@@ -2351,22 +2356,28 @@ func ensureToolResultMessageName(
 ) model.Message {
 	if msg.Role != model.RoleTool ||
 		msg.ToolID != toolCall.ID ||
-		msg.ToolName != "" {
+		(msg.ToolName != "" && msg.ProviderData != nil) {
 		return msg
 	}
-	msg.ToolName = toolCall.Function.Name
+	if msg.ToolName == "" {
+		msg.ToolName = toolCall.Function.Name
+	}
+	if msg.ProviderData == nil {
+		msg.ProviderData = toolCall.ProviderData.Clone()
+	}
 	return msg
 }
 
 // createErrorChoice creates an error choice for tool execution failures.
-func (p *FunctionCallResponseProcessor) createErrorChoice(index int, toolID string,
+func (p *FunctionCallResponseProcessor) createErrorChoice(index int, toolCall model.ToolCall,
 	errorMsg string) *model.Choice {
 	return &model.Choice{
 		Index: index,
 		Message: model.Message{
-			Role:    model.RoleTool,
-			Content: errorMsg,
-			ToolID:  toolID,
+			Role:         model.RoleTool,
+			Content:      errorMsg,
+			ToolID:       toolCall.ID,
+			ProviderData: toolCall.ProviderData.Clone(),
 		},
 	}
 }

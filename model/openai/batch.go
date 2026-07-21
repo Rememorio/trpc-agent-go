@@ -20,11 +20,11 @@ import (
 	"net/http"
 	"strings"
 
-	openai "github.com/openai/openai-go"
-	openaiopt "github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/pagination"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/shared"
+	openai "github.com/openai/openai-go/v3"
+	openaiopt "github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/pagination"
+	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/shared"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 

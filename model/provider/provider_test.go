@@ -22,7 +22,7 @@ import (
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/ollama/ollama/api"
-	openaisdk "github.com/openai/openai-go"
+	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/genai"
 

@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	oai "github.com/openai/openai-go"
+	oai "github.com/openai/openai-go/v3"
 	"trpc.group/trpc-go/trpc-agent-go/agent/extension/toolpipe"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
 	"trpc.group/trpc-go/trpc-agent-go/model"

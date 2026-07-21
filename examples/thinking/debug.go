@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"strings"
 
-	openaisdk "github.com/openai/openai-go"
+	openaisdk "github.com/openai/openai-go/v3"
 )
 
 // printChatRequestMessages prints the messages being sent to the model API.
@@ -40,8 +40,16 @@ func printChatRequestMessages(_ context.Context, req *openaisdk.ChatCompletionNe
 			// Also check tool calls.
 			if len(msg.OfAssistant.ToolCalls) > 0 {
 				for _, tc := range msg.OfAssistant.ToolCalls {
-					fmt.Printf("     └─ tool_call: %s(%s)\n",
-						tc.Function.Name, truncateString(tc.Function.Arguments, 50))
+					switch {
+					case tc.OfFunction != nil:
+						function := tc.OfFunction.Function
+						fmt.Printf("     └─ tool_call: %s(%s)\n",
+							function.Name, truncateString(function.Arguments, 50))
+					case tc.OfCustom != nil:
+						custom := tc.OfCustom.Custom
+						fmt.Printf("     └─ custom_tool_call: %s(%s)\n",
+							custom.Name, truncateString(custom.Input, 50))
+					}
 				}
 			}
 		case msg.OfTool != nil:

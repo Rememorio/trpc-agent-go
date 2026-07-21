@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	openaisdk "github.com/openai/openai-go"
-	"github.com/openai/openai-go/shared"
+	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"trpc.group/trpc-go/trpc-agent-go/model"

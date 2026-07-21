@@ -16,7 +16,7 @@ import (
 
 	anthropicsdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/ollama/ollama/api"
-	openaisdk "github.com/openai/openai-go"
+	openaisdk "github.com/openai/openai-go/v3"
 	"github.com/stretchr/testify/assert"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"

@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	openai "github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	openai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 
 	itelemetry "trpc.group/trpc-go/trpc-agent-go/internal/telemetry"
 	"trpc.group/trpc-go/trpc-agent-go/knowledge/embedder"

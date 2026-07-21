@@ -1,6 +1,6 @@
 module trpc.group/trpc-go/trpc-agent-go/examples/n8n
 
-go 1.21
+go 1.22
 
 require (
 	trpc.group/trpc-go/trpc-agent-go v0.5.0

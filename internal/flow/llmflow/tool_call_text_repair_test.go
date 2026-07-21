@@ -448,7 +448,6 @@ func TestRepairResponseToolCallTextInPlace_GuardsPreserveText(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -728,7 +727,6 @@ func TestRepairableMessageTextSkipCases(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -772,7 +770,6 @@ func TestParseTextToolCallsRejectsInvalidBlocks(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -811,7 +808,6 @@ func TestParseTextToolCallArgsRejectsMalformed(t *testing.T) {
 	}
 
 	for _, input := range tests {
-		input := input
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
 

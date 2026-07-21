@@ -43,7 +43,7 @@ require (
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/neurosnap/sentences v1.1.2 // indirect
 	github.com/ollama/ollama v0.17.1 // indirect
-	github.com/openai/openai-go v1.12.0 // indirect
+	github.com/openai/openai-go/v3 v3.44.0 // indirect
 	github.com/panjf2000/ants/v2 v2.10.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect

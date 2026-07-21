@@ -181,10 +181,6 @@ func links(links []tracesdk.Link) []*tracepb.Span_Link {
 
 	sl := make([]*tracepb.Span_Link, 0, len(links))
 	for _, link := range links {
-		// This redefinition is necessary to prevent link.*ID[:] copies
-		// being reused -- in short we need a new link per iteration.
-		link := link
-
 		tid := link.SpanContext.TraceID()
 		sid := link.SpanContext.SpanID()
 

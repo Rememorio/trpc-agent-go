@@ -115,7 +115,7 @@ require (
 	github.com/ncruces/julianday v1.0.0 // indirect
 	github.com/oasdiff/yaml v0.0.0-20250309154309-f31be36b4037 // indirect
 	github.com/oasdiff/yaml3 v0.0.0-20250309153720-d2182401db90 // indirect
-	github.com/openai/openai-go v1.12.0 // indirect
+	github.com/openai/openai-go/v3 v3.44.0 // indirect
 	github.com/opencontainers/runtime-spec v1.0.2 // indirect
 	github.com/otiai10/gosseract/v2 v2.4.1 // indirect
 	github.com/panjf2000/ants/v2 v2.11.3 // indirect
@@ -142,7 +142,7 @@ require (
 	github.com/tencent/vectordatabase-sdk-go v1.8.0 // indirect
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.69 // indirect
 	github.com/tetratelabs/wazero v1.7.3 // indirect
-	github.com/tidwall/gjson v1.17.1 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

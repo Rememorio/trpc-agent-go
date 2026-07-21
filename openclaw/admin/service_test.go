@@ -1356,7 +1356,6 @@ func TestServiceHandlerRendersAdminPages(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1773,7 +1772,6 @@ func TestAdminHelpers_PageMetadataAndNavigation(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.title, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, tc.title, pageTitle(tc.view))
@@ -3746,7 +3744,6 @@ func TestBrowserEndpointSummary(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, tc.want, browserEndpointSummary(tc.view))
@@ -4789,7 +4786,6 @@ func TestRelativeRequestReference_EdgeCases(t *testing.T) {
 	}
 
 	for _, tt := range cases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(
@@ -4837,7 +4833,6 @@ func TestIsHTMLContentType(t *testing.T) {
 	}
 
 	for _, tt := range cases {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(

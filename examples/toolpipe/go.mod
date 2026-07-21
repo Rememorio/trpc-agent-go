@@ -11,7 +11,7 @@ replace (
 )
 
 require (
-	github.com/openai/openai-go v1.12.0
+	github.com/openai/openai-go/v3 v3.44.0
 	trpc.group/trpc-go/trpc-agent-go v0.8.1-0.20251222024650-ea147adf3d21
 	trpc.group/trpc-go/trpc-agent-go/agent/extension/toolpipe v0.0.0
 	trpc.group/trpc-go/trpc-agent-go/tool/webfetch/httpfetch v0.0.0
@@ -31,7 +31,7 @@ require (
 	github.com/itchyny/gojq v0.12.16 // indirect
 	github.com/itchyny/timefmt-go v0.1.6 // indirect
 	github.com/panjf2000/ants/v2 v2.10.0 // indirect
-	github.com/tidwall/gjson v1.14.4 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

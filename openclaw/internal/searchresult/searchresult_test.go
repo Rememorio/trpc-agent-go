@@ -61,7 +61,6 @@ func TestMatch_SearchResultPages(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -89,7 +88,6 @@ func TestMatch_DoesNotMatchSourcePages(t *testing.T) {
 	}
 
 	for _, raw := range cases {
-		raw := raw
 		t.Run(raw, func(t *testing.T) {
 			t.Parallel()
 

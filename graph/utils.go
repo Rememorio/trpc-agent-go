@@ -414,6 +414,7 @@ func deepCopyModelMessagesWithVisited(
 		visited[key] = out
 		for i := range in {
 			out[i] = in[i]
+			out[i].ProviderData = in[i].ProviderData.Clone()
 			if parts := in[i].ContentParts; parts != nil {
 				out[i].ContentParts = deepCopyModelContentPartsWithVisited(parts, visited)
 			}
@@ -426,6 +427,7 @@ func deepCopyModelMessagesWithVisited(
 	out := make([]model.Message, len(in))
 	for i := range in {
 		out[i] = in[i]
+		out[i].ProviderData = in[i].ProviderData.Clone()
 		if parts := in[i].ContentParts; parts != nil {
 			out[i].ContentParts = deepCopyModelContentPartsWithVisited(parts, visited)
 		}
@@ -473,6 +475,7 @@ func deepCopyModelContentPartsWithVisited(
 			if in[i].File != nil {
 				out[i].File = deepCopyModelFileWithVisited(in[i].File, visited)
 			}
+			out[i].Annotations = deepCopyModelAnnotations(in[i].Annotations)
 		}
 		return out
 	}
@@ -490,6 +493,26 @@ func deepCopyModelContentPartsWithVisited(
 		}
 		if in[i].File != nil {
 			out[i].File = deepCopyModelFileWithVisited(in[i].File, visited)
+		}
+		out[i].Annotations = deepCopyModelAnnotations(in[i].Annotations)
+	}
+	return out
+}
+
+func deepCopyModelAnnotations(in []model.Annotation) []model.Annotation {
+	if in == nil {
+		return nil
+	}
+	out := append([]model.Annotation(nil), in...)
+	for i := range out {
+		out[i].ProviderData = in[i].ProviderData.Clone()
+		if in[i].StartIndex != nil {
+			start := *in[i].StartIndex
+			out[i].StartIndex = &start
+		}
+		if in[i].EndIndex != nil {
+			end := *in[i].EndIndex
+			out[i].EndIndex = &end
 		}
 	}
 	return out
@@ -601,6 +624,7 @@ func deepCopyModelToolCallsWithVisited(
 			if extra := in[i].ExtraFields; extra != nil {
 				out[i].ExtraFields = deepCopyMapStringAnyWithVisited(extra, visited)
 			}
+			out[i].ProviderData = in[i].ProviderData.Clone()
 		}
 		return out
 	}
@@ -616,6 +640,7 @@ func deepCopyModelToolCallsWithVisited(
 		if extra := in[i].ExtraFields; extra != nil {
 			out[i].ExtraFields = deepCopyMapStringAnyWithVisited(extra, visited)
 		}
+		out[i].ProviderData = in[i].ProviderData.Clone()
 	}
 	return out
 }

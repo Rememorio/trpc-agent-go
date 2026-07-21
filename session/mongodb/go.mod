@@ -1,6 +1,6 @@
 module trpc.group/trpc-go/trpc-agent-go/session/mongodb
 
-go 1.21
+go 1.22
 
 replace (
 	trpc.group/trpc-go/trpc-agent-go => ../../

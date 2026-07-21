@@ -284,6 +284,61 @@ type CompletionTokensDetails struct {
 
 对于 OpenAI-compatible 服务，返回中的 `completion_tokens_details.reasoning_tokens` 会映射到 `Usage.CompletionTokensDetails.ReasoningTokens`。当服务方没有消耗或没有上报 reasoning tokens 时，该值可能为 `0`；如果希望 reasoning 模型进入推理行为，请按模型能力设置 `ReasoningEffort` 和/或 `ThinkingEnabled`。
 
+## OpenAI Responses API
+
+OpenAI Responses API 通过独立的一等 adapter 提供。现有 `model/openai` 包仍然
+使用 Chat Completions，因此是否使用 Responses 是显式选择，不会改变已有应用行为。
+
+```go
+import (
+    "trpc.group/trpc-go/trpc-agent-go/model"
+    openairesponses "trpc.group/trpc-go/trpc-agent-go/model/openai/responses"
+)
+
+llm := openairesponses.New("gpt-5.2")
+request := &model.Request{
+    Messages: []model.Message{
+        model.NewDeveloperMessage("回答要简洁。"),
+        model.NewUserMessage("解释一下 Go channel。"),
+    },
+    GenerationConfig: model.GenerationConfig{Stream: true},
+}
+
+responseChannel, err := llm.GenerateContent(ctx, request)
+```
+
+adapter 会把文本、拒绝、reasoning summary、引用、usage 和 tool call 投影到框架
+现有响应类型，同时在 `openai.responses` provider namespace 下保存完整、有序的
+Responses output-item ledger。需要无损 provider 视图时，可使用
+`MetadataFromResponse`、`ItemsFromResponse`、`SDKResponseFromResponse` 和
+`EventFromResponse`。
+
+默认状态模式是本地 replay：请求使用 `store:false`，主动获取 encrypted
+reasoning，并在下一轮回放保存的 item ledger。服务端状态必须显式选择：
+
+```go
+llm := openairesponses.New(
+    "gpt-5.2",
+    openairesponses.WithStateMode(openairesponses.StateModePreviousResponse),
+)
+
+request := model.NewRequest(messages,
+    openairesponses.WithResponsesOptions(
+        openairesponses.WithConversationID("conv_..."),
+    ),
+)
+```
+
+`previous_response_id` 和 Conversation 模式会用响应元数据确定历史边界，避免再次
+发送 OpenAI 已保存的 item。provider-native tools 和精确 input items 可通过 typed
+request options 配置。adapter 还提供 background start/poll/cancel/resume、input
+items 查询、input token 精确计数、Conversations、独立 compaction 和 Responses
+Batch 操作；新 SDK 资源可以通过 `SDKClient` 访问。
+
+web search、code interpreter 等 provider 执行的工具会自动保存在 item ledger。
+computer、local shell、apply patch 等需要客户端执行的工具必须由应用提供
+`ClientToolBridge`；adapter 不会提供绕过应用审批和 sandbox 策略的不安全 executor。
+
 ## OpenAI Model
 
 ### 模型名称参数

@@ -45,7 +45,6 @@ func TestService_GetEventWindow(t *testing.T) {
 		redisWindowToolEvent("t1", "calc", "four"),
 		redisWindowEvent("u3", model.RoleUser, "five"),
 	} {
-		evt := evt
 		require.NoError(t, svc.AppendEvent(ctx, sess, &evt))
 	}
 
@@ -83,7 +82,6 @@ func TestService_GetEventWindowZSetStorage(t *testing.T) {
 		redisWindowEvent("u2", model.RoleUser, "three"),
 		redisWindowEvent("u3", model.RoleUser, "four"),
 	} {
-		evt := evt
 		evt.Timestamp = base.Add(time.Duration(idx) * time.Minute)
 		require.NoError(t, svc.AppendEvent(ctx, sess, &evt))
 	}

@@ -13,6 +13,7 @@ The example shows how to use the OpenAI-like model implementation with automatic
 See also the focused sub-examples in this directory:
 
 - `retry/` for SDK-level retry configuration.
+- `responses/` for the first-class OpenAI Responses API adapter.
 - `requesty/` for using the OpenAI-compatible Requesty router (`https://router.requesty.ai/v1`).
 - `switch/` for runtime model switching.
 - `selector/` for per-LLM-call model selection with `runner.Run`.

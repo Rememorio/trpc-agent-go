@@ -276,7 +276,6 @@ func TestChatCommandSafetyPolicy_BlocksSearchResultHTTPClients(
 			`requests.get('https://search.brave.com/search?q=x')"`,
 		`node -e "fetch('https://www.google.com/search?q=x')"`,
 	} {
-		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 
@@ -319,7 +318,6 @@ func TestChatCommandSafetyPolicy_AllowsNonSearchHTTPCommands(
 		`echo "https://www.google.com/search?q=openclaw"`,
 		`python3 -c "print('https://www.google.com/search?q=x')"`,
 	} {
-		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 
@@ -369,7 +367,6 @@ PY`,
 		`curl "https://corsproxy.io/?https://example.com"`,
 		`curl "https://api.codetabs.com/v1/proxy?quest=https://example.com"`,
 	} {
-		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 
@@ -398,7 +395,6 @@ func TestChatCommandSafetyPolicy_AllowsNonProxyHTTPCommands(
 		`python3 -c "import requests; print(requests.get('https://example.com').status_code)"`,
 		`node -e "fetch('https://example.com').then(r=>console.log(r.status))"`,
 	} {
-		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 
@@ -427,7 +423,6 @@ func TestChatCommandSafetyPolicy_BlocksLongIdleWaits(t *testing.T) {
 		`sleep 15 15`,
 		`sleep 1d`,
 	} {
-		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 
@@ -457,7 +452,6 @@ func TestChatCommandSafetyPolicy_AllowsShortOrQuotedIdleWaits(
 		`printf 'sleep 60\n'`,
 		`python3 -c "print('sleep 60')"`,
 	} {
-		command := command
 		t.Run(command, func(t *testing.T) {
 			t.Parallel()
 

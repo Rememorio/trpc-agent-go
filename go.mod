@@ -1,6 +1,6 @@
 module trpc.group/trpc-go/trpc-agent-go
 
-go 1.21
+go 1.22
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.9.1
@@ -13,7 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/mattn/go-sqlite3 v1.14.32
-	github.com/openai/openai-go v1.12.0
+	github.com/openai/openai-go/v3 v3.44.0
 	github.com/panjf2000/ants/v2 v2.10.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.10.0
@@ -73,7 +73,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
-	github.com/tidwall/gjson v1.14.4 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect

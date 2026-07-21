@@ -52,7 +52,7 @@ const (
 )
 
 // openAIRequest represents an OpenAI chat completion request.
-// Note: This is similar to github.com/openai/openai-go's ChatCompletionNewParams,
+// Note: This is similar to github.com/openai/openai-go/v3's ChatCompletionNewParams,
 // but we define our own type because the SDK uses union types (e.g., Messages
 // is ChatCompletionMessageParamUnion) that don't work well for direct HTTP
 // JSON unmarshal. Our type uses simple types for better HTTP compatibility.
@@ -72,7 +72,7 @@ type openAIRequest struct {
 }
 
 // openAIMessage represents a message in OpenAI format.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionMessageParamUnion,
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionMessageParamUnion,
 // but simplified for HTTP JSON serialization.
 // Content is defined as any because OpenAI API allows it to be either a string
 // (for text-only messages) or []contentPart (for multimodal messages with
@@ -87,14 +87,14 @@ type openAIMessage struct {
 }
 
 // openAITool represents a tool definition.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionToolParam.
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionToolParam.
 type openAITool struct {
 	Type     string         `json:"type"`
 	Function openAIFunction `json:"function"`
 }
 
 // openAIFunction represents a function definition.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionToolFunction.
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionToolFunction.
 type openAIFunction struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
@@ -102,7 +102,7 @@ type openAIFunction struct {
 }
 
 // openAIToolCall represents a tool call in OpenAI format.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionMessageToolCall.
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionMessageToolCall.
 type openAIToolCall struct {
 	ID       string                 `json:"id"`
 	Type     string                 `json:"type"`
@@ -110,7 +110,7 @@ type openAIToolCall struct {
 }
 
 // openAIToolCallFunction represents a function call.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionMessageToolCallFunction.
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionMessageToolCallFunction.
 type openAIToolCallFunction struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
@@ -130,7 +130,7 @@ type imageURL struct {
 }
 
 // openAIResponse represents a non-streaming OpenAI response.
-// Note: This is similar to github.com/openai/openai-go's ChatCompletion,
+// Note: This is similar to github.com/openai/openai-go/v3's ChatCompletion,
 // but we define our own type for HTTP JSON serialization compatibility.
 // The SDK's ChatCompletion uses constant types and union types that don't
 // work well for direct HTTP JSON marshal/unmarshal.
@@ -144,7 +144,7 @@ type openAIResponse struct {
 }
 
 // openAIChoice represents a choice in the response.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionChoice,
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionChoice,
 // but with optional FinishReason for better compatibility.
 type openAIChoice struct {
 	Index        int           `json:"index"`
@@ -160,7 +160,7 @@ type openAIUsage struct {
 }
 
 // openAIChunk represents a streaming chunk.
-// Note: This is similar to github.com/openai/openai-go's ChatCompletionChunk,
+// Note: This is similar to github.com/openai/openai-go/v3's ChatCompletionChunk,
 // but we define our own type for HTTP JSON serialization compatibility.
 type openAIChunk struct {
 	ID      string              `json:"id"`
@@ -171,7 +171,7 @@ type openAIChunk struct {
 }
 
 // openAIChunkChoice represents a choice in a streaming chunk.
-// Note: Similar to github.com/openai/openai-go's ChatCompletionChunkChoice,
+// Note: Similar to github.com/openai/openai-go/v3's ChatCompletionChunkChoice,
 // but with optional FinishReason for better compatibility.
 type openAIChunkChoice struct {
 	Index        int           `json:"index"`

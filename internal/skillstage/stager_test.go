@@ -381,7 +381,6 @@ func TestStager_StageSkillConcurrentMetadataSafe(t *testing.T) {
 	start := make(chan struct{})
 	errs := make(chan error, skillCount)
 	for _, name := range names {
-		name := name
 		go func() {
 			<-start
 			errs <- st.StageSkill(

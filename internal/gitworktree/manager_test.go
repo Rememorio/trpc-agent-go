@@ -597,7 +597,6 @@ func TestManagerCreatePropagatesGitErrors(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -716,7 +715,6 @@ func TestManagerFinalizeValidationErrors(t *testing.T) {
 			wantError: "unmanaged branch",
 		},
 	} {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -767,7 +765,6 @@ func TestManagerFinalizeRejectsForeignLease(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -829,7 +826,6 @@ func TestManagerFinalizePropagatesChangeInspectionErrors(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -869,7 +865,6 @@ func TestManagerFinalizePropagatesRemovalErrors(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -968,7 +963,6 @@ func TestManagerFinalizeMissingPathErrorBranches(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 

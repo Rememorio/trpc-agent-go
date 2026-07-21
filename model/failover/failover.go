@@ -273,6 +273,7 @@ func cloneRequest(request *model.Request) (*model.Request, error) {
 	}
 	cloned.ExtraFields = jsonmap.Clone(request.ExtraFields)
 	cloned.Headers = maps.Clone(request.Headers)
+	cloned.ProviderOptions = request.ProviderOptions.Clone()
 	if len(request.Tools) > 0 {
 		cloned.Tools = make(map[string]tool.Tool, len(request.Tools))
 		for name, toolImpl := range request.Tools {

@@ -3344,6 +3344,7 @@ func cloneChoices(choices []model.Choice) []model.Choice {
 
 func cloneMessage(message model.Message) model.Message {
 	cloned := message
+	cloned.ProviderData = message.ProviderData.Clone()
 	cloned.ContentParts = cloneContentParts(message.ContentParts)
 	cloned.ToolCalls = cloneToolCalls(message.ToolCalls)
 	return cloned
@@ -3379,6 +3380,12 @@ func cloneContentParts(parts []model.ContentPart) []model.ContentPart {
 			contentRef := *part.ContentRef
 			cloned[i].ContentRef = &contentRef
 		}
+		if part.Annotations != nil {
+			cloned[i].Annotations = append([]model.Annotation(nil), part.Annotations...)
+			for j := range cloned[i].Annotations {
+				cloned[i].Annotations[j].ProviderData = part.Annotations[j].ProviderData.Clone()
+			}
+		}
 	}
 	return cloned
 }
@@ -3396,6 +3403,7 @@ func cloneToolCalls(toolCalls []model.ToolCall) []model.ToolCall {
 			cloned[i].Index = &index
 		}
 		cloned[i].ExtraFields = cloneAnyMap(toolCall.ExtraFields)
+		cloned[i].ProviderData = toolCall.ProviderData.Clone()
 	}
 	return cloned
 }

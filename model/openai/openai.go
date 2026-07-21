@@ -26,11 +26,11 @@ import (
 	"strings"
 	"time"
 
-	openai "github.com/openai/openai-go"
-	openaiopt "github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/respjson"
-	"github.com/openai/openai-go/packages/ssestream"
-	"github.com/openai/openai-go/shared"
+	openai "github.com/openai/openai-go/v3"
+	openaiopt "github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/respjson"
+	"github.com/openai/openai-go/v3/packages/ssestream"
+	"github.com/openai/openai-go/v3/shared"
 	"trpc.group/trpc-go/trpc-agent-go/internal/fileref"
 	"trpc.group/trpc-go/trpc-agent-go/internal/modeltelemetry"
 	"trpc.group/trpc-go/trpc-agent-go/internal/toolorder"
@@ -1062,6 +1062,12 @@ func (m *Model) convertMessages(messages []model.Message) []openai.ChatCompletio
 					Content: m.convertSystemMessageContent(msg),
 				},
 			}
+		case model.RoleDeveloper:
+			result[i] = openai.ChatCompletionMessageParamUnion{
+				OfDeveloper: &openai.ChatCompletionDeveloperMessageParam{
+					Content: m.convertDeveloperMessageContent(msg),
+				},
+			}
 		case model.RoleAssistant:
 			assistantMsg := &openai.ChatCompletionAssistantMessageParam{
 				Content:   m.convertAssistantMessageContent(msg),
@@ -1095,6 +1101,28 @@ func (m *Model) convertMessages(messages []model.Message) []openai.ChatCompletio
 	}
 
 	return result
+}
+
+func (m *Model) convertDeveloperMessageContent(
+	msg model.Message,
+) openai.ChatCompletionDeveloperMessageParamContentUnion {
+	if len(msg.ContentParts) == 0 && msg.Content != "" {
+		return openai.ChatCompletionDeveloperMessageParamContentUnion{
+			OfString: openai.String(msg.Content),
+		}
+	}
+	contentParts := make([]openai.ChatCompletionContentPartTextParam, 0, len(msg.ContentParts)+1)
+	if msg.Content != "" {
+		contentParts = append(contentParts, openai.ChatCompletionContentPartTextParam{Text: msg.Content})
+	}
+	for _, part := range msg.ContentParts {
+		if part.Type == model.ContentTypeText && part.Text != nil {
+			contentParts = append(contentParts, openai.ChatCompletionContentPartTextParam{Text: *part.Text})
+		}
+	}
+	return openai.ChatCompletionDeveloperMessageParamContentUnion{
+		OfArrayOfContentParts: contentParts,
+	}
 }
 
 // convertSystemMessageContent converts message content to system message content union.
@@ -1591,27 +1619,29 @@ func audioToBase64(audio *model.Audio) string {
 	return "data:" + audio.Format + ";base64," + base64.StdEncoding.EncodeToString(audio.Data)
 }
 
-func (m *Model) convertToolCalls(toolCalls []model.ToolCall) []openai.ChatCompletionMessageToolCallParam {
-	var result []openai.ChatCompletionMessageToolCallParam
+func (m *Model) convertToolCalls(toolCalls []model.ToolCall) []openai.ChatCompletionMessageToolCallUnionParam {
+	var result []openai.ChatCompletionMessageToolCallUnionParam
 	for _, toolCall := range toolCalls {
-		param := openai.ChatCompletionMessageToolCallParam{
+		functionCall := openai.ChatCompletionMessageFunctionToolCallParam{
 			ID: toolCall.ID,
-			Function: openai.ChatCompletionMessageToolCallFunctionParam{
+			Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
 				Name:      toolCall.Function.Name,
 				Arguments: string(toolCall.Function.Arguments),
 			},
 		}
 		// Pass through ExtraFields transparently (e.g., Gemini 3's thought_signature).
 		if len(toolCall.ExtraFields) > 0 {
-			param.SetExtraFields(toolCall.ExtraFields)
+			functionCall.SetExtraFields(toolCall.ExtraFields)
 		}
-		result = append(result, param)
+		result = append(result, openai.ChatCompletionMessageToolCallUnionParam{
+			OfFunction: &functionCall,
+		})
 	}
 	return result
 }
 
-func (m *Model) convertTools(tools map[string]tool.Tool) []openai.ChatCompletionToolParam {
-	var result []openai.ChatCompletionToolParam
+func (m *Model) convertTools(tools map[string]tool.Tool) []openai.ChatCompletionToolUnionParam {
+	var result []openai.ChatCompletionToolUnionParam
 	for _, t := range toolorder.SortedTools(tools) {
 		declaration := t.Declaration()
 		// Convert the InputSchema to JSON to correctly map to OpenAI's expected format
@@ -1632,11 +1662,13 @@ func (m *Model) convertTools(tools map[string]tool.Tool) []openai.ChatCompletion
 				parameters["properties"] = map[string]any{}
 			}
 		}
-		result = append(result, openai.ChatCompletionToolParam{
-			Function: openai.FunctionDefinitionParam{
-				Name:        declaration.Name,
-				Description: openai.String(buildToolDescription(declaration)),
-				Parameters:  parameters,
+		result = append(result, openai.ChatCompletionToolUnionParam{
+			OfFunction: &openai.ChatCompletionFunctionToolParam{
+				Function: openai.FunctionDefinitionParam{
+					Name:        declaration.Name,
+					Description: openai.String(buildToolDescription(declaration)),
+					Parameters:  parameters,
+				},
 			},
 		})
 	}
@@ -1729,44 +1761,6 @@ func (m *Model) handleStreamingResponseWithEmitter(
 	m.handleStreamCompleteCallback(ctx, chatRequest, acc, stream.Err())
 
 	m.emitStreamingFinalResponse(ctx, stream, acc, idToIndexMap, extraFieldsMap, reasoningBuf.String(), emit)
-}
-
-// sanitizeChunkForAccumulator returns a defensive copy of the given chunk that
-// avoids structures known to cause panics in the upstream OpenAI SDK
-// accumulator. In particular, it clears JSON.ToolCalls metadata when it is
-// marked present but the typed ToolCalls slice is empty on a finish_reason
-// chunk, which would otherwise lead to an out-of-range access in
-// chatCompletionResponseState.update.
-func sanitizeChunkForAccumulator(chunk openai.ChatCompletionChunk) openai.ChatCompletionChunk {
-	if len(chunk.Choices) == 0 {
-		return chunk
-	}
-
-	choice := chunk.Choices[0]
-	delta := choice.Delta
-
-	// Only sanitize the specific pattern that is known to be unsafe for the
-	// accumulator:
-	//   - finish_reason is set (e.g. "tool_calls" or "stop")
-	//   - JSON.ToolCalls is marked present
-	//   - but the typed ToolCalls slice is empty
-	if choice.FinishReason == "" ||
-		!delta.JSON.ToolCalls.Valid() ||
-		len(delta.ToolCalls) != 0 {
-		return chunk
-	}
-
-	sanitized := chunk
-	sanitized.Choices = make([]openai.ChatCompletionChunkChoice, len(chunk.Choices))
-	copy(sanitized.Choices, chunk.Choices)
-
-	// Clear the JSON metadata for ToolCalls on the first choice only. This
-	// preserves finish_reason and usage semantics while preventing the
-	// accumulator from treating this as a tool-call delta that must have at
-	// least one element.
-	sanitized.Choices[0].Delta.JSON.ToolCalls = respjson.Field{}
-
-	return sanitized
 }
 
 // stripReasoningFromChunkForAccumulator returns a defensive copy of the chunk
@@ -2053,11 +2047,7 @@ func (m *Model) accumulateChunk(
 	}
 
 	if shouldAccumulate {
-		// Sanitize chunks before feeding them into the upstream accumulator to
-		// avoid known panics when JSON.ToolCalls is marked present but the
-		// typed ToolCalls slice is empty, especially on finish_reason chunks.
-		sanitizedChunk := sanitizeChunkForAccumulator(chunkForAccumulator)
-		if acc.AddChunk(sanitizedChunk) {
+		if acc.AddChunk(chunkForAccumulator) {
 			applyOpenAISDKTokenDetailsAccumulationFix(acc, chunk)
 		}
 
@@ -2199,7 +2189,7 @@ func cloneChatCompletionMessage(message openai.ChatCompletionMessage) openai.Cha
 		}
 	}
 	if message.ToolCalls != nil {
-		cloned.ToolCalls = make([]openai.ChatCompletionMessageToolCall, len(message.ToolCalls))
+		cloned.ToolCalls = make([]openai.ChatCompletionMessageToolCallUnion, len(message.ToolCalls))
 		for i, toolCall := range message.ToolCalls {
 			cloned.ToolCalls[i] = cloneChatCompletionMessageToolCall(toolCall)
 		}
@@ -2239,17 +2229,16 @@ func cloneChatCompletionMessageFunctionCall(
 }
 
 func cloneChatCompletionMessageToolCall(
-	toolCall openai.ChatCompletionMessageToolCall,
-) openai.ChatCompletionMessageToolCall {
+	toolCall openai.ChatCompletionMessageToolCallUnion,
+) openai.ChatCompletionMessageToolCallUnion {
 	cloned := toolCall
-	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(toolCall.JSON.ExtraFields)
 	cloned.Function = cloneChatCompletionMessageToolCallFunction(toolCall.Function)
 	return cloned
 }
 
 func cloneChatCompletionMessageToolCallFunction(
-	function openai.ChatCompletionMessageToolCallFunction,
-) openai.ChatCompletionMessageToolCallFunction {
+	function openai.ChatCompletionMessageFunctionToolCallFunction,
+) openai.ChatCompletionMessageFunctionToolCallFunction {
 	cloned := function
 	cloned.JSON.ExtraFields = cloneRespJSONFieldMap(function.JSON.ExtraFields)
 	return cloned
@@ -2753,6 +2742,7 @@ func (m *Model) createResponseFromCompletion(chatCompletion *openai.ChatCompleti
 
 			response.Choices[i].Message.ToolCalls = make([]model.ToolCall, len(choice.Message.ToolCalls))
 			for j, toolCall := range choice.Message.ToolCalls {
+				functionCall := toolCall.AsFunction()
 				synthesizedID := toolCall.ID
 				if synthesizedID == "" {
 					// Synthesize ID for providers that omit it (e.g., gpt-5-nano).
@@ -2761,7 +2751,7 @@ func (m *Model) createResponseFromCompletion(chatCompletion *openai.ChatCompleti
 				response.Choices[i].Message.ToolCalls[j] = model.ToolCall{
 					ID:          synthesizedID,
 					Type:        string(toolCall.Type),
-					ExtraFields: convertExtraFields(toolCall.JSON.ExtraFields),
+					ExtraFields: convertExtraFields(functionCall.JSON.ExtraFields),
 					Function: model.FunctionDefinitionParam{
 						Name:      toolCall.Function.Name,
 						Arguments: []byte(toolCall.Function.Arguments),

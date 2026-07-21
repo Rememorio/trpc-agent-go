@@ -18,7 +18,7 @@ require (
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/go-openapi/testify/v2 v2.0.2
 	github.com/google/uuid v1.6.0
-	github.com/openai/openai-go v1.12.0
+	github.com/openai/openai-go/v3 v3.44.0
 	go.opentelemetry.io/otel v1.41.0
 	go.opentelemetry.io/otel/metric v1.41.0
 	go.opentelemetry.io/otel/trace v1.41.0

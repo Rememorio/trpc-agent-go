@@ -402,7 +402,6 @@ func (a *agentEvaluator) runEvaluationInParallel(
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(opts.numRuns)
 	for runID := 1; runID <= opts.numRuns; runID++ {
-		runID := runID
 		group.Go(func() error {
 			caseResults, err := a.runEvaluationOnce(groupCtx, evalSetID, opts, evalMetrics, runID)
 			if err != nil {

@@ -1572,7 +1572,6 @@ func TestNewRuntime_ErrorPathsExitCode(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			rt, err := NewRuntime(context.Background(), tc.args(t))
 			require.Nil(t, rt)
@@ -4430,7 +4429,6 @@ vector_store:
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 

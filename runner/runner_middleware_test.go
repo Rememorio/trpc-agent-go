@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	openaiopt "github.com/openai/openai-go/option"
+	openaiopt "github.com/openai/openai-go/v3/option"
 	"github.com/stretchr/testify/assert"
 
 	"trpc.group/trpc-go/trpc-agent-go/agent"

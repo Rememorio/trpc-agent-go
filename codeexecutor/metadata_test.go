@@ -73,7 +73,6 @@ func TestSaveMetadata_ConcurrentDirectWritesKeepValidJSON(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, writerCount)
 	for i := 0; i < writerCount; i++ {
-		i := i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -117,7 +116,6 @@ func TestWithWorkspaceMetadataLock_ConcurrentReadModifyWrite(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, workerCount)
 	for i := 0; i < workerCount; i++ {
-		i := i
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -30,6 +30,11 @@ func TestRole_String(t *testing.T) {
 			want: "system",
 		},
 		{
+			name: "developer role",
+			role: RoleDeveloper,
+			want: "developer",
+		},
+		{
 			name: "user role",
 			role: RoleUser,
 			want: "user",
@@ -64,6 +69,11 @@ func TestRole_IsValid(t *testing.T) {
 		{
 			name: "valid system role",
 			role: RoleSystem,
+			want: true,
+		},
+		{
+			name: "valid developer role",
+			role: RoleDeveloper,
 			want: true,
 		},
 		{
@@ -112,6 +122,14 @@ func TestNewSystemMessage(t *testing.T) {
 	if msg.Content != content {
 		t.Errorf("NewSystemMessage() content = %v, want %v", msg.Content, content)
 	}
+}
+
+func TestNewDeveloperMessage(t *testing.T) {
+	content := "Always cite sources."
+	msg := NewDeveloperMessage(content)
+
+	assert.Equal(t, RoleDeveloper, msg.Role)
+	assert.Equal(t, content, msg.Content)
 }
 
 func TestNewUserMessage(t *testing.T) {

@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	openaisdk "github.com/openai/openai-go"
+	openaisdk "github.com/openai/openai-go/v3"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/model/openai"
 )

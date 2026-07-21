@@ -72,6 +72,7 @@ func cloneRequestForCacheSafeFork(req *model.Request) *model.Request {
 	cloned.GenerationConfig = cloneGenerationConfigForCacheSafeFork(req.GenerationConfig)
 	cloned.StructuredOutput = cloneStructuredOutputForCacheSafeFork(req.StructuredOutput)
 	cloned.ExtraFields = jsonmap.Clone(req.ExtraFields)
+	cloned.ProviderOptions = req.ProviderOptions.Clone()
 	cloned.Headers = cloneHeadersForCacheSafeFork(req.Headers)
 	cloned.Tools = cloneToolsForCacheSafeFork(req.Tools)
 	return &cloned
@@ -90,6 +91,7 @@ func cloneMessagesForCacheSafeFork(messages []model.Message) []model.Message {
 
 func cloneMessageForCacheSafeFork(msg model.Message) model.Message {
 	cloned := msg
+	cloned.ProviderData = msg.ProviderData.Clone()
 	cloned.ContentParts = cloneContentPartsForCacheSafeFork(msg.ContentParts)
 	cloned.ToolCalls = cloneToolCallsForCacheSafeFork(msg.ToolCalls)
 	return cloned
@@ -133,6 +135,18 @@ func cloneContentPartForCacheSafeFork(part model.ContentPart) model.ContentPart 
 		}
 		cloned.File = &file
 	}
+	cloned.Annotations = cloneAnnotationsForCacheSafeFork(part.Annotations)
+	return cloned
+}
+
+func cloneAnnotationsForCacheSafeFork(annotations []model.Annotation) []model.Annotation {
+	if annotations == nil {
+		return nil
+	}
+	cloned := append([]model.Annotation(nil), annotations...)
+	for i := range cloned {
+		cloned[i].ProviderData = annotations[i].ProviderData.Clone()
+	}
 	return cloned
 }
 
@@ -151,6 +165,7 @@ func cloneToolCallsForCacheSafeFork(toolCalls []model.ToolCall) []model.ToolCall
 			cloned[i].Index = &index
 		}
 		cloned[i].ExtraFields = jsonmap.Clone(toolCalls[i].ExtraFields)
+		cloned[i].ProviderData = toolCalls[i].ProviderData.Clone()
 	}
 	return cloned
 }

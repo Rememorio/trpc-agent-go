@@ -1629,6 +1629,7 @@ func cloneToolCallsForResumeTail(toolCalls []model.ToolCall) []model.ToolCall {
 			[]byte(nil),
 			toolCalls[i].Function.Arguments...,
 		)
+		cloned[i].ProviderData = toolCalls[i].ProviderData.Clone()
 	}
 	return cloned
 }
@@ -3005,11 +3006,6 @@ func (p *ContentRequestProcessor) rearrangeAsyncFuncRespHist(
 
 	var resultEvents []event.Event
 	for i, evt := range events {
-		// Create a local copy to avoid implicit memory aliasing.
-		// This bug is fixed in go 1.22.
-		// See: https://tip.golang.org/doc/go1.22#language
-		evt := evt
-
 		if evt.IsToolResultResponse() {
 			// Function response should be handled with function call below.
 			continue
@@ -3061,7 +3057,6 @@ func toolResponseMatchesByCallEventFiltered(
 	responseMatchesByCallEvent := make(map[int][]matchedToolResponseEvent)
 	var pendingCallRounds []pendingToolCallRound
 	for i, evt := range events {
-		evt := evt
 		if includeEvent != nil && !includeEvent(i, evt) {
 			continue
 		}

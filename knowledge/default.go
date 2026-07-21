@@ -593,23 +593,20 @@ func (dk *BuiltinKnowledge) loadConcurrent(
 
 	for i, src := range sources {
 		wg.Add(1)
-		// Capture loop variables for the closure to avoid race conditions
-		srcIdx := i
-		source := src
 		err := srcPool.Submit(func() {
 			defer wg.Done()
-			sourceName := source.Name()
-			sourceType := source.Type()
+			sourceName := src.Name()
+			sourceType := src.Type()
 			log.InfofContext(ctx, "Loading source %d/%d: %s (type: %s)",
-				srcIdx+1, len(sources), sourceName, sourceType)
-			docs, err := source.ReadDocuments(ctx)
+				i+1, len(sources), sourceName, sourceType)
+			docs, err := src.ReadDocuments(ctx)
 			if err != nil {
 				reporter.Error(ctx, LoadProgressEvent{SourceName: sourceName}, err)
 				errCh <- fmt.Errorf("failed to read documents from source %s: %w", sourceName, err)
 				return
 			}
 			log.InfofContext(ctx, "Fetched %d document(s) from source %s", len(docs), sourceName)
-			processed, err := dk.processDocuments(ctx, docs, docPool, source, &globalProcessed, reporter)
+			processed, err := dk.processDocuments(ctx, docs, docPool, src, &globalProcessed, reporter)
 			if err != nil {
 				reporter.Error(ctx, LoadProgressEvent{
 					SourceName:      sourceName,

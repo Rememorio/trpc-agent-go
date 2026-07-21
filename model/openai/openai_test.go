@@ -26,11 +26,11 @@ import (
 	"testing"
 	"time"
 
-	openai "github.com/openai/openai-go"
-	openaigo "github.com/openai/openai-go"
-	openaiopt "github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/respjson"
-	"github.com/openai/openai-go/packages/ssestream"
+	openai "github.com/openai/openai-go/v3"
+	openaigo "github.com/openai/openai-go/v3"
+	openaiopt "github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/respjson"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -1118,6 +1118,7 @@ func TestModel_convertMessages(t *testing.T) {
 	// Prepare test messages covering all branches.
 	msgs := []model.Message{
 		model.NewSystemMessage("system content"),
+		model.NewDeveloperMessage("developer content"),
 		model.NewUserMessage("user content"),
 		{
 			Role:    model.RoleAssistant,
@@ -1147,6 +1148,7 @@ func TestModel_convertMessages(t *testing.T) {
 
 	roleChecks := []func(openaigo.ChatCompletionMessageParamUnion) bool{
 		func(u openaigo.ChatCompletionMessageParamUnion) bool { return u.OfSystem != nil },
+		func(u openaigo.ChatCompletionMessageParamUnion) bool { return u.OfDeveloper != nil },
 		func(u openaigo.ChatCompletionMessageParamUnion) bool { return u.OfUser != nil },
 		func(u openaigo.ChatCompletionMessageParamUnion) bool { return u.OfAssistant != nil },
 		func(u openaigo.ChatCompletionMessageParamUnion) bool { return u.OfTool != nil },
@@ -1158,7 +1160,7 @@ func TestModel_convertMessages(t *testing.T) {
 	}
 
 	// Assert that assistant message contains tool calls after conversion.
-	assistantUnion := converted[2]
+	assistantUnion := converted[3]
 	require.NotNil(t, assistantUnion.OfAssistant, "assistant union is nil")
 	require.NotEmpty(t, assistantUnion.GetToolCalls(), "assistant message should contain tool calls")
 }
@@ -1526,7 +1528,8 @@ func TestModel_convertTools(t *testing.T) {
 	params := m.convertTools(toolsMap)
 	require.Len(t, params, 1, "convertTools len=%d want=%d", len(params), 1)
 
-	fn := params[0].Function
+	require.NotNil(t, params[0].OfFunction)
+	fn := params[0].OfFunction.Function
 	assert.Equal(t, toolName, fn.Name, "function name=%s want=%s", fn.Name, toolName)
 	require.True(t, fn.Description.Valid() && fn.Description.Value == toolDesc, "function description mismatch")
 
@@ -1564,7 +1567,7 @@ func TestModel_convertTools_StrictProxyTopLevelProperties(t *testing.T) {
 	require.Len(t, converted, 2)
 
 	payload := struct {
-		Tools []openai.ChatCompletionToolParam `json:"tools"`
+		Tools []openai.ChatCompletionToolUnionParam `json:"tools"`
 	}{
 		Tools: converted,
 	}
@@ -1686,9 +1689,10 @@ func TestConvertTools_UsesOutputSchemaInDescription(t *testing.T) {
 
 	require.Len(t, params, 1)
 	expectedDesc := buildToolDescription(decl)
-	require.True(t, params[0].Function.Description.Valid(), "function description should be set")
-	assert.Equal(t, expectedDesc, params[0].Function.Description.Value)
-	assert.Contains(t, params[0].Function.Description.Value, `"value"`, "output schema JSON should be embedded")
+	require.NotNil(t, params[0].OfFunction)
+	require.True(t, params[0].OfFunction.Function.Description.Valid(), "function description should be set")
+	assert.Equal(t, expectedDesc, params[0].OfFunction.Function.Description.Value)
+	assert.Contains(t, params[0].OfFunction.Function.Description.Value, `"value"`, "output schema JSON should be embedded")
 }
 
 // TestModel_Callbacks tests that callback functions are properly called with
@@ -6352,7 +6356,8 @@ func TestConvertTools_ErrorCases(t *testing.T) {
 
 		params := m.convertTools(tools)
 		assert.Len(t, params, 1, "expected 1 tool")
-		assert.Equal(t, "valid_tool", params[0].Function.Name, "expected tool name to be valid_tool")
+		require.NotNil(t, params[0].OfFunction)
+		assert.Equal(t, "valid_tool", params[0].OfFunction.Function.Name, "expected tool name to be valid_tool")
 	})
 
 	t.Run("tool with complex schema", func(t *testing.T) {
@@ -6381,7 +6386,8 @@ func TestConvertTools_ErrorCases(t *testing.T) {
 
 		params := m.convertTools(tools)
 		assert.Len(t, params, 1, "expected 1 tool")
-		assert.Equal(t, "complex_tool", params[0].Function.Name, "expected tool name")
+		require.NotNil(t, params[0].OfFunction)
+		assert.Equal(t, "complex_tool", params[0].OfFunction.Function.Name, "expected tool name")
 	})
 }
 
@@ -7414,121 +7420,6 @@ func TestToolCallIndexMapping(t *testing.T) {
 		m.updateToolCallIndexMapping(chunk, idToIndexMap)
 		assert.Empty(t, idToIndexMap)
 	})
-}
-
-// TestChatCompletionAccumulator_ToolCallsEmpty_Panics verifies that the
-// upstream openai-go accumulator panics when JSON.ToolCalls is marked
-// present but the typed ToolCalls slice is empty. This documents the
-// panic behavior that our framework needs to defensively guard against.
-func TestChatCompletionAccumulator_ToolCallsEmpty_Panics(t *testing.T) {
-	// This JSON mimics a streaming chunk where the provider sends an empty
-	// tool_calls array together with a tool_calls finish_reason.
-	raw := []byte(`{
-		"id": "test",
-		"object": "chat.completion.chunk",
-		"created": 1699200000,
-		"model": "gpt-3.5-turbo",
-		"choices": [
-			{
-				"index": 0,
-				"delta": {
-					"tool_calls": []
-				},
-				"finish_reason": "tool_calls"
-			}
-		]
-	}`)
-
-	var chunk openai.ChatCompletionChunk
-	require.NoError(t, json.Unmarshal(raw, &chunk), "failed to unmarshal test chunk")
-
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatalf("expected panic when adding chunk with JSON.ToolCalls valid and empty ToolCalls slice, but no panic occurred")
-		}
-	}()
-
-	var acc openai.ChatCompletionAccumulator
-	acc.AddChunk(chunk)
-}
-
-// TestSanitizeChunkForAccumulator_FinishReasonToolCalls verifies that
-// sanitizeChunkForAccumulator clears JSON.ToolCalls metadata for chunks
-// that have a finish_reason and an empty ToolCalls slice, which would
-// otherwise cause the upstream accumulator to panic.
-func TestSanitizeChunkForAccumulator_FinishReasonToolCalls(t *testing.T) {
-	raw := []byte(`{
-		"id": "test",
-		"object": "chat.completion.chunk",
-		"created": 1699200000,
-		"model": "gpt-3.5-turbo",
-		"choices": [
-			{
-				"index": 0,
-				"delta": {
-					"content": "",
-					"tool_calls": []
-				},
-				"finish_reason": "tool_calls"
-			}
-		]
-	}`)
-
-	var chunk openai.ChatCompletionChunk
-	require.NoError(t, json.Unmarshal(raw, &chunk))
-	require.Len(t, chunk.Choices, 1)
-	require.Equal(t, "tool_calls", chunk.Choices[0].FinishReason)
-	require.True(t, chunk.Choices[0].Delta.JSON.ToolCalls.Valid())
-	require.Len(t, chunk.Choices[0].Delta.ToolCalls, 0)
-
-	sanitized := sanitizeChunkForAccumulator(chunk)
-
-	// Original chunk should remain unchanged.
-	require.True(t, chunk.Choices[0].Delta.JSON.ToolCalls.Valid())
-
-	// Sanitized chunk should have ToolCalls metadata cleared but still carry
-	// the same finish_reason and an empty typed ToolCalls slice.
-	require.Len(t, sanitized.Choices, 1)
-	assert.Equal(t, "tool_calls", sanitized.Choices[0].FinishReason)
-	assert.False(t, sanitized.Choices[0].Delta.JSON.ToolCalls.Valid())
-	assert.Len(t, sanitized.Choices[0].Delta.ToolCalls, 0)
-}
-
-// TestSanitizeChunkForAccumulator_NoFinishReason ensures that chunks without
-// a finish_reason are left untouched even if they carry an empty ToolCalls
-// array, since these are safe for the accumulator (it will use the content
-// branch instead of the tool_calls branch).
-func TestSanitizeChunkForAccumulator_NoFinishReason(t *testing.T) {
-	raw := []byte(`{
-		"id": "test",
-		"object": "chat.completion.chunk",
-		"created": 1699200000,
-		"model": "gpt-3.5-turbo",
-		"choices": [
-			{
-				"index": 0,
-				"delta": {
-					"content": "hello",
-					"tool_calls": []
-				},
-				"finish_reason": null
-			}
-		]
-	}`)
-
-	var chunk openai.ChatCompletionChunk
-	require.NoError(t, json.Unmarshal(raw, &chunk))
-	require.Len(t, chunk.Choices, 1)
-	require.Equal(t, "", chunk.Choices[0].FinishReason)
-	require.True(t, chunk.Choices[0].Delta.JSON.ToolCalls.Valid())
-	require.Len(t, chunk.Choices[0].Delta.ToolCalls, 0)
-
-	sanitized := sanitizeChunkForAccumulator(chunk)
-
-	// Chunks without finish_reason should not be modified.
-	assert.Equal(t, chunk, sanitized)
-	assert.True(t, sanitized.Choices[0].Delta.JSON.ToolCalls.Valid())
-	assert.Len(t, sanitized.Choices[0].Delta.ToolCalls, 0)
 }
 
 func TestStripReasoningFromChunkForAccumulator(t *testing.T) {
@@ -8946,14 +8837,14 @@ func TestConvertExtraFields(t *testing.T) {
 	})
 }
 
-// parseToolCallExtraFields parses a JSON string into a ChatCompletionMessageToolCall
+// parseToolCallExtraFields parses a JSON string into a ChatCompletionMessageToolCallUnion
 // and returns its ExtraFields. This allows testing with properly populated respjson.Field values.
 func parseToolCallExtraFields(t *testing.T, jsonStr string) map[string]respjson.Field {
 	t.Helper()
-	var toolCall openai.ChatCompletionMessageToolCall
+	var toolCall openai.ChatCompletionMessageToolCallUnion
 	err := json.Unmarshal([]byte(jsonStr), &toolCall)
 	require.NoError(t, err)
-	return toolCall.JSON.ExtraFields
+	return toolCall.AsFunction().JSON.ExtraFields
 }
 
 // TestConvertToolCalls_ExtraFields tests that convertToolCalls
@@ -8976,8 +8867,9 @@ func TestConvertToolCalls_ExtraFields(t *testing.T) {
 		result := m.convertToolCalls(toolCalls)
 
 		require.Len(t, result, 1)
-		assert.Equal(t, "call-1", result[0].ID)
-		assert.Equal(t, "test_func", result[0].Function.Name)
+		require.NotNil(t, result[0].OfFunction)
+		assert.Equal(t, "call-1", result[0].OfFunction.ID)
+		assert.Equal(t, "test_func", result[0].OfFunction.Function.Name)
 	})
 
 	t.Run("with extra_fields passes through", func(t *testing.T) {
@@ -9002,7 +8894,8 @@ func TestConvertToolCalls_ExtraFields(t *testing.T) {
 		result := m.convertToolCalls(toolCalls)
 
 		require.Len(t, result, 1)
-		assert.Equal(t, "call-1", result[0].ID)
+		require.NotNil(t, result[0].OfFunction)
+		assert.Equal(t, "call-1", result[0].OfFunction.ID)
 	})
 
 	t.Run("multiple tool calls with and without extra_fields", func(t *testing.T) {
@@ -9051,9 +8944,12 @@ func TestConvertToolCalls_ExtraFields(t *testing.T) {
 		result := m.convertToolCalls(toolCalls)
 
 		require.Len(t, result, 3)
-		assert.Equal(t, "call-1", result[0].ID)
-		assert.Equal(t, "call-2", result[1].ID)
-		assert.Equal(t, "call-3", result[2].ID)
+		require.NotNil(t, result[0].OfFunction)
+		require.NotNil(t, result[1].OfFunction)
+		require.NotNil(t, result[2].OfFunction)
+		assert.Equal(t, "call-1", result[0].OfFunction.ID)
+		assert.Equal(t, "call-2", result[1].OfFunction.ID)
+		assert.Equal(t, "call-3", result[2].OfFunction.ID)
 	})
 }
 
@@ -9488,10 +9384,11 @@ func TestModel_handleStreamCompleteCallback(t *testing.T) {
 						FinishReason: "stop",
 						Message: openai.ChatCompletionMessage{
 							Content: "original",
-							ToolCalls: []openai.ChatCompletionMessageToolCall{
+							ToolCalls: []openai.ChatCompletionMessageToolCallUnion{
 								{
-									ID: "call-1",
-									Function: openai.ChatCompletionMessageToolCallFunction{
+									ID:   "call-1",
+									Type: "function",
+									Function: openai.ChatCompletionMessageFunctionToolCallFunction{
 										Name:      "weather",
 										Arguments: `{"city":"beijing"}`,
 									},

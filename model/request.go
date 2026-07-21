@@ -26,6 +26,7 @@ type Role string
 // Role constants for message authors.
 const (
 	RoleSystem    Role = "system"
+	RoleDeveloper Role = "developer"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
@@ -57,7 +58,7 @@ func (r Role) String() string {
 // IsValid checks if the role is one of the defined constants.
 func (r Role) IsValid() bool {
 	switch r {
-	case RoleSystem, RoleUser, RoleAssistant, RoleTool:
+	case RoleSystem, RoleDeveloper, RoleUser, RoleAssistant, RoleTool:
 		return true
 	default:
 		return false
@@ -86,6 +87,11 @@ type Message struct {
 	// conversation, include the text and its signature unmodified.
 	// Currently used by AWS Bedrock (Claude) models.
 	ReasoningSignature string `json:"reasoning_signature,omitempty"`
+	// Refusal is provider-native refusal content. A refusal is a valid model
+	// result, not a transport or API error.
+	Refusal string `json:"refusal,omitempty"`
+	// ProviderData stores provider-owned continuation metadata.
+	ProviderData ProviderData `json:"provider_data,omitempty"`
 }
 
 // AddFilePath adds a file path to the message.
@@ -276,6 +282,26 @@ type ContentPart struct {
 	File *File `json:"file,omitempty"`
 	// ContentRef is an internal reference to externalized content.
 	ContentRef *ContentRef `json:"content_ref,omitempty"`
+	// Annotations contains citations and other provider annotations attached to
+	// this content part.
+	Annotations []Annotation `json:"annotations,omitempty"`
+}
+
+// Annotation describes a citation or other provider annotation associated
+// with a content part.
+type Annotation struct {
+	// Type identifies the annotation kind.
+	Type string `json:"type"`
+	// Text is the annotated text, when supplied by the provider.
+	Text string `json:"text,omitempty"`
+	// URI is the cited resource URI, when supplied by the provider.
+	URI string `json:"uri,omitempty"`
+	// StartIndex is the inclusive start offset in the associated text.
+	StartIndex *int `json:"start_index,omitempty"`
+	// EndIndex is the exclusive end offset in the associated text.
+	EndIndex *int `json:"end_index,omitempty"`
+	// ProviderData stores fields specific to the annotation provider.
+	ProviderData ProviderData `json:"provider_data,omitempty"`
 }
 
 // ContentRef records where externalized content is stored and how to restore it.
@@ -365,6 +391,14 @@ type Audio struct {
 func NewSystemMessage(content string) Message {
 	return Message{
 		Role:    RoleSystem,
+		Content: content,
+	}
+}
+
+// NewDeveloperMessage creates a new developer instruction message.
+func NewDeveloperMessage(content string) Message {
+	return Message{
+		Role:    RoleDeveloper,
 		Content: content,
 	}
 }
@@ -551,6 +585,10 @@ type Request struct {
 	// request-level values take precedence.
 	ExtraFields map[string]any `json:"-"`
 
+	// ProviderOptions stores typed, adapter-owned request configuration. It is
+	// not merged into a provider request body without adapter validation.
+	ProviderOptions ProviderOptions `json:"-"`
+
 	// Headers stores provider-specific HTTP headers for this request.
 	// Model adapters merge these with model-level headers when supported;
 	// request-level values take precedence.
@@ -589,9 +627,10 @@ func WithStructuredOutputJSON(examplePtr any, strict bool, description string) R
 	}
 }
 
-// ToolCall represents a call to a tool (function) in the model response.
+// ToolCall represents a tool invocation in a model response. Function contains
+// the framework-normalized name and arguments even for provider-native tools.
 type ToolCall struct {
-	// Type of the tool. Currently, only `function` is supported.
+	// Type identifies the tool protocol, for example function or custom.
 	Type string `json:"type"`
 	// Function definition for the tool
 	Function FunctionDefinitionParam `json:"function,omitempty"`
@@ -604,6 +643,9 @@ type ToolCall struct {
 	// ExtraFields stores additional provider-specific fields for transparent passthrough.
 	// For example, Gemini 3's thought_signature for multi-turn function calling.
 	ExtraFields map[string]any `json:"extra_fields,omitempty"`
+	// ProviderData stores provider-owned call identity and replay metadata. It is
+	// propagated to the corresponding tool result by the framework tool loop.
+	ProviderData ProviderData `json:"provider_data,omitempty"`
 }
 
 // FunctionDefinitionParam represents the parameters for a function definition in tool calls.

@@ -35,7 +35,7 @@ import (
 	"time"
 	"unicode"
 
-	openaiopt "github.com/openai/openai-go/option"
+	openaiopt "github.com/openai/openai-go/v3/option"
 	"trpc.group/trpc-go/trpc-agent-go/agent"
 	"trpc.group/trpc-go/trpc-agent-go/agent/claudecode"
 	"trpc.group/trpc-go/trpc-agent-go/agent/llmagent"
@@ -2315,7 +2315,6 @@ func run(
 	}
 
 	for _, ch := range channels {
-		ch := ch
 		go func() {
 			errCh <- ch.Run(runCtx)
 		}()

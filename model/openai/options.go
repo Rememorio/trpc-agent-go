@@ -13,8 +13,8 @@ package openai
 import (
 	"context"
 
-	openai "github.com/openai/openai-go"
-	openaiopt "github.com/openai/openai-go/option"
+	openai "github.com/openai/openai-go/v3"
+	openaiopt "github.com/openai/openai-go/v3/option"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	imodel "trpc.group/trpc-go/trpc-agent-go/model/internal/model"
 )
@@ -262,8 +262,8 @@ func WithHTTPClientOptions(httpOpts ...HTTPClientOption) Option {
 // E.g. use its middleware option:
 //
 //	import (
-//		openai "github.com/openai/openai-go"
-//		openaiopt "github.com/openai/openai-go/option"
+//		openai "github.com/openai/openai-go/v3"
+//		openaiopt "github.com/openai/openai-go/v3/option"
 //	)
 //
 //	WithOpenAIOptions(openaiopt.WithMiddleware(

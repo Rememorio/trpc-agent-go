@@ -917,7 +917,6 @@ func TestIsValidEnvName(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
 			require.Equal(t, tc.want, isValidEnvName(tc.in))
@@ -1577,7 +1576,6 @@ func TestParseRunOptions_DynamicAgentTimeoutInvalidFails(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1864,7 +1862,6 @@ func TestConvertSandboxCodeExecutorConfigValidationBranches(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := convertSandboxCodeExecutorConfig(&tc.cfg)
@@ -2277,7 +2274,6 @@ func TestParseRunOptions_EvolutionSkillScopeModeConfig(t *testing.T) {
 		{name: "none", mode: " ", want: skill.SkillScopeNone},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -2350,7 +2346,6 @@ evolution:
 		},
 	}
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
