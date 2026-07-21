@@ -15,6 +15,13 @@ import (
 
 const assistantResultMemoryPrefix = "Assistant result: "
 
+func hasAssistantResultMemoryPrefix(text string) bool {
+	text = strings.TrimSpace(text)
+	marker := strings.TrimSpace(assistantResultMemoryPrefix)
+	return len(text) >= len(marker) &&
+		strings.EqualFold(text[:len(marker)], marker)
+}
+
 func qualifyAssistantResultOperations(operations []*Operation) {
 	for _, operation := range operations {
 		if operation == nil || operation.Type != OperationAdd {

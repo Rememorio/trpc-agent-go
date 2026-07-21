@@ -104,6 +104,45 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 		m.requests[1].Messages[len(m.requests[1].Messages)-1].Role)
 }
 
+func TestExtractor_DoesNotRecoverQualifiedAssistantResultUpdate(t *testing.T) {
+	updateArgs, err := json.Marshal(map[string]any{
+		"memory_id": "existing-result",
+		"memory":    "Assistant result: Recommended Alpha, Beta, Gamma, and Delta.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			{{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
+				makeToolCall(memory.UpdateToolName, updateArgs),
+			}}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true)).(*memoryExtractor)
+	existing := []*memory.Entry{{
+		ID: "existing-result",
+		Memory: &memory.Memory{
+			Memory: "Assistant result: Recommended Alpha, Beta, and Gamma.",
+		},
+	}}
+
+	primary, assistantResults, err := e.ExtractOperationStages(
+		context.Background(),
+		[]model.Message{
+			model.NewUserMessage("Which options should I use?"),
+			model.NewAssistantMessage("1. Alpha\n2. Beta\n3. Gamma\n4. Delta"),
+		},
+		existing,
+	)
+
+	require.NoError(t, err)
+	assert.Empty(t, primary)
+	require.Len(t, assistantResults, 1)
+	assert.Equal(t, OperationUpdate, assistantResults[0].Type)
+	assert.Equal(t, "existing-result", assistantResults[0].MemoryID)
+	assert.Len(t, m.requests, 1)
+}
+
 func TestExtractor_DoesNotRecoverWhenCombinedPassHasResult(t *testing.T) {
 	resultArgs, err := json.Marshal(map[string]any{
 		"memory": "Assistant result: Recommended Alpha, Beta, and Gamma.",

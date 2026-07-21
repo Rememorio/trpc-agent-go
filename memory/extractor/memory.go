@@ -227,7 +227,9 @@ func splitExtractionOperations(
 	operations []*Operation,
 ) (primary, assistantResults []*Operation) {
 	for _, operation := range operations {
-		if operation != nil && operation.assistantResult {
+		if operation != nil && (operation.assistantResult ||
+			hasAssistantResultMemoryPrefix(operation.Memory)) {
+			operation.assistantResult = true
 			assistantResults = append(assistantResults, operation)
 			continue
 		}
