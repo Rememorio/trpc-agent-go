@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
 )
@@ -50,10 +51,11 @@ eligible result and emit no tool call otherwise.
 func (e *memoryExtractor) recoverStructuredAssistantResults(
 	ctx context.Context,
 	messages []model.Message,
+	existing []*memory.Entry,
 ) (context.Context, []*Operation, error) {
 	req := &model.Request{
 		Messages: e.buildAssistantResultRecoveryMessages(
-			ctx, messages,
+			ctx, messages, existing,
 		),
 		Tools: map[string]tool.Tool{
 			assistantResultAddToolName: assistantResultAddTool,
@@ -70,10 +72,11 @@ func (e *memoryExtractor) recoverStructuredAssistantResults(
 func (e *memoryExtractor) buildAssistantResultRecoveryMessages(
 	ctx context.Context,
 	messages []model.Message,
+	existing []*memory.Entry,
 ) []model.Message {
 	result := make([]model.Message, 0, len(messages)+2)
 	result = append(result, model.NewSystemMessage(
-		e.buildAssistantResultRecoveryPrompt(ctx),
+		e.buildAssistantResultRecoveryPrompt(ctx, existing),
 	))
 	for _, message := range messages {
 		if message.Role != model.RoleUser &&
@@ -93,6 +96,7 @@ func (e *memoryExtractor) buildAssistantResultRecoveryMessages(
 
 func (e *memoryExtractor) buildAssistantResultRecoveryPrompt(
 	ctx context.Context,
+	existing []*memory.Entry,
 ) string {
 	var result strings.Builder
 	result.WriteString(strings.ReplaceAll(
@@ -104,7 +108,38 @@ func (e *memoryExtractor) buildAssistantResultRecoveryPrompt(
 	result.WriteString(assistantResultAddToolName)
 	result.WriteString(": Add a concrete result provided by the assistant.\n")
 	result.WriteString("</available_actions>\n")
+	appendExistingAssistantResults(&result, existing)
 	return result.String()
+}
+
+func appendExistingAssistantResults(
+	result *strings.Builder,
+	existing []*memory.Entry,
+) {
+	wroteHeader := false
+	for _, entry := range existing {
+		if !isStoredAssistantResult(entry) {
+			continue
+		}
+		if !wroteHeader {
+			result.WriteString("\n<existing_memories>\n")
+			wroteHeader = true
+		}
+		result.WriteString(formatExistingMemory(entry))
+	}
+	if wroteHeader {
+		result.WriteString("</existing_memories>\n")
+	}
+}
+
+func isStoredAssistantResult(entry *memory.Entry) bool {
+	if entry == nil || entry.Memory == nil {
+		return false
+	}
+	text := strings.TrimSpace(entry.Memory.Memory)
+	marker := strings.TrimSpace(assistantResultMemoryPrefix)
+	return len(text) >= len(marker) &&
+		strings.EqualFold(text[:len(marker)], marker)
 }
 
 func hasStructuredAssistantResultCandidate(messages []model.Message) bool {

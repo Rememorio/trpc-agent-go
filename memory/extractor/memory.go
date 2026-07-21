@@ -196,7 +196,7 @@ func (e *memoryExtractor) ExtractOperationStages(
 		hasStructuredAssistantResultCandidate(messages) {
 		recoveryCtx, recovered, recoveryErr :=
 			e.recoverStructuredAssistantResults(
-				ctx, messages,
+				ctx, messages, existing,
 			)
 		if recoveryErr != nil {
 			if recoveryCtx.Err() != nil {

@@ -73,9 +73,20 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 		},
 	}
 	e := NewExtractor(m, WithAssistantResultExtraction(true)).(*memoryExtractor)
-	existing := []*memory.Entry{{
-		Memory: &memory.Memory{Memory: "Existing result must stay out of recovery."},
-	}}
+	existing := []*memory.Entry{
+		{
+			ID: "ordinary-memory",
+			Memory: &memory.Memory{
+				Memory: "Existing user memory must stay out of recovery.",
+			},
+		},
+		{
+			ID: "assistant-result-memory",
+			Memory: &memory.Memory{
+				Memory: "Assistant result: Previously recommended Alpha and Beta.",
+			},
+		},
+	}
 
 	primary, assistantResults, err := e.ExtractOperationStages(
 		context.Background(),
@@ -97,9 +108,11 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 	assert.Contains(t, m.requests[1].Messages[0].Content,
 		"<assistant_result_recovery>")
 	assert.NotContains(t, m.requests[1].Messages[0].Content,
-		"Existing result must stay out of recovery.")
-	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"Existing user memory must stay out of recovery.")
+	assert.Contains(t, m.requests[1].Messages[0].Content,
 		"<existing_memories>")
+	assert.Contains(t, m.requests[1].Messages[0].Content,
+		"Assistant result: Previously recommended Alpha and Beta.")
 	assert.Equal(t, model.RoleUser,
 		m.requests[1].Messages[len(m.requests[1].Messages)-1].Role)
 }
