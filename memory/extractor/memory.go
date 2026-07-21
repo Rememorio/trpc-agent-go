@@ -162,12 +162,20 @@ func (e *memoryExtractor) ExtractOperationStages(
 	}
 
 	includeAssistantResults := e.shouldExtractAssistantResult(messages)
+	requireAssistantResultReview := includeAssistantResults &&
+		hasStructuredAssistantResultCandidate(messages)
 	primaryRequest := &model.Request{
-		Messages: e.buildMessages(ctx, messages, existing),
-		Tools:    e.extractionTools(includeAssistantResults),
+		Messages: e.buildMessagesForRequest(
+			ctx, messages, existing,
+			includeAssistantResults, requireAssistantResultReview,
+		),
+		Tools: e.extractionTools(
+			includeAssistantResults, requireAssistantResultReview,
+		),
 	}
 	ctx, ops, err := e.generateOperations(ctx, primaryRequest)
-	primary, assistantResults := splitExtractionOperations(ops)
+	primary, assistantResults, assistantResultReviewed :=
+		splitExtractionOperations(ops)
 	if err == nil {
 		recoveryCtx, recovered, recoveryErr :=
 			e.recoverUngroundedStateOperations(
@@ -192,7 +200,7 @@ func (e *memoryExtractor) ExtractOperationStages(
 	if err != nil || !includeAssistantResults {
 		return primary, assistantResults, err
 	}
-	if len(assistantResults) == 0 &&
+	if len(assistantResults) == 0 && !assistantResultReviewed &&
 		hasStructuredAssistantResultCandidate(messages) {
 		recoveryCtx, recovered, recoveryErr :=
 			e.recoverStructuredAssistantResults(
@@ -225,29 +233,37 @@ func (e *memoryExtractor) ExtractOperationStages(
 
 func splitExtractionOperations(
 	operations []*Operation,
-) (primary, assistantResults []*Operation) {
+) (primary, assistantResults []*Operation, assistantResultReviewed bool) {
 	for _, operation := range operations {
+		if operation != nil && operation.assistantResultReviewed {
+			assistantResultReviewed = true
+			continue
+		}
 		if operation != nil && operation.assistantResult {
 			assistantResults = append(assistantResults, operation)
 			continue
 		}
 		primary = append(primary, operation)
 	}
-	return primary, assistantResults
+	return primary, assistantResults, assistantResultReviewed
 }
 
 func (e *memoryExtractor) extractionTools(
 	includeAssistantResults bool,
+	requireAssistantResultReview bool,
 ) map[string]tool.Tool {
 	primary := filterTools(backgroundTools, e.effectiveEnabledTools())
 	if !includeAssistantResults {
 		return primary
 	}
-	combined := make(map[string]tool.Tool, len(primary)+1)
+	combined := make(map[string]tool.Tool, len(primary)+2)
 	for name, declaration := range primary {
 		combined[name] = declaration
 	}
 	combined[assistantResultAddToolName] = assistantResultAddTool
+	if requireAssistantResultReview {
+		combined[assistantResultSkipToolName] = assistantResultSkipTool
+	}
 	return combined
 }
 
@@ -374,15 +390,30 @@ func (e *memoryExtractor) buildMessages(
 	messages []model.Message,
 	existing []*memory.Entry,
 ) []model.Message {
+	includeAssistantResults := e.shouldExtractAssistantResult(messages)
+	return e.buildMessagesForRequest(
+		ctx, messages, existing,
+		includeAssistantResults,
+		includeAssistantResults && hasStructuredAssistantResultCandidate(messages),
+	)
+}
+
+func (e *memoryExtractor) buildMessagesForRequest(
+	ctx context.Context,
+	messages []model.Message,
+	existing []*memory.Entry,
+	includeAssistantResults bool,
+	requireAssistantResultReview bool,
+) []model.Message {
 	result := make([]model.Message, 0, len(messages)+2)
 
 	refDate := referenceDate(ctx)
-	includeAssistantResults := e.shouldExtractAssistantResult(messages)
 
 	// Add system prompt with existing memories.
 	result = append(result, model.NewSystemMessage(
 		e.buildSystemPromptForRequest(
-			refDate, existing, includeAssistantResults,
+			refDate, existing,
+			includeAssistantResults, requireAssistantResultReview,
 		),
 	))
 
@@ -526,6 +557,7 @@ func (e *memoryExtractor) buildSystemPrompt(
 		refDate,
 		existing,
 		e.extractAssistantResults && e.actionEnabled(memory.AddToolName),
+		false,
 	)
 }
 
@@ -533,6 +565,7 @@ func (e *memoryExtractor) buildSystemPromptForRequest(
 	refDate time.Time,
 	existing []*memory.Entry,
 	includeAssistantResults bool,
+	requireAssistantResultReview bool,
 ) string {
 	var sb strings.Builder
 
@@ -552,10 +585,15 @@ func (e *memoryExtractor) buildSystemPromptForRequest(
 	if includeAssistantResults {
 		sb.WriteString(assistantResultExtractionPrompt)
 	}
+	if requireAssistantResultReview {
+		sb.WriteString(assistantResultReviewPrompt)
+	}
 
 	// Append available actions.
 	sb.WriteString("\n<available_actions>\n")
-	sb.WriteString(e.availableActionsBlockForRequest(includeAssistantResults))
+	sb.WriteString(e.availableActionsBlockForRequest(
+		includeAssistantResults, requireAssistantResultReview,
+	))
 	sb.WriteString("</available_actions>\n")
 
 	// Append existing memories with topics and episodic metadata so the
@@ -602,11 +640,13 @@ var toolActionOrder = []string{
 func (e *memoryExtractor) availableActionsBlock() string {
 	return e.availableActionsBlockForRequest(
 		e.extractAssistantResults && e.actionEnabled(memory.AddToolName),
+		false,
 	)
 }
 
 func (e *memoryExtractor) availableActionsBlockForRequest(
 	includeAssistantResults bool,
+	requireAssistantResultReview bool,
 ) string {
 	var sb strings.Builder
 	for _, name := range toolActionOrder {
@@ -623,6 +663,11 @@ func (e *memoryExtractor) availableActionsBlockForRequest(
 		fmt.Fprintf(&sb, "- %s: %s\n", assistantResultAddToolName,
 			"Add a concrete result provided by the assistant in direct "+
 				"response to the user's request.")
+		if requireAssistantResultReview {
+			fmt.Fprintf(&sb, "- %s: %s\n", assistantResultSkipToolName,
+				"Confirm that the assistant response was checked and has no "+
+					"concrete result to store; this action writes nothing.")
+		}
 	}
 	if sb.Len() == 0 {
 		sb.WriteString("No actions available.\n")
@@ -730,6 +775,17 @@ recommendations, estimates, and answers from facts confirmed by the user.
   is not personal. Before emitting no operation, check whether the assistant
   produced a direct result the user could ask about later.
 </assistant_result_extraction>
+`
+
+const assistantResultReviewPrompt = `
+
+<assistant_result_review>
+COMPLETION ACKNOWLEDGEMENT: This assistant response has a structured result
+candidate. If it contains no eligible result, call memory_skip_assistant_result
+exactly once after checking it. This marker writes no memory. Do not call it
+when memory_add_assistant_result is emitted. Always emit one of these two
+assistant-result actions before finishing this extraction pass.
+</assistant_result_review>
 `
 
 const historyPreservingPrompt = `

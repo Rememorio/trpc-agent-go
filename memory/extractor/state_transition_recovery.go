@@ -129,7 +129,7 @@ func (e *memoryExtractor) recoverUngroundedStateOperations(
 	if err != nil {
 		return ctx, operations, err
 	}
-	primary, _ := splitExtractionOperations(recovered)
+	primary, _, _ := splitExtractionOperations(recovered)
 	grounded := make([]*Operation, 0, len(primary))
 	for _, operation := range primary {
 		if operationHasStateRelation(operation) {

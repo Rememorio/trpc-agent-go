@@ -129,6 +129,46 @@ func TestExtractor_DoesNotRecoverWhenCombinedPassHasResult(t *testing.T) {
 	assert.Len(t, m.requests, 1)
 }
 
+func TestExtractor_DoesNotRecoverAfterAssistantResultReview(t *testing.T) {
+	primaryArgs, err := json.Marshal(map[string]any{
+		"memory": "User is learning about consistency models.",
+	})
+	require.NoError(t, err)
+	markerArgs, err := json.Marshal(map[string]any{})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			{{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
+				makeToolCall(memory.AddToolName, primaryArgs),
+				makeToolCall(assistantResultSkipToolName, markerArgs),
+			}}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true)).(*memoryExtractor)
+
+	primary, assistantResults, err := e.ExtractOperationStages(
+		context.Background(),
+		[]model.Message{
+			model.NewUserMessage("How does eventual consistency work?"),
+			model.NewAssistantMessage(
+				"1. Replicas update independently.\n" +
+					"2. Conflicts may occur.\n" +
+					"3. Replicas eventually converge.",
+			),
+		},
+		nil,
+	)
+
+	require.NoError(t, err)
+	require.Len(t, primary, 1)
+	assert.Empty(t, assistantResults)
+	assert.Len(t, m.requests, 1)
+	assert.Contains(t, m.requests[0].Tools, assistantResultSkipToolName)
+	assert.Contains(t, m.requests[0].Messages[0].Content,
+		"COMPLETION ACKNOWLEDGEMENT")
+}
+
 func TestExtractor_DoesNotRecoverUnstructuredAssistantResult(t *testing.T) {
 	m := &sequenceModel{name: "test-model", responses: [][]*model.Response{nil}}
 	e := NewExtractor(m, WithAssistantResultExtraction(true))
@@ -141,6 +181,9 @@ func TestExtractor_DoesNotRecoverUnstructuredAssistantResult(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, ops)
 	assert.Len(t, m.requests, 1)
+	assert.NotContains(t, m.requests[0].Tools, assistantResultSkipToolName)
+	assert.NotContains(t, m.requests[0].Messages[0].Content,
+		"<assistant_result_review>")
 }
 
 func TestExtractor_StructuredRecoveryMayEmitNoResult(t *testing.T) {

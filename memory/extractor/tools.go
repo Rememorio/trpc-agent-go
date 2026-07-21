@@ -55,7 +55,10 @@ var backgroundTools = func() map[string]tool.Tool {
 	return tools
 }()
 
-const assistantResultAddToolName = "memory_add_assistant_result"
+const (
+	assistantResultAddToolName  = "memory_add_assistant_result"
+	assistantResultSkipToolName = "memory_skip_assistant_result"
+)
 
 const groundedStateAddToolName = "memory_add_grounded_state"
 
@@ -65,6 +68,15 @@ var assistantResultAddTool = func() tool.Tool {
 	declaration.Description = "Store a concrete result provided by the " +
 		"assistant in direct response to the user's request, including a " +
 		"named analytical or opinion-based conclusion."
+	return &declarationOnlyTool{decl: &declaration}
+}()
+
+var assistantResultSkipTool = func() tool.Tool {
+	declaration := *memorytool.NewClearTool().Declaration()
+	declaration.Name = assistantResultSkipToolName
+	declaration.Description = "Confirm that the assistant response was " +
+		"checked and contains no concrete result that should be stored. " +
+		"This action does not modify memory."
 	return &declarationOnlyTool{decl: &declaration}
 }()
 
@@ -100,6 +112,9 @@ const (
 // parseToolCallArgs parses tool call arguments and returns a memory operation.
 func parseToolCallArgs(toolName string, args map[string]any) *Operation {
 	switch toolName {
+	case assistantResultSkipToolName:
+		return &Operation{assistantResultReviewed: true}
+
 	case memory.AddToolName, assistantResultAddToolName,
 		groundedStateAddToolName:
 		mem, _ := args[argKeyMemory].(string)

@@ -245,6 +245,8 @@ func TestExtractor_AssistantResultExtractionOption(t *testing.T) {
 	assert.Contains(t, prompt, assistantResultAddToolName)
 	assert.Contains(t, assistantResultAddTool.Declaration().Description,
 		"analytical or opinion-based conclusion")
+	assert.Contains(t, assistantResultSkipTool.Declaration().Description,
+		"does not modify memory")
 }
 
 func TestExtractor_DefaultPromptGroundsCurrentTurnReferences(t *testing.T) {
@@ -632,6 +634,7 @@ func TestExtractor_AssistantResultExtractionRequiresAdd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, m.requests, 1)
 	assert.NotContains(t, m.requests[0].Tools, assistantResultAddToolName)
+	assert.NotContains(t, m.requests[0].Tools, assistantResultSkipToolName)
 	assert.NotContains(t, m.requests[0].Messages[0].Content,
 		"<assistant_result_extraction>")
 }
@@ -646,6 +649,7 @@ func TestExtractor_AssistantResultExtractionRequiresAssistantText(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, m.requests, 1)
 	assert.NotContains(t, m.requests[0].Tools, assistantResultAddToolName)
+	assert.NotContains(t, m.requests[0].Tools, assistantResultSkipToolName)
 	assert.NotContains(t, m.requests[0].Messages[0].Content,
 		"<assistant_result_extraction>")
 }

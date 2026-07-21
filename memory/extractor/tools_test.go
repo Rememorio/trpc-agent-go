@@ -98,6 +98,14 @@ func TestParseToolCallArgs_Add(t *testing.T) {
 	}
 }
 
+func TestParseToolCallArgs_AssistantResultReview(t *testing.T) {
+	op := parseToolCallArgs(assistantResultSkipToolName, map[string]any{})
+	require.NotNil(t, op)
+	assert.True(t, op.assistantResultReviewed)
+	assert.Empty(t, op.Type)
+	assert.Empty(t, op.Memory)
+}
+
 func TestParseToolCallArgs_Update(t *testing.T) {
 	tests := []struct {
 		name     string

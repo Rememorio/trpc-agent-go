@@ -63,7 +63,7 @@ func (e *memoryExtractor) recoverStructuredAssistantResults(
 	if err != nil {
 		return ctx, nil, err
 	}
-	_, assistantResults := splitExtractionOperations(operations)
+	_, assistantResults, _ := splitExtractionOperations(operations)
 	return ctx, assistantResults, nil
 }
 

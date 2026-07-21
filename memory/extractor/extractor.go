@@ -86,6 +86,10 @@ type Operation struct {
 	// tool. It lets auto memory apply a different persistence policy without
 	// adding a public operation type or extension point.
 	assistantResult bool
+	// assistantResultReviewed is an internal acknowledgement that the built-in
+	// extractor checked the assistant response and found no result to persist.
+	// It prevents an unnecessary recovery pass and is never returned to callers.
+	assistantResultReviewed bool
 }
 
 // OperationType defines the type of memory operation.
