@@ -115,6 +115,7 @@ type mockOperator struct {
 	// A nil value keeps the default behavior (reuse ReadMemories).
 	searchResults []*memory.Entry
 	searchQueries []string
+	searchOptions []memory.SearchOptions
 }
 
 func newMockOperator() *mockOperator {
@@ -151,8 +152,10 @@ func (m *mockOperator) SearchMemories(
 	query string,
 	opts ...memory.SearchOption,
 ) ([]*memory.Entry, error) {
+	resolved := memory.ResolveSearchOptions(query, opts)
 	m.mu.Lock()
 	m.searchQueries = append(m.searchQueries, query)
+	m.searchOptions = append(m.searchOptions, resolved)
 	m.mu.Unlock()
 	if m.searchErr != nil {
 		return nil, m.searchErr
@@ -2106,6 +2109,10 @@ func TestSearchRelevantMemories(t *testing.T) {
 		)
 		assert.NoError(t, err)
 		assert.Len(t, entries, 1)
+		require.Len(t, op.searchOptions, 1)
+		assert.Equal(t, DefaultMaxSearchResults,
+			op.searchOptions[0].MaxResults)
+		assert.Equal(t, "test query", op.searchOptions[0].Query)
 	})
 }
 

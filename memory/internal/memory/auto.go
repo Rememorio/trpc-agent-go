@@ -521,7 +521,15 @@ func (w *AutoMemoryWorker) searchRelevantMemories(
 	if query == "" {
 		return nil, nil
 	}
-	entries, err := w.operator.SearchMemories(ctx, userKey, query)
+	entries, err := w.operator.SearchMemories(
+		ctx,
+		userKey,
+		query,
+		memory.WithSearchOptions(memory.SearchOptions{
+			Query:      query,
+			MaxResults: DefaultMaxSearchResults,
+		}),
+	)
 	if err == nil {
 		return entries, nil
 	}
