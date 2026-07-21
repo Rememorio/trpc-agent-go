@@ -99,11 +99,23 @@ func TestParseToolCallArgs_Add(t *testing.T) {
 }
 
 func TestParseToolCallArgs_AssistantResultReview(t *testing.T) {
-	op := parseToolCallArgs(assistantResultSkipToolName, map[string]any{})
+	op := parseToolCallArgs(assistantResultNoResultToolName, map[string]any{
+		argKeyResponseType: assistantNoResultClarification,
+	})
 	require.NotNil(t, op)
 	assert.True(t, op.assistantResultReviewed)
 	assert.Empty(t, op.Type)
 	assert.Empty(t, op.Memory)
+
+	assert.Nil(t, parseToolCallArgs(
+		assistantResultNoResultToolName,
+		map[string]any{argKeyResponseType: "generic_explanation"},
+	))
+	assert.Equal(t, []any{
+		assistantNoResultClarification,
+		assistantNoResultAcknowledgement,
+	}, assistantResultNoResultTool.Declaration().InputSchema.
+		Properties[argKeyResponseType].Enum)
 }
 
 func TestParseToolCallArgs_Update(t *testing.T) {

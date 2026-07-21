@@ -262,7 +262,8 @@ func (e *memoryExtractor) extractionTools(
 	}
 	combined[assistantResultAddToolName] = assistantResultAddTool
 	if requireAssistantResultReview {
-		combined[assistantResultSkipToolName] = assistantResultSkipTool
+		combined[assistantResultNoResultToolName] =
+			assistantResultNoResultTool
 	}
 	return combined
 }
@@ -664,9 +665,11 @@ func (e *memoryExtractor) availableActionsBlockForRequest(
 			"Add a concrete result provided by the assistant in direct "+
 				"response to the user's request.")
 		if requireAssistantResultReview {
-			fmt.Fprintf(&sb, "- %s: %s\n", assistantResultSkipToolName,
-				"Confirm that the assistant response was checked and has no "+
-					"concrete result to store; this action writes nothing.")
+			fmt.Fprintf(&sb, "- %s: %s\n",
+				assistantResultNoResultToolName,
+				"Acknowledge that the entire response only asks for missing "+
+					"information or only acknowledges/restates user content; "+
+					"this action writes nothing.")
 		}
 	}
 	if sb.Len() == 0 {
@@ -780,11 +783,19 @@ recommendations, estimates, and answers from facts confirmed by the user.
 const assistantResultReviewPrompt = `
 
 <assistant_result_review>
-COMPLETION ACKNOWLEDGEMENT: This assistant response has a structured result
-candidate. If it contains no eligible result, call memory_skip_assistant_result
-exactly once after checking it. This marker writes no memory. Do not call it
-when memory_add_assistant_result is emitted. Always emit one of these two
-assistant-result actions before finishing this extraction pass.
+NARROW NON-RESULT ACKNOWLEDGEMENT: This assistant response is structurally
+list-like. Call memory_acknowledge_no_assistant_result exactly once ONLY when
+the ENTIRE response either (a) asks the user for missing information without
+providing a substantive answer, or (b) only acknowledges or restates content
+already supplied by the user without adding substantive guidance.
+
+Never use this acknowledgement for an explanation, tutorial or how-to,
+recommendation, named option, classification, transformation, calculation,
+ordered plan, cohesive list or mapping, or any other substantive answer. Such
+content can be an eligible assistant result even when it is generic,
+educational, or non-personal. Do not call the acknowledgement when
+memory_add_assistant_result is emitted. If neither action is clearly warranted,
+emit neither so the conservative recovery pass can verify the response.
 </assistant_result_review>
 `
 

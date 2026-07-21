@@ -129,19 +129,21 @@ func TestExtractor_DoesNotRecoverWhenCombinedPassHasResult(t *testing.T) {
 	assert.Len(t, m.requests, 1)
 }
 
-func TestExtractor_DoesNotRecoverAfterAssistantResultReview(t *testing.T) {
+func TestExtractor_DoesNotRecoverAfterSafeAssistantNonResult(t *testing.T) {
 	primaryArgs, err := json.Marshal(map[string]any{
-		"memory": "User is learning about consistency models.",
+		"memory": "User needs to visit the bank, pharmacy, and market.",
 	})
 	require.NoError(t, err)
-	markerArgs, err := json.Marshal(map[string]any{})
+	markerArgs, err := json.Marshal(map[string]any{
+		argKeyResponseType: assistantNoResultAcknowledgement,
+	})
 	require.NoError(t, err)
 	m := &sequenceModel{
 		name: "test-model",
 		responses: [][]*model.Response{
 			{{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
 				makeToolCall(memory.AddToolName, primaryArgs),
-				makeToolCall(assistantResultSkipToolName, markerArgs),
+				makeToolCall(assistantResultNoResultToolName, markerArgs),
 			}}}}}},
 		},
 	}
@@ -150,11 +152,15 @@ func TestExtractor_DoesNotRecoverAfterAssistantResultReview(t *testing.T) {
 	primary, assistantResults, err := e.ExtractOperationStages(
 		context.Background(),
 		[]model.Message{
-			model.NewUserMessage("How does eventual consistency work?"),
+			model.NewUserMessage(
+				"My errands are the bank, pharmacy, and market.",
+			),
 			model.NewAssistantMessage(
-				"1. Replicas update independently.\n" +
-					"2. Conflicts may occur.\n" +
-					"3. Replicas eventually converge.",
+				"Got it. You listed:\n" +
+					"- bank\n" +
+					"- pharmacy\n" +
+					"- market\n" +
+					"What should we add next?",
 			),
 		},
 		nil,
@@ -164,9 +170,12 @@ func TestExtractor_DoesNotRecoverAfterAssistantResultReview(t *testing.T) {
 	require.Len(t, primary, 1)
 	assert.Empty(t, assistantResults)
 	assert.Len(t, m.requests, 1)
-	assert.Contains(t, m.requests[0].Tools, assistantResultSkipToolName)
+	assert.Contains(t, m.requests[0].Tools,
+		assistantResultNoResultToolName)
 	assert.Contains(t, m.requests[0].Messages[0].Content,
-		"COMPLETION ACKNOWLEDGEMENT")
+		"NARROW NON-RESULT ACKNOWLEDGEMENT")
+	assert.Contains(t, m.requests[0].Messages[0].Content,
+		"Never use this acknowledgement for an explanation")
 }
 
 func TestExtractor_DoesNotRecoverUnstructuredAssistantResult(t *testing.T) {
@@ -181,7 +190,8 @@ func TestExtractor_DoesNotRecoverUnstructuredAssistantResult(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, ops)
 	assert.Len(t, m.requests, 1)
-	assert.NotContains(t, m.requests[0].Tools, assistantResultSkipToolName)
+	assert.NotContains(t, m.requests[0].Tools,
+		assistantResultNoResultToolName)
 	assert.NotContains(t, m.requests[0].Messages[0].Content,
 		"<assistant_result_review>")
 }

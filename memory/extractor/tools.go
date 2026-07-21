@@ -56,8 +56,10 @@ var backgroundTools = func() map[string]tool.Tool {
 }()
 
 const (
-	assistantResultAddToolName  = "memory_add_assistant_result"
-	assistantResultSkipToolName = "memory_skip_assistant_result"
+	assistantResultAddToolName       = "memory_add_assistant_result"
+	assistantResultNoResultToolName  = "memory_acknowledge_no_assistant_result"
+	assistantNoResultClarification   = "clarification_or_missing_information"
+	assistantNoResultAcknowledgement = "acknowledgement_or_restatement"
 )
 
 const groundedStateAddToolName = "memory_add_grounded_state"
@@ -71,14 +73,31 @@ var assistantResultAddTool = func() tool.Tool {
 	return &declarationOnlyTool{decl: &declaration}
 }()
 
-var assistantResultSkipTool = func() tool.Tool {
-	declaration := *memorytool.NewClearTool().Declaration()
-	declaration.Name = assistantResultSkipToolName
-	declaration.Description = "Confirm that the assistant response was " +
-		"checked and contains no concrete result that should be stored. " +
-		"This action does not modify memory."
-	return &declarationOnlyTool{decl: &declaration}
-}()
+var assistantResultNoResultTool = &declarationOnlyTool{
+	decl: &tool.Declaration{
+		Name: assistantResultNoResultToolName,
+		Description: "Acknowledge that the entire assistant response only " +
+			"asks for missing information or only acknowledges/restates " +
+			"user-provided content. This action does not modify memory.",
+		InputSchema: &tool.Schema{
+			Type: "object",
+			Properties: map[string]*tool.Schema{
+				argKeyResponseType: {
+					Type: "string",
+					Description: "The narrow non-result response type. " +
+						"Do not use this action for explanations, advice, " +
+						"recommendations, plans, lists, or mappings.",
+					Enum: []any{
+						assistantNoResultClarification,
+						assistantNoResultAcknowledgement,
+					},
+				},
+			},
+			Required:             []string{argKeyResponseType},
+			AdditionalProperties: false,
+		},
+	},
+}
 
 var groundedStateAddTool = func() tool.Tool {
 	declaration := *memorytool.NewAddTool().Declaration()
@@ -107,12 +126,18 @@ const (
 	argKeyEventTime    = "event_time"
 	argKeyParticipants = "participants"
 	argKeyLocation     = "location"
+	argKeyResponseType = "response_type"
 )
 
 // parseToolCallArgs parses tool call arguments and returns a memory operation.
 func parseToolCallArgs(toolName string, args map[string]any) *Operation {
 	switch toolName {
-	case assistantResultSkipToolName:
+	case assistantResultNoResultToolName:
+		responseType, _ := args[argKeyResponseType].(string)
+		if responseType != assistantNoResultClarification &&
+			responseType != assistantNoResultAcknowledgement {
+			return nil
+		}
 		return &Operation{assistantResultReviewed: true}
 
 	case memory.AddToolName, assistantResultAddToolName,
