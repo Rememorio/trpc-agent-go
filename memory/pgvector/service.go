@@ -603,18 +603,18 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search: run keyword search and merge with vector results
-	// using Reciprocal Rank Fusion (RRF) to improve recall for exact
-	// entity names, book titles, etc.
+	// Hybrid search fuses vector, keyword, and per-kind rankings. The per-kind
+	// rankings let minority memory kinds compete without imposing fixed quotas.
 	if opts.HybridSearch {
 		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
-		if kwErr == nil && len(keywordResults) > 0 {
-			rrfK := opts.HybridRRFK
-			if rrfK <= 0 {
-				rrfK = defaultRRFK
-			}
-			results = mergeHybridResults(results, keywordResults, rrfK, maxResults)
+		if kwErr != nil {
+			keywordResults = nil
 		}
+		rrfK := opts.HybridRRFK
+		if rrfK <= 0 {
+			rrfK = defaultRRFK
+		}
+		results = mergeHybridResults(results, keywordResults, rrfK, maxResults)
 	}
 
 	// Apply similarity threshold filtering.
@@ -809,12 +809,46 @@ func mergeHybridResults(
 	k int,
 	maxResults int,
 ) []*memory.Entry {
-	return imemory.MergeHybridResults(
-		vectorResults,
-		keywordResults,
-		k,
-		maxResults,
-	)
+	rankings := make([][]*memory.Entry, 0, 4)
+	rankings = append(rankings, vectorResults)
+	if len(keywordResults) > 0 {
+		rankings = append(rankings, keywordResults)
+	}
+	rankings = append(rankings, rankedResultsByMemoryKind(vectorResults)...)
+	if len(rankings) == 1 {
+		return vectorResults
+	}
+	return imemory.MergeRankedResults(rankings, k, maxResults)
+}
+
+func rankedResultsByMemoryKind(
+	results []*memory.Entry,
+) [][]*memory.Entry {
+	byKind := make(map[string][]*memory.Entry)
+	for _, entry := range results {
+		if entry == nil || entry.Memory == nil {
+			continue
+		}
+		kind := imemory.EffectiveKind(entry.Memory)
+		if kind == "" {
+			continue
+		}
+		key := string(kind)
+		byKind[key] = append(byKind[key], entry)
+	}
+	if len(byKind) < 2 {
+		return nil
+	}
+	kinds := make([]string, 0, len(byKind))
+	for kind := range byKind {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	rankings := make([][]*memory.Entry, 0, len(kinds))
+	for _, kind := range kinds {
+		rankings = append(rankings, byKind[kind])
+	}
+	return rankings
 }
 
 // mergeSearchResults merges kind-filtered results with fallback results.

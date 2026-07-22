@@ -13,6 +13,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -2523,6 +2524,33 @@ func TestMergeHybridResults(t *testing.T) {
 	require.Len(t, results, 2)
 	assert.Equal(t, "mem-2", results[0].ID)
 	assert.Greater(t, results[0].Score, results[1].Score)
+}
+
+func TestMergeHybridResultsPromotesMinorityKind(t *testing.T) {
+	vectorResults := make([]*memory.Entry, 0, 12)
+	for index := 0; index < 12; index++ {
+		kind := memory.KindFact
+		id := fmt.Sprintf("fact-%02d", index)
+		if index == 11 {
+			kind = memory.KindEpisode
+			id = "target-episode"
+		}
+		vectorResults = append(vectorResults, &memory.Entry{
+			ID: id,
+			Memory: &memory.Memory{
+				Memory: id,
+				Kind:   kind,
+			},
+		})
+	}
+
+	results := mergeHybridResults(vectorResults, nil, defaultRRFK, len(vectorResults))
+
+	require.Len(t, results, len(vectorResults))
+	targetIndex := slices.IndexFunc(results, func(entry *memory.Entry) bool {
+		return entry.ID == "target-episode"
+	})
+	assert.Less(t, targetIndex, 11)
 }
 
 func TestMergeSearchResults(t *testing.T) {
