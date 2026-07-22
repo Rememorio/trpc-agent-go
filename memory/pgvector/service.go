@@ -603,8 +603,7 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search fuses vector, keyword, focused-passage, and per-kind
-	// rankings. Per-kind rankings let minority kinds compete without quotas.
+	// Hybrid search fuses vector, keyword, and focused-passage rankings.
 	if opts.HybridSearch {
 		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
 		if kwErr != nil {
@@ -824,41 +823,10 @@ func mergeHybridResults(
 	if len(focusedResults) > 0 {
 		rankings = append(rankings, focusedResults)
 	}
-	rankings = append(rankings, rankedResultsByMemoryKind(vectorResults)...)
 	if len(rankings) == 1 {
 		return vectorResults
 	}
 	return imemory.MergeRankedResults(rankings, k, maxResults)
-}
-
-func rankedResultsByMemoryKind(
-	results []*memory.Entry,
-) [][]*memory.Entry {
-	byKind := make(map[string][]*memory.Entry)
-	for _, entry := range results {
-		if entry == nil || entry.Memory == nil {
-			continue
-		}
-		kind := imemory.EffectiveKind(entry.Memory)
-		if kind == "" {
-			continue
-		}
-		key := string(kind)
-		byKind[key] = append(byKind[key], entry)
-	}
-	if len(byKind) < 2 {
-		return nil
-	}
-	kinds := make([]string, 0, len(byKind))
-	for kind := range byKind {
-		kinds = append(kinds, kind)
-	}
-	slices.Sort(kinds)
-	rankings := make([][]*memory.Entry, 0, len(kinds))
-	for _, kind := range kinds {
-		rankings = append(rankings, byKind[kind])
-	}
-	return rankings
 }
 
 // mergeSearchResults merges kind-filtered results with fallback results.
