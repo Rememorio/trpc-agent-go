@@ -2517,6 +2517,7 @@ func TestMergeHybridResults(t *testing.T) {
 	results := mergeHybridResults(
 		[]*memory.Entry{entry("mem-1"), entry("mem-2")},
 		[]*memory.Entry{entry("mem-2"), entry("mem-3")},
+		nil,
 		0,
 		2,
 	)
@@ -2544,13 +2545,29 @@ func TestMergeHybridResultsPromotesMinorityKind(t *testing.T) {
 		})
 	}
 
-	results := mergeHybridResults(vectorResults, nil, defaultRRFK, len(vectorResults))
+	results := mergeHybridResults(vectorResults, nil, nil, defaultRRFK, len(vectorResults))
 
 	require.Len(t, results, len(vectorResults))
 	targetIndex := slices.IndexFunc(results, func(entry *memory.Entry) bool {
 		return entry.ID == "target-episode"
 	})
 	assert.Less(t, targetIndex, 11)
+}
+
+func TestMergeHybridResultsUsesFocusedRanking(t *testing.T) {
+	first := &memory.Entry{ID: "first", Memory: &memory.Memory{Memory: "first"}}
+	focused := &memory.Entry{ID: "focused", Memory: &memory.Memory{Memory: "focused"}}
+
+	results := mergeHybridResults(
+		[]*memory.Entry{first, focused},
+		nil,
+		[]*memory.Entry{focused},
+		defaultRRFK,
+		2,
+	)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "focused", results[0].ID)
 }
 
 func TestMergeSearchResults(t *testing.T) {

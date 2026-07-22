@@ -603,8 +603,8 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search fuses vector, keyword, and per-kind rankings. The per-kind
-	// rankings let minority memory kinds compete without imposing fixed quotas.
+	// Hybrid search fuses vector, keyword, focused-passage, and per-kind
+	// rankings. Per-kind rankings let minority kinds compete without quotas.
 	if opts.HybridSearch {
 		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
 		if kwErr != nil {
@@ -614,7 +614,13 @@ func (s *Service) SearchMemories(
 		if rrfK <= 0 {
 			rrfK = defaultRRFK
 		}
-		results = mergeHybridResults(results, keywordResults, rrfK, maxResults)
+		results = mergeHybridResults(
+			results,
+			keywordResults,
+			rankResultsByFocusedPassage(query, results),
+			rrfK,
+			maxResults,
+		)
 	}
 
 	// Apply similarity threshold filtering.
@@ -806,6 +812,7 @@ func (s *Service) executeKeywordSearch(
 func mergeHybridResults(
 	vectorResults []*memory.Entry,
 	keywordResults []*memory.Entry,
+	focusedResults []*memory.Entry,
 	k int,
 	maxResults int,
 ) []*memory.Entry {
@@ -813,6 +820,9 @@ func mergeHybridResults(
 	rankings = append(rankings, vectorResults)
 	if len(keywordResults) > 0 {
 		rankings = append(rankings, keywordResults)
+	}
+	if len(focusedResults) > 0 {
+		rankings = append(rankings, focusedResults)
 	}
 	rankings = append(rankings, rankedResultsByMemoryKind(vectorResults)...)
 	if len(rankings) == 1 {
