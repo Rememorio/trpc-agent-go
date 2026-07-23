@@ -2165,7 +2165,9 @@ func TestReconcileOps_SkipOnHighSimilarity(t *testing.T) {
 		Memory: "User works at Acme as a backend engineer",
 		Topics: []string{"work", "Acme"}, // same topics → drop.
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), ops, false,
+	)
 	require.Empty(t, out, "duplicate Add should be dropped")
 }
 
@@ -2191,7 +2193,9 @@ func TestReconcileOps_SkipScoreWithNewTopics(t *testing.T) {
 		Memory: "User works at Acme as a backend engineer",
 		Topics: []string{"Acme", "engineering"}, // new topics.
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), ops, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
 	assert.Equal(t, "mem-1", out[0].MemoryID)
@@ -2220,7 +2224,9 @@ func TestReconcileOps_RewriteAsUpdateOnMidSignal(t *testing.T) {
 		Memory: "Lives in Portland Oregon",
 		Topics: []string{"location", "oregon"},
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), ops, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
 	assert.Equal(t, "mem-loc", out[0].MemoryID)
@@ -2250,7 +2256,9 @@ func TestReconcileOps_KeepsOpWhenNotSimilar(t *testing.T) {
 		Memory: "User graduated from Stanford University",
 		Topics: []string{"education"},
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), ops)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), ops, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 	assert.Empty(t, out[0].MemoryID)
@@ -2275,7 +2283,7 @@ func TestReconcileOps_DoesNotMergeIntoAssistantResult(t *testing.T) {
 	}}
 
 	out := worker.reconcileOps(
-		context.Background(), reconcileUserKey(), in,
+		context.Background(), reconcileUserKey(), in, false,
 	)
 
 	require.Len(t, out, 1)
@@ -2305,7 +2313,9 @@ func TestReconcileOps_KeepsEpisodesWithDifferentEventTimes(t *testing.T) {
 		EventTime:  &freshTime,
 	}}
 
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 	assert.Empty(t, out[0].MemoryID)
@@ -2332,7 +2342,9 @@ func TestReconcileOps_ReconcilesEpisodesWithCompatibleEventTimes(t *testing.T) {
 		EventTime:  &eventTime,
 	}}
 
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Empty(t, out)
 }
 
@@ -2361,7 +2373,9 @@ func TestReconcileOps_KeepsEpisodesWithDifferentParticipants(t *testing.T) {
 		Location:     "Museum of Contemporary Art",
 	}}
 
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 	assert.Empty(t, out[0].MemoryID)
@@ -2390,7 +2404,9 @@ func TestReconcileOps_KeepsEpisodesWithDifferentLocations(t *testing.T) {
 		Location:   "Museum of Contemporary Art",
 	}}
 
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 	assert.Empty(t, out[0].MemoryID)
@@ -2423,7 +2439,9 @@ func TestReconcileOps_ReconcilesEpisodeParticipantEnrichment(t *testing.T) {
 		Location:     "museum of contemporary art",
 	}}
 
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
 	assert.Equal(t, "mem-lecture", out[0].MemoryID)
@@ -2447,7 +2465,9 @@ func TestReconcileOps_PreservesNonAddOps(t *testing.T) {
 		{Type: extractor.OperationDelete, MemoryID: "b"},
 		{Type: extractor.OperationClear},
 	}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 3)
 	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
 	assert.Equal(t, extractor.OperationDelete, out[1].Type)
@@ -2466,7 +2486,9 @@ func TestReconcileOps_SearchErrorIsNonFatal(t *testing.T) {
 		Type:   extractor.OperationAdd,
 		Memory: "anything",
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 }
@@ -2478,14 +2500,15 @@ func TestReconcileOps_EmptyInputs(t *testing.T) {
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
 
 	assert.Empty(t, worker.reconcileOps(
-		context.Background(), reconcileUserKey(), nil))
+		context.Background(), reconcileUserKey(), nil, false))
 	assert.Empty(t, worker.reconcileOps(
 		context.Background(), reconcileUserKey(),
-		[]*extractor.Operation{}))
+		[]*extractor.Operation{}, false))
 
 	// Op with empty memory text is kept as-is.
 	out := worker.reconcileOps(context.Background(), reconcileUserKey(),
-		[]*extractor.Operation{{Type: extractor.OperationAdd, Memory: ""}})
+		[]*extractor.Operation{{Type: extractor.OperationAdd, Memory: ""}},
+		false)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 }
@@ -2552,7 +2575,9 @@ func TestReconcileOps_AddDisabledUpdateEnabled(t *testing.T) {
 		Memory: "User works at Acme as a backend engineer",
 		Topics: []string{"work"},
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type,
 		"Add disabled must not be rewritten into an Update by reconcile")
@@ -2586,7 +2611,9 @@ func TestReconcileOps_AddEnabledUpdateDisabled(t *testing.T) {
 		Memory: "Lives in Portland Oregon",
 		Topics: []string{"location", "oregon"},
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type,
 		"Update disabled must fall back to the original Add rather than silently dropping it")
@@ -2617,7 +2644,9 @@ func TestReconcileOps_PreservesExistingKind(t *testing.T) {
 		Topics: []string{"event", "review"}, // new topic triggers update.
 		// MemoryKind intentionally empty to exercise the carry-over.
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
 	assert.Equal(t, "mem-ep", out[0].MemoryID)
@@ -2680,7 +2709,9 @@ func TestReconcileOps_PrefersHigherTierCandidate(t *testing.T) {
 		Memory: "foo bar baz quux",
 		Topics: []string{"x"},
 	}}
-	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	// Same topics + tier-skip candidate → drop.
 	require.Empty(t, out,
 		"reconcile should drop the Add based on the tier-skip candidate rather than keep it based on a tier-none Jaccard winner")
