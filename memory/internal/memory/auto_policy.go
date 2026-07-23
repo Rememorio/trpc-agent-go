@@ -79,13 +79,17 @@ func (w *AutoMemoryWorker) applyUpdatePolicy(
 	userKey memory.UserKey,
 	ops []*extractor.Operation,
 	existing []*memory.Entry,
+	explicitCorrection bool,
 ) []*extractor.Operation {
 	if w.updatePolicy == extractor.UpdatePolicyAddOnly {
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
 	}
+	ops = w.preserveAssistantResultTargets(ctx, userKey, ops, existing)
+	ops = w.preserveLossyOrdinaryUpdates(
+		ctx, userKey, ops, existing, explicitCorrection,
+	)
 	return w.reconcileOps(
-		ctx, userKey,
-		w.preserveAssistantResultTargets(ctx, userKey, ops, existing),
+		ctx, userKey, ops,
 	)
 }
 

@@ -476,7 +476,9 @@ func (w *AutoMemoryWorker) createAutoMemory(
 	// separate rows. Any failure inside reconcile is non-fatal: the
 	// original ops slice is used and the worker keeps its pre-reconcile
 	// behavior.
-	ops = w.applyUpdatePolicy(ctx, userKey, ops, existing)
+	ops = w.applyUpdatePolicy(
+		ctx, userKey, ops, existing, hasExplicitCorrection(messages),
+	)
 	assistantResults = w.applyAssistantResultPolicy(
 		ctx, userKey, assistantResults, existing,
 	)
@@ -947,6 +949,14 @@ func (w *AutoMemoryWorker) decideAddOp(
 		}
 	}
 	if best == nil || best.Memory == nil || best.ID == "" {
+		return op
+	}
+	if bestTier > reconcileTierNone &&
+		replacementLosesHistory(best.Memory.Memory, op.Memory) {
+		logLossAwareDecision(
+			ctx, userKey, op, best, "add",
+			"reconcile replacement would discard historical detail",
+		)
 		return op
 	}
 

@@ -65,7 +65,7 @@ func TestAssistantResultPolicyPreservesDistinctResult(t *testing.T) {
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
 
 	ordinary := worker.applyUpdatePolicy(
-		context.Background(), reconcileUserKey(), incoming, stored,
+		context.Background(), reconcileUserKey(), incoming, stored, false,
 	)
 	require.Len(t, ordinary, 1)
 	assert.Equal(t, extractor.OperationUpdate, ordinary[0].Type)
@@ -255,7 +255,7 @@ func TestApplyUpdatePolicy_PreservesAssistantResultTarget(t *testing.T) {
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
 
 	out := worker.applyUpdatePolicy(
-		context.Background(), reconcileUserKey(), ops, existing,
+		context.Background(), reconcileUserKey(), ops, existing, false,
 	)
 
 	require.Len(t, out, 3)
@@ -370,7 +370,7 @@ func TestAddOnlyPolicy_EnforcesAllowedOperationsAndDeduplicates(t *testing.T) {
 	}
 
 	out := worker.applyUpdatePolicy(
-		context.Background(), reconcileUserKey(), in, existing,
+		context.Background(), reconcileUserKey(), in, existing, false,
 	)
 	require.Len(t, out, 2)
 	for _, op := range out {
