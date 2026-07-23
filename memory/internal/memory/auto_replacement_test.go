@@ -129,6 +129,14 @@ func TestUpdatePolicyPreservesLossyOrdinaryUpdate(t *testing.T) {
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
 
+	defaultOut := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), in, existing, false,
+	)
+	require.Len(t, defaultOut, 1)
+	assert.Equal(t, extractor.OperationUpdate, defaultOut[0].Type)
+	assert.Equal(t, "baseballs", defaultOut[0].MemoryID)
+
+	worker.updatePolicy = extractor.UpdatePolicyPreserveHistory
 	out := worker.applyUpdatePolicy(
 		context.Background(), reconcileUserKey(), in, existing, false,
 	)
@@ -163,6 +171,7 @@ func TestUpdatePolicyLossGuardHonorsAddToolGating(t *testing.T) {
 			memory.UpdateToolName: {},
 		},
 	}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyPreserveHistory
 
 	out := worker.applyUpdatePolicy(
 		context.Background(), reconcileUserKey(), in, existing, false,
@@ -187,6 +196,10 @@ func TestReconcileKeepsLossyReplacementAsAdd(t *testing.T) {
 		Memory: "Keeps old sneakers in a shoe rack in the closet.",
 	}
 
+	assert.Nil(t, worker.decideAddOp(
+		context.Background(), reconcileUserKey(), in, false,
+	))
+	worker.updatePolicy = extractor.UpdatePolicyPreserveHistory
 	out := worker.decideAddOp(
 		context.Background(), reconcileUserKey(), in, false,
 	)
@@ -206,6 +219,7 @@ func TestReconcileAppliesExplicitCorrectionAsUpdate(t *testing.T) {
 		Score: 0.95,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, operator)
+	worker.updatePolicy = extractor.UpdatePolicyPreserveHistory
 	in := []*extractor.Operation{{
 		Type:   extractor.OperationAdd,
 		Memory: "Keeps old sneakers in a shoe rack in the closet.",

@@ -57,6 +57,10 @@ const (
 	// UpdatePolicyReconcile preserves the existing automatic reconciliation
 	// behavior, including merging moderately similar memories.
 	UpdatePolicyReconcile UpdatePolicy = "reconcile"
+	// UpdatePolicyPreserveHistory reconciles duplicates while retaining
+	// conflicting historical quantities, negations, and spatial states as
+	// separate memories. Explicit user corrections still replace old values.
+	UpdatePolicyPreserveHistory UpdatePolicy = "preserve-history"
 	// UpdatePolicyAddOnly permits automatic extraction to add memories or skip
 	// duplicates, but never to update, delete, or clear stored memories.
 	UpdatePolicyAddOnly UpdatePolicy = "add-only"

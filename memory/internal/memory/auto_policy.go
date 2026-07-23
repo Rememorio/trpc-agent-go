@@ -73,7 +73,8 @@ func updatePolicyFromMetadata(ext extractor.MemoryExtractor) extractor.UpdatePol
 		policy = extractor.UpdatePolicy(value)
 	}
 	switch policy {
-	case extractor.UpdatePolicyAddOnly:
+	case extractor.UpdatePolicyPreserveHistory,
+		extractor.UpdatePolicyAddOnly:
 		return policy
 	default:
 		return extractor.UpdatePolicyReconcile
@@ -91,9 +92,13 @@ func (w *AutoMemoryWorker) applyUpdatePolicy(
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
 	}
 	ops = w.preserveAssistantResultTargets(ctx, userKey, ops, existing)
-	ops = w.preserveLossyOrdinaryUpdates(
-		ctx, userKey, ops, existing, explicitCorrection,
-	)
+	preserveHistory :=
+		w.updatePolicy == extractor.UpdatePolicyPreserveHistory
+	if preserveHistory {
+		ops = w.preserveLossyOrdinaryUpdates(
+			ctx, userKey, ops, existing, explicitCorrection,
+		)
+	}
 	return w.reconcileOps(
 		ctx, userKey, ops, explicitCorrection,
 	)

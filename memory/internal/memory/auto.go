@@ -955,7 +955,8 @@ func (w *AutoMemoryWorker) decideAddOp(
 	if best == nil || best.Memory == nil || best.ID == "" {
 		return op
 	}
-	if bestTier > reconcileTierNone &&
+	if w.updatePolicy == extractor.UpdatePolicyPreserveHistory &&
+		bestTier > reconcileTierNone &&
 		replacementLosesHistory(best.Memory.Memory, op.Memory) {
 		if explicitCorrection {
 			logLossAwareDecision(

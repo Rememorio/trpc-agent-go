@@ -641,7 +641,7 @@ func (e *memoryExtractor) actionEnabled(name string) bool {
 
 func normalizeUpdatePolicy(policy UpdatePolicy) UpdatePolicy {
 	switch policy {
-	case UpdatePolicyAddOnly:
+	case UpdatePolicyPreserveHistory, UpdatePolicyAddOnly:
 		return policy
 	default:
 		return UpdatePolicyReconcile

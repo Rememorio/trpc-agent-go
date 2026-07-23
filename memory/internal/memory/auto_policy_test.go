@@ -28,6 +28,16 @@ func TestUpdatePolicyFromMetadata(t *testing.T) {
 	}{
 		{name: "missing", want: extractor.UpdatePolicyReconcile},
 		{name: "reconcile", raw: "reconcile", want: extractor.UpdatePolicyReconcile},
+		{
+			name: "typed preserve history",
+			raw:  extractor.UpdatePolicyPreserveHistory,
+			want: extractor.UpdatePolicyPreserveHistory,
+		},
+		{
+			name: "preserve history",
+			raw:  "preserve-history",
+			want: extractor.UpdatePolicyPreserveHistory,
+		},
 		{name: "typed add only", raw: extractor.UpdatePolicyAddOnly, want: extractor.UpdatePolicyAddOnly},
 		{name: "removed history policy", raw: "history-preserving", want: extractor.UpdatePolicyReconcile},
 		{name: "unknown", raw: "custom", want: extractor.UpdatePolicyReconcile},
