@@ -53,29 +53,44 @@ type focusedPassageResult struct {
 
 func rankResultsByFocusedPassage(
 	query string,
-	results []*memory.Entry,
+	rankings ...[]*memory.Entry,
 ) []*memory.Entry {
 	queryTerms := focusedQueryTerms(query)
 	if len(queryTerms) < minimumFocusedPassageMatches {
 		return nil
 	}
 
-	ranked := make([]focusedPassageResult, 0, len(results))
-	for _, entry := range results {
-		if entry == nil || entry.Memory == nil {
-			continue
+	seenIDs := make(map[string]struct{})
+	seenEntries := make(map[*memory.Entry]struct{})
+	ranked := make([]focusedPassageResult, 0)
+	for _, ranking := range rankings {
+		for _, entry := range ranking {
+			if entry == nil || entry.Memory == nil {
+				continue
+			}
+			if entry.ID == "" {
+				if _, ok := seenEntries[entry]; ok {
+					continue
+				}
+				seenEntries[entry] = struct{}{}
+			} else {
+				if _, ok := seenIDs[entry.ID]; ok {
+					continue
+				}
+				seenIDs[entry.ID] = struct{}{}
+			}
+			matched, passageTerms := bestFocusedPassageMatch(
+				queryTerms, entry.Memory.Memory,
+			)
+			if matched < minimumFocusedPassageMatches {
+				continue
+			}
+			ranked = append(ranked, focusedPassageResult{
+				entry:        entry,
+				matchedTerms: matched,
+				passageTerms: passageTerms,
+			})
 		}
-		matched, passageTerms := bestFocusedPassageMatch(
-			queryTerms, entry.Memory.Memory,
-		)
-		if matched < minimumFocusedPassageMatches {
-			continue
-		}
-		ranked = append(ranked, focusedPassageResult{
-			entry:        entry,
-			matchedTerms: matched,
-			passageTerms: passageTerms,
-		})
 	}
 	if len(ranked) == 0 {
 		return nil

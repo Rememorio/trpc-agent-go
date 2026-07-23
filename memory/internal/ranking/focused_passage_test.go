@@ -71,6 +71,30 @@ func TestRankResultsByFocusedPassageSkipsWeakFocus(t *testing.T) {
 	))
 }
 
+func TestRankResultsByFocusedPassageUsesStableCandidateUnion(t *testing.T) {
+	t.Parallel()
+
+	vector := focusedPassageEntry(
+		"General comprehensive back-end programming languages learning advice " +
+			"for complete software projects.",
+	)
+	vector.ID = "vector"
+	keyword := focusedPassageEntry(
+		"Back-end programming languages include Go and Python.",
+	)
+	keyword.ID = "keyword"
+
+	got := rankResultsByFocusedPassage(
+		"Which back-end programming languages were recommended?",
+		[]*memory.Entry{vector},
+		[]*memory.Entry{keyword, vector},
+	)
+
+	require.Len(t, got, 2)
+	assert.Same(t, keyword, got[0])
+	assert.Same(t, vector, got[1])
+}
+
 func TestFocusedQueryTermsUsesLastSubstantivePassage(t *testing.T) {
 	t.Parallel()
 	terms := focusedQueryTerms(
