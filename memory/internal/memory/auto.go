@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+	"trpc.group/trpc-go/trpc-agent-go/memory/internal/assistantresult"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -923,6 +924,11 @@ func (w *AutoMemoryWorker) decideAddOp(
 	bestTier := -1
 	for _, c := range candidates {
 		if c == nil || c.Memory == nil {
+			continue
+		}
+		// Assistant results and user facts have independent lifecycles.
+		// A similar user fact must not rewrite an answer the assistant gave.
+		if assistantresult.Is(c.Memory.Memory) {
 			continue
 		}
 		if !reconcileMetadataCompatible(op, c.Memory) {
