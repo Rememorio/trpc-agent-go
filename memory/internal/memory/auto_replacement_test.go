@@ -40,6 +40,12 @@ func TestReplacementLosesHistory(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "relation state with shared context",
+			old:  "Keeps old sneakers under the bed in the bedroom.",
+			new:  "Keeps old sneakers in a shoe rack in the bedroom.",
+			want: true,
+		},
+		{
 			name: "platform state",
 			old:  "Has completed three courses on Coursera.",
 			new:  "Has completed two courses on edX.",
@@ -61,6 +67,11 @@ func TestReplacementLosesHistory(t *testing.T) {
 			name: "same relation enriched",
 			old:  "Plans to camp at Whitney Portal.",
 			new:  "Plans to camp at Whitney Portal before the hike.",
+		},
+		{
+			name: "additional relation enriched",
+			old:  "Keeps old sneakers under the bed.",
+			new:  "Keeps old sneakers under the bed in a storage bag.",
 		},
 		{
 			name: "ordinary paraphrase",

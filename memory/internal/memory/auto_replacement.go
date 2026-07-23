@@ -109,12 +109,22 @@ func relationValueChanged(oldText, newText string) bool {
 	if len(oldValues) == 0 || len(newValues) == 0 {
 		return false
 	}
+	oldValueRemoved := false
 	for value := range oldValues {
-		if _, ok := newValues[value]; ok {
-			return false
+		if _, ok := newValues[value]; !ok {
+			oldValueRemoved = true
+			break
 		}
 	}
-	return true
+	if !oldValueRemoved {
+		return false
+	}
+	for value := range newValues {
+		if _, ok := oldValues[value]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 func relationValueSet(text string) map[string]struct{} {
