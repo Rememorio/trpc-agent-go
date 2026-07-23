@@ -360,11 +360,15 @@ func (e *memoryExtractor) buildMessages(
 
 	refDate := referenceDate(ctx)
 	includeAssistantResults := e.shouldExtractAssistantResult(messages)
+	promptExisting := existing
+	if includeAssistantResults {
+		promptExisting = existingMemoriesForExtractionPrompt(existing)
+	}
 
 	// Add system prompt with existing memories.
 	result = append(result, model.NewSystemMessage(
 		e.buildSystemPromptForRequest(
-			refDate, existing, includeAssistantResults,
+			refDate, promptExisting, includeAssistantResults,
 		),
 	))
 

@@ -1127,6 +1127,68 @@ func TestExtractor_BuildSystemPrompt_WithExistingMemories(t *testing.T) {
 	assert.Contains(t, prompt, "</existing_memories>")
 }
 
+func TestExtractor_BuildMessagesFiltersAssistantResultContext(t *testing.T) {
+	messages := []model.Message{
+		model.NewUserMessage("Which option should I choose?"),
+		model.NewAssistantMessage(
+			"Choose the reliable option.",
+		),
+	}
+	existing := []*memory.Entry{
+		{
+			ID: "user-memory",
+			Memory: &memory.Memory{
+				Memory: "User values reliability.",
+			},
+		},
+		{
+			ID: "assistant-memory",
+			Memory: &memory.Memory{
+				Memory: "Assistant result: A long prior recommendation.",
+			},
+		},
+	}
+	t.Run("assistant extraction enabled", func(t *testing.T) {
+		extractor := NewExtractor(
+			&mockModel{name: "test-model"},
+			WithAssistantResultExtraction(true),
+		).(*memoryExtractor)
+		requestMessages := extractor.buildMessages(
+			context.Background(),
+			messages,
+			existing,
+		)
+		systemPrompt := requestMessages[0].Content
+		assert.Contains(t, systemPrompt, "User values reliability.")
+		assert.NotContains(
+			t,
+			systemPrompt,
+			"A long prior recommendation.",
+		)
+		require.Len(t, existing, 2)
+		assert.Equal(
+			t,
+			"Assistant result: A long prior recommendation.",
+			existing[1].Memory.Memory,
+		)
+	})
+	t.Run("default behavior", func(t *testing.T) {
+		extractor := NewExtractor(
+			&mockModel{name: "test-model"},
+		).(*memoryExtractor)
+		requestMessages := extractor.buildMessages(
+			context.Background(),
+			messages,
+			existing,
+		)
+		assert.Contains(
+			t,
+			requestMessages[0].Content,
+			"A long prior recommendation.",
+		)
+	})
+}
+
 func TestExtractor_BuildSystemPrompt_EmptyExisting(t *testing.T) {
 	m := &mockModel{name: "test-model"}
 	e := NewExtractor(m)
