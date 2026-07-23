@@ -30,9 +30,14 @@ var (
 			`\bi got (?:that|it|the [a-z]+) wrong\b|` +
 			`更正|纠正|说错|记错|应该是|我的意思是)`,
 	)
+	spatialRelationPattern = regexp.MustCompile(
+		`(?i)\b(?:under|inside|outside|near|behind|beside|between|` +
+			`within|above|below|beneath)\b`,
+	)
 	relationValuePattern = regexp.MustCompile(
 		`(?i)\b(?:at|in|on|under|inside|outside|near|behind|beside|` +
-			`between|within)\s+(?:the\s+|a\s+|an\s+|my\s+|your\s+|` +
+			`between|within|above|below|beneath)\s+` +
+			`(?:the\s+|a\s+|an\s+|my\s+|your\s+|` +
 			`his\s+|her\s+|our\s+|their\s+)?([\p{L}\p{N}_-]+)`,
 	)
 )
@@ -104,6 +109,10 @@ func replacementLosesHistory(oldText, newText string) bool {
 }
 
 func relationValueChanged(oldText, newText string) bool {
+	if !spatialRelationPattern.MatchString(oldText) &&
+		!spatialRelationPattern.MatchString(newText) {
+		return false
+	}
 	oldValues := relationValueSet(oldText)
 	newValues := relationValueSet(newText)
 	if len(oldValues) == 0 || len(newValues) == 0 {

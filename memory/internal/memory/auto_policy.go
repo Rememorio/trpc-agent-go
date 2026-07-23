@@ -33,7 +33,13 @@ const (
 
 var (
 	criticalValuePattern = regexp.MustCompile(
-		`(?i)\b[0-9]+(?:[.:/-][0-9]+)*\b|(?:\bnot\b|\bno\b|\bnever\b|\bwithout\b|n't|不再|不是|没有|从未|未|无)`,
+		`(?i)\b(?:[0-9]+(?:[.:/-][0-9]+)*|zero|one|two|three|four|` +
+			`five|six|seven|eight|nine|ten|eleven|twelve|thirteen|` +
+			`fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|` +
+			`twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|` +
+			`hundred|thousand|million|billion)\b|` +
+			`(?:\bnot\b|\bno\b|\bnever\b|\bwithout\b|n't|不再|不是|` +
+			`没有|从未|未|无)`,
 	)
 	changeMarkerPattern = regexp.MustCompile(
 		`(?i)(?:\bnow\b|\bcurrently\b|\bno longer\b|\binstead\b|\bchanged?\b|\bused to\b|现在|目前|不再|改为|变成|而是|曾经)`,

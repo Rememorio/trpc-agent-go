@@ -46,6 +46,12 @@ func TestReplacementLosesHistory(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "word quantity",
+			old:  "Owns fifteen autographed baseballs.",
+			new:  "Owns thirty-five autographed baseballs.",
+			want: true,
+		},
+		{
 			name: "negation",
 			old:  "Does not drink coffee.",
 			new:  "Drinks coffee in the morning.",
@@ -61,6 +67,11 @@ func TestReplacementLosesHistory(t *testing.T) {
 			name: "same relation enriched",
 			old:  "Plans to camp at Whitney Portal.",
 			new:  "Plans to camp at Whitney Portal before the hike.",
+		},
+		{
+			name: "ambiguous prepositions are not spatial",
+			old:  "Wants to improve skills in natural language processing.",
+			new:  "Is interested in deep learning for NLP.",
 		},
 		{
 			name: "ordinary paraphrase",
