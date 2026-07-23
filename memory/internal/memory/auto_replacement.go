@@ -28,7 +28,6 @@ var (
 			`\bmeant to say\b|\btypo\b|\bi (?:was|am) mistaken\b|` +
 			`\bi (?:was|am) wrong\b|\b(?:that's|that is) wrong\b|` +
 			`\bi got (?:that|it|the [a-z]+) wrong\b|` +
-			`\brather than\b|\bactually\b.{0,80}\bnot\b|` +
 			`更正|纠正|说错|记错|应该是|我的意思是)`,
 	)
 	relationValuePattern = regexp.MustCompile(

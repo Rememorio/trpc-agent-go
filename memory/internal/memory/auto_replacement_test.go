@@ -84,7 +84,7 @@ func TestReplacementLosesHistory(t *testing.T) {
 func TestHasExplicitCorrection(t *testing.T) {
 	assert.True(t, hasExplicitCorrection([]model.Message{{
 		Role:    model.RoleUser,
-		Content: "Actually, I have 12 records, not 10.",
+		Content: "Correction: I have 12 records, not 10.",
 	}}))
 	assert.True(t, hasExplicitCorrection([]model.Message{{
 		Role:    model.RoleUser,
@@ -100,7 +100,7 @@ func TestHasExplicitCorrection(t *testing.T) {
 	}}))
 	assert.False(t, hasExplicitCorrection([]model.Message{{
 		Role:    model.RoleUser,
-		Content: "Actually, I now have 12 records.",
+		Content: "Actually, I have 12 records, not 10.",
 	}}))
 }
 
