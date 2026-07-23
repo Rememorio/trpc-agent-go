@@ -848,6 +848,7 @@ func (w *AutoMemoryWorker) reconcileOps(
 	ctx context.Context,
 	userKey memory.UserKey,
 	ops []*extractor.Operation,
+	explicitCorrection bool,
 ) []*extractor.Operation {
 	if len(ops) == 0 || w.operator == nil {
 		return ops
@@ -870,7 +871,9 @@ func (w *AutoMemoryWorker) reconcileOps(
 			out = append(out, op)
 			continue
 		}
-		decided := w.decideAddOp(ctx, userKey, op)
+		decided := w.decideAddOp(
+			ctx, userKey, op, explicitCorrection,
+		)
 		// If reconcile rewrites an Add into an Update but memory_update
 		// is disabled, the original Add would still have run under the
 		// pre-reconcile behavior. Fall back to the original Add so the
@@ -896,6 +899,7 @@ func (w *AutoMemoryWorker) decideAddOp(
 	ctx context.Context,
 	userKey memory.UserKey,
 	op *extractor.Operation,
+	explicitCorrection bool,
 ) *extractor.Operation {
 	query := strings.TrimSpace(op.Memory)
 	if query == "" {
@@ -953,6 +957,13 @@ func (w *AutoMemoryWorker) decideAddOp(
 	}
 	if bestTier > reconcileTierNone &&
 		replacementLosesHistory(best.Memory.Memory, op.Memory) {
+		if explicitCorrection {
+			logLossAwareDecision(
+				ctx, userKey, op, best, "update",
+				"explicit correction replaces historical detail",
+			)
+			return toUpdateOp(op, best)
+		}
 		logLossAwareDecision(
 			ctx, userKey, op, best, "add",
 			"reconcile replacement would discard historical detail",

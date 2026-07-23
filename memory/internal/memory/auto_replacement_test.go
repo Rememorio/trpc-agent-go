@@ -168,7 +168,7 @@ func TestReconcileKeepsLossyReplacementAsAdd(t *testing.T) {
 		Memory: &memory.Memory{
 			Memory: "Keeps old sneakers under the bed.",
 		},
-		Score: 0.8,
+		Score: 0.95,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, operator)
 	in := &extractor.Operation{
@@ -176,9 +176,34 @@ func TestReconcileKeepsLossyReplacementAsAdd(t *testing.T) {
 		Memory: "Keeps old sneakers in a shoe rack in the closet.",
 	}
 
-	out := worker.decideAddOp(context.Background(), reconcileUserKey(), in)
+	out := worker.decideAddOp(
+		context.Background(), reconcileUserKey(), in, false,
+	)
 	require.NotNil(t, out)
 	assert.Same(t, in, out)
 	assert.Equal(t, extractor.OperationAdd, out.Type)
 	assert.Empty(t, out.MemoryID)
+}
+
+func TestReconcileAppliesExplicitCorrectionAsUpdate(t *testing.T) {
+	operator := newMockOperator()
+	operator.searchResults = []*memory.Entry{{
+		ID: "sneakers",
+		Memory: &memory.Memory{
+			Memory: "Keeps old sneakers under the bed.",
+		},
+		Score: 0.95,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, operator)
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Keeps old sneakers in a shoe rack in the closet.",
+	}}
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), in, nil, true,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "sneakers", out[0].MemoryID)
 }

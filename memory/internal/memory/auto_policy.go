@@ -89,7 +89,7 @@ func (w *AutoMemoryWorker) applyUpdatePolicy(
 		ctx, userKey, ops, existing, explicitCorrection,
 	)
 	return w.reconcileOps(
-		ctx, userKey, ops,
+		ctx, userKey, ops, explicitCorrection,
 	)
 }
 
