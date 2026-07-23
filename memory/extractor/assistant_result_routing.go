@@ -12,8 +12,39 @@ import (
 	"strings"
 	"unicode"
 
+	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/internal/assistantresult"
 )
+
+func existingMemoriesForExtractionPrompt(
+	entries []*memory.Entry,
+) []*memory.Entry {
+	firstAssistantResult := -1
+	for index, entry := range entries {
+		if entry != nil && entry.Memory != nil &&
+			assistantresult.Is(entry.Memory.Memory) {
+			firstAssistantResult = index
+			break
+		}
+	}
+	if firstAssistantResult < 0 {
+		return entries
+	}
+	filtered := make(
+		[]*memory.Entry,
+		0,
+		len(entries)-1,
+	)
+	filtered = append(filtered, entries[:firstAssistantResult]...)
+	for _, entry := range entries[firstAssistantResult+1:] {
+		if entry != nil && entry.Memory != nil &&
+			assistantresult.Is(entry.Memory.Memory) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
 
 func qualifyAssistantResultOperations(operations []*Operation) {
 	for _, operation := range operations {
