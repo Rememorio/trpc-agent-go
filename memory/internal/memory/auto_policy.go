@@ -19,14 +19,16 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+	"trpc.group/trpc-go/trpc-agent-go/memory/internal/assistantresult"
 )
 
 const (
 	extractorMetadataUpdatePolicy = "update_policy"
 
-	assistantResultPolicyName = "assistant-result-preserving"
-	resultOldCoverage         = 0.95
-	resultNewCoverage         = 0.70
+	assistantResultPolicyName   = "assistant-result-preserving"
+	assistantResultBoundaryName = "assistant-result-boundary"
+	resultOldCoverage           = 0.95
+	resultNewCoverage           = 0.70
 )
 
 var (
@@ -81,7 +83,10 @@ func (w *AutoMemoryWorker) applyUpdatePolicy(
 	if w.updatePolicy == extractor.UpdatePolicyAddOnly {
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
 	}
-	return w.reconcileOps(ctx, userKey, ops)
+	return w.reconcileOps(
+		ctx, userKey,
+		w.preserveAssistantResultTargets(ctx, userKey, ops, existing),
+	)
 }
 
 func (w *AutoMemoryWorker) applyAssistantResultPolicy(
@@ -93,12 +98,66 @@ func (w *AutoMemoryWorker) applyAssistantResultPolicy(
 	if len(ops) == 0 {
 		return nil
 	}
+	existing = assistantResultEntries(existing)
 	if w.updatePolicy == extractor.UpdatePolicyAddOnly {
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
 	}
 	return w.applyAssistantResultPreservingPolicy(
 		ctx, userKey, ops, existing,
 	)
+}
+
+// preserveAssistantResultTargets converts primary updates aimed at an
+// assistant result into independent adds. Explicit forget operations remain
+// untouched because they intentionally cross the provenance boundary.
+func (w *AutoMemoryWorker) preserveAssistantResultTargets(
+	ctx context.Context,
+	userKey memory.UserKey,
+	ops []*extractor.Operation,
+	existing []*memory.Entry,
+) []*extractor.Operation {
+	assistantIDs := make(map[string]struct{})
+	for _, entry := range existing {
+		if validMemoryEntry(entry) &&
+			assistantresult.Is(entry.Memory.Memory) {
+			assistantIDs[entry.ID] = struct{}{}
+		}
+	}
+	if len(assistantIDs) == 0 {
+		return ops
+	}
+	var out []*extractor.Operation
+	for index, op := range ops {
+		if op == nil || op.Type != extractor.OperationUpdate {
+			continue
+		}
+		if _, ok := assistantIDs[op.MemoryID]; !ok {
+			continue
+		}
+		if out == nil {
+			out = append([]*extractor.Operation(nil), ops...)
+		}
+		out[index] = asAddOperation(op)
+		logPolicyDecision(
+			ctx, assistantResultBoundaryName, userKey, op, nil,
+			"add", "primary update targets assistant result",
+		)
+	}
+	if out == nil {
+		return ops
+	}
+	return out
+}
+
+func assistantResultEntries(existing []*memory.Entry) []*memory.Entry {
+	out := make([]*memory.Entry, 0, len(existing))
+	for _, entry := range existing {
+		if validMemoryEntry(entry) &&
+			assistantresult.Is(entry.Memory.Memory) {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func (w *AutoMemoryWorker) applyAssistantResultPreservingPolicy(

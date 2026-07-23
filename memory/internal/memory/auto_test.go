@@ -2256,6 +2256,33 @@ func TestReconcileOps_KeepsOpWhenNotSimilar(t *testing.T) {
 	assert.Empty(t, out[0].MemoryID)
 }
 
+func TestReconcileOps_DoesNotMergeIntoAssistantResult(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "assistant-result",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "Assistant result: Recommended restaurants near " +
+				"Cihampelas Walk include Miss Bee Providore.",
+		},
+		Score: 0.99,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	in := []*extractor.Operation{{
+		Type: extractor.OperationAdd,
+		Memory: "Plans to try Miss Bee Providore at Cihampelas Walk " +
+			"in Bandung.",
+	}}
+
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), in,
+	)
+
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+}
+
 func TestReconcileOps_KeepsEpisodesWithDifferentEventTimes(t *testing.T) {
 	storedTime := time.Date(2023, 6, 17, 0, 0, 0, 0, time.UTC)
 	freshTime := time.Date(2023, 6, 3, 0, 0, 0, 0, time.UTC)
