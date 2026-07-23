@@ -185,6 +185,57 @@ func TestHistoryPreservingPolicy_ChangedStateRemainsAdditive(t *testing.T) {
 	assert.Empty(t, out[0].MemoryID)
 }
 
+func TestHistoryPreservingPolicy_ChangedCountRemainsAdditive(t *testing.T) {
+	existing := []*memory.Entry{{
+		ID: "collection",
+		Memory: &memory.Memory{
+			Memory: "Has collected 15 signed baseballs since April.",
+			Kind:   memory.KindFact,
+		},
+	}}
+	incoming := []*extractor.Operation{{
+		Type:     extractor.OperationUpdate,
+		MemoryID: "collection",
+		Memory: "Has collected 35 signed baseballs since April after adding " +
+			"20 more.",
+		MemoryKind: memory.KindFact,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), incoming, existing,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+}
+
+func TestHistoryPreservingPolicy_GenericSummaryRemainsAdditive(t *testing.T) {
+	existing := []*memory.Entry{{
+		ID: "remedy",
+		Memory: &memory.Memory{
+			Memory: "Tomato and lemon treatment should remain on for " +
+				"10 minutes.",
+			Kind: memory.KindFact,
+		},
+	}}
+	incoming := []*extractor.Operation{{
+		Type:       extractor.OperationAdd,
+		Memory:     "Interested in natural remedies for dark circles.",
+		MemoryKind: memory.KindFact,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), incoming, existing,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+}
+
 func TestAssistantResultPolicy_ExactDuplicateIsNoOp(t *testing.T) {
 	existing := []*memory.Entry{{
 		ID: "coffee",
