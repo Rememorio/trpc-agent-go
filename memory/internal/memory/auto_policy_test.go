@@ -28,8 +28,8 @@ func TestUpdatePolicyFromMetadata(t *testing.T) {
 	}{
 		{name: "missing", want: extractor.UpdatePolicyReconcile},
 		{name: "reconcile", raw: "reconcile", want: extractor.UpdatePolicyReconcile},
+		{name: "history preserving", raw: "history-preserving", want: extractor.UpdatePolicyHistoryPreserving},
 		{name: "typed add only", raw: extractor.UpdatePolicyAddOnly, want: extractor.UpdatePolicyAddOnly},
-		{name: "removed history policy", raw: "history-preserving", want: extractor.UpdatePolicyReconcile},
 		{name: "unknown", raw: "custom", want: extractor.UpdatePolicyReconcile},
 		{name: "wrong type", raw: 42, want: extractor.UpdatePolicyReconcile},
 	}
@@ -160,6 +160,31 @@ func TestAssistantResultPolicy_ChangedStateRemainsAdditive(t *testing.T) {
 	}
 }
 
+func TestHistoryPreservingPolicy_ChangedStateRemainsAdditive(t *testing.T) {
+	existing := []*memory.Entry{{
+		ID: "storage",
+		Memory: &memory.Memory{
+			Memory: "Keeps old sneakers under the bed.",
+			Kind:   memory.KindFact,
+		},
+	}}
+	incoming := []*extractor.Operation{{
+		Type:       extractor.OperationUpdate,
+		MemoryID:   "storage",
+		Memory:     "Now keeps old sneakers on a shoe rack in the closet.",
+		MemoryKind: memory.KindFact,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), incoming, existing,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+}
+
 func TestAssistantResultPolicy_ExactDuplicateIsNoOp(t *testing.T) {
 	existing := []*memory.Entry{{
 		ID: "coffee",
@@ -210,24 +235,24 @@ func TestAssistantResultPolicy_UpdateOperations(t *testing.T) {
 	assert.Equal(t, "trip", enrichment[0].MemoryID)
 }
 
-func TestAssistantResultCandidateLess(t *testing.T) {
+func TestPreservingCandidateLess(t *testing.T) {
 	entry := func(score float64) *memory.Entry {
 		return &memory.Entry{Score: score}
 	}
-	assert.True(t, assistantResultCandidateLess(
-		&assistantResultCandidate{}, &assistantResultCandidate{duplicate: true},
+	assert.True(t, preservingCandidateLess(
+		&preservingCandidate{}, &preservingCandidate{duplicate: true},
 	))
-	assert.True(t, assistantResultCandidateLess(
-		&assistantResultCandidate{oldCoverage: 0.8},
-		&assistantResultCandidate{oldCoverage: 0.9},
+	assert.True(t, preservingCandidateLess(
+		&preservingCandidate{oldCoverage: 0.8},
+		&preservingCandidate{oldCoverage: 0.9},
 	))
-	assert.True(t, assistantResultCandidateLess(
-		&assistantResultCandidate{oldCoverage: 0.9, newCoverage: 0.8},
-		&assistantResultCandidate{oldCoverage: 0.9, newCoverage: 0.9},
+	assert.True(t, preservingCandidateLess(
+		&preservingCandidate{oldCoverage: 0.9, newCoverage: 0.8},
+		&preservingCandidate{oldCoverage: 0.9, newCoverage: 0.9},
 	))
-	assert.True(t, assistantResultCandidateLess(
-		&assistantResultCandidate{oldCoverage: 0.9, newCoverage: 0.9, entry: entry(0.7)},
-		&assistantResultCandidate{oldCoverage: 0.9, newCoverage: 0.9, entry: entry(0.8)},
+	assert.True(t, preservingCandidateLess(
+		&preservingCandidate{oldCoverage: 0.9, newCoverage: 0.9, entry: entry(0.7)},
+		&preservingCandidate{oldCoverage: 0.9, newCoverage: 0.9, entry: entry(0.8)},
 	))
 }
 

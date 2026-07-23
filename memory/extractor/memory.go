@@ -641,7 +641,7 @@ func (e *memoryExtractor) actionEnabled(name string) bool {
 
 func normalizeUpdatePolicy(policy UpdatePolicy) UpdatePolicy {
 	switch policy {
-	case UpdatePolicyAddOnly:
+	case UpdatePolicyHistoryPreserving, UpdatePolicyAddOnly:
 		return policy
 	default:
 		return UpdatePolicyReconcile
@@ -650,6 +650,8 @@ func normalizeUpdatePolicy(policy UpdatePolicy) UpdatePolicy {
 
 func updatePolicyPrompt(policy UpdatePolicy) string {
 	switch normalizeUpdatePolicy(policy) {
+	case UpdatePolicyHistoryPreserving:
+		return historyPreservingPrompt
 	case UpdatePolicyAddOnly:
 		return addOnlyPrompt
 	default:
@@ -684,6 +686,17 @@ result the user requested and could refer to later.
   Plan B for reliability and cost, store "Assistant result: Plan B best balances
   reliability and cost."
 </assistant_result_extraction>
+`
+
+const historyPreservingPrompt = `
+
+<update_policy name="history-preserving">
+- Update an existing memory only when the new text strictly enriches the same
+  fact or episode while retaining every material old detail.
+- Keep changed states, corrections, conflicting claims, and uncertain matches
+  as separate memories so earlier history remains available.
+- Skip exact duplicates. Explicit forget requests may still delete or clear.
+</update_policy>
 `
 
 const addOnlyPrompt = `

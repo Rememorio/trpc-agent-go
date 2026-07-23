@@ -25,8 +25,8 @@ const (
 	extractorMetadataUpdatePolicy = "update_policy"
 
 	assistantResultPolicyName = "assistant-result-preserving"
-	resultOldCoverage         = 0.95
-	resultNewCoverage         = 0.70
+	preservingOldCoverage     = 0.95
+	preservingNewCoverage     = 0.70
 )
 
 var (
@@ -42,7 +42,7 @@ var (
 	capitalizedTokenPattern = regexp.MustCompile(`\b[A-Z][A-Za-z0-9_-]*\b`)
 )
 
-type assistantResultCandidate struct {
+type preservingCandidate struct {
 	entry       *memory.Entry
 	duplicate   bool
 	oldCoverage float64
@@ -65,7 +65,8 @@ func updatePolicyFromMetadata(ext extractor.MemoryExtractor) extractor.UpdatePol
 		policy = extractor.UpdatePolicy(value)
 	}
 	switch policy {
-	case extractor.UpdatePolicyAddOnly:
+	case extractor.UpdatePolicyHistoryPreserving,
+		extractor.UpdatePolicyAddOnly:
 		return policy
 	default:
 		return extractor.UpdatePolicyReconcile
@@ -78,10 +79,17 @@ func (w *AutoMemoryWorker) applyUpdatePolicy(
 	ops []*extractor.Operation,
 	existing []*memory.Entry,
 ) []*extractor.Operation {
-	if w.updatePolicy == extractor.UpdatePolicyAddOnly {
+	switch w.updatePolicy {
+	case extractor.UpdatePolicyHistoryPreserving:
+		return w.applyPreservingPolicy(
+			ctx, userKey, ops, existing,
+			string(extractor.UpdatePolicyHistoryPreserving),
+		)
+	case extractor.UpdatePolicyAddOnly:
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
+	default:
+		return w.reconcileOps(ctx, userKey, ops)
 	}
-	return w.reconcileOps(ctx, userKey, ops)
 }
 
 func (w *AutoMemoryWorker) applyAssistantResultPolicy(
@@ -96,16 +104,17 @@ func (w *AutoMemoryWorker) applyAssistantResultPolicy(
 	if w.updatePolicy == extractor.UpdatePolicyAddOnly {
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
 	}
-	return w.applyAssistantResultPreservingPolicy(
-		ctx, userKey, ops, existing,
+	return w.applyPreservingPolicy(
+		ctx, userKey, ops, existing, assistantResultPolicyName,
 	)
 }
 
-func (w *AutoMemoryWorker) applyAssistantResultPreservingPolicy(
+func (w *AutoMemoryWorker) applyPreservingPolicy(
 	ctx context.Context,
 	userKey memory.UserKey,
 	ops []*extractor.Operation,
 	existing []*memory.Entry,
+	policyName string,
 ) []*extractor.Operation {
 	byID := make(map[string]*memory.Entry, len(existing))
 	for _, entry := range existing {
@@ -120,12 +129,12 @@ func (w *AutoMemoryWorker) applyAssistantResultPreservingPolicy(
 		}
 		switch op.Type {
 		case extractor.OperationAdd:
-			out = w.appendAssistantResultAdd(
-				ctx, userKey, out, op, existing,
+			out = w.appendPreservingAdd(
+				ctx, userKey, out, op, existing, policyName,
 			)
 		case extractor.OperationUpdate:
-			out = w.appendAssistantResultUpdate(
-				ctx, userKey, out, op, byID[op.MemoryID],
+			out = w.appendPreservingUpdate(
+				ctx, userKey, out, op, byID[op.MemoryID], policyName,
 			)
 		default:
 			out = append(out, op)
@@ -134,57 +143,59 @@ func (w *AutoMemoryWorker) applyAssistantResultPreservingPolicy(
 	return out
 }
 
-func (w *AutoMemoryWorker) appendAssistantResultAdd(
+func (w *AutoMemoryWorker) appendPreservingAdd(
 	ctx context.Context,
 	userKey memory.UserKey,
 	out []*extractor.Operation,
 	op *extractor.Operation,
 	existing []*memory.Entry,
+	policyName string,
 ) []*extractor.Operation {
 	if !w.isToolEnabled(memory.AddToolName) {
 		return append(out, op)
 	}
-	match := selectAssistantResultCandidate(op, existing)
+	match := selectPreservingCandidate(op, existing)
 	if match == nil {
-		logPolicyDecision(ctx, assistantResultPolicyName,
+		logPolicyDecision(ctx, policyName,
 			userKey, op, nil, "add", "no safe candidate")
 		return append(out, op)
 	}
 	if match.duplicate {
-		logPolicyDecision(ctx, assistantResultPolicyName,
+		logPolicyDecision(ctx, policyName,
 			userKey, op, match, "no-op", "exact duplicate")
 		return out
 	}
 	if !w.isToolEnabled(memory.UpdateToolName) {
-		logPolicyDecision(ctx, assistantResultPolicyName,
+		logPolicyDecision(ctx, policyName,
 			userKey, op, match, "add", "update tool disabled")
 		return append(out, op)
 	}
-	logPolicyDecision(ctx, assistantResultPolicyName,
+	logPolicyDecision(ctx, policyName,
 		userKey, op, match, "update", "strict enrichment")
 	return append(out, toUpdateOp(op, match.entry))
 }
 
-func (w *AutoMemoryWorker) appendAssistantResultUpdate(
+func (w *AutoMemoryWorker) appendPreservingUpdate(
 	ctx context.Context,
 	userKey memory.UserKey,
 	out []*extractor.Operation,
 	op *extractor.Operation,
 	existing *memory.Entry,
+	policyName string,
 ) []*extractor.Operation {
-	match := classifyAssistantResultCandidate(op, existing)
+	match := classifyPreservingCandidate(op, existing)
 	if match != nil && match.duplicate {
-		logPolicyDecision(ctx, assistantResultPolicyName,
+		logPolicyDecision(ctx, policyName,
 			userKey, op, match, "no-op", "exact duplicate")
 		return out
 	}
 	if match != nil && w.isToolEnabled(memory.UpdateToolName) {
-		logPolicyDecision(ctx, assistantResultPolicyName,
+		logPolicyDecision(ctx, policyName,
 			userKey, op, match, "update", "strict enrichment")
 		return append(out, toUpdateOp(op, existing))
 	}
 	add := asAddOperation(op)
-	logPolicyDecision(ctx, assistantResultPolicyName,
+	logPolicyDecision(ctx, policyName,
 		userKey, op, match, "add", "unsafe or unknown update")
 	return append(out, add)
 }
@@ -219,25 +230,25 @@ func (w *AutoMemoryWorker) applyAddOnlyPolicy(
 	return out
 }
 
-func selectAssistantResultCandidate(
+func selectPreservingCandidate(
 	op *extractor.Operation,
 	existing []*memory.Entry,
-) *assistantResultCandidate {
-	var best *assistantResultCandidate
+) *preservingCandidate {
+	var best *preservingCandidate
 	for _, entry := range existing {
-		candidate := classifyAssistantResultCandidate(op, entry)
+		candidate := classifyPreservingCandidate(op, entry)
 		if candidate == nil {
 			continue
 		}
-		if best == nil || assistantResultCandidateLess(best, candidate) {
+		if best == nil || preservingCandidateLess(best, candidate) {
 			best = candidate
 		}
 	}
 	return best
 }
 
-func assistantResultCandidateLess(
-	left, right *assistantResultCandidate,
+func preservingCandidateLess(
+	left, right *preservingCandidate,
 ) bool {
 	if left.duplicate != right.duplicate {
 		return right.duplicate
@@ -251,15 +262,15 @@ func assistantResultCandidateLess(
 	return left.entry.Score < right.entry.Score
 }
 
-func classifyAssistantResultCandidate(
+func classifyPreservingCandidate(
 	op *extractor.Operation,
 	entry *memory.Entry,
-) *assistantResultCandidate {
+) *preservingCandidate {
 	if op == nil || !validMemoryEntry(entry) {
 		return nil
 	}
 	if exactMemoryDuplicate(op, entry.Memory) {
-		return &assistantResultCandidate{
+		return &preservingCandidate{
 			entry:       entry,
 			duplicate:   true,
 			oldCoverage: 1,
@@ -272,7 +283,8 @@ func classifyAssistantResultCandidate(
 	oldCoverage, newCoverage := directionalTokenCoverage(
 		entry.Memory.Memory, op.Memory,
 	)
-	if oldCoverage < resultOldCoverage || newCoverage < resultNewCoverage {
+	if oldCoverage < preservingOldCoverage ||
+		newCoverage < preservingNewCoverage {
 		return nil
 	}
 	if !materialTokensPreserved(entry.Memory.Memory, op.Memory) ||
@@ -284,7 +296,7 @@ func classifyAssistantResultCandidate(
 		!changeMarkerPattern.MatchString(entry.Memory.Memory) {
 		return nil
 	}
-	return &assistantResultCandidate{
+	return &preservingCandidate{
 		entry:       entry,
 		oldCoverage: oldCoverage,
 		newCoverage: newCoverage,
@@ -492,7 +504,7 @@ func logPolicyDecision(
 	policy string,
 	userKey memory.UserKey,
 	op *extractor.Operation,
-	match *assistantResultCandidate,
+	match *preservingCandidate,
 	action string,
 	reason string,
 ) {

@@ -189,6 +189,7 @@ func TestExtractor_UpdatePolicyOptions(t *testing.T) {
 	}{
 		{name: "default", want: UpdatePolicyReconcile},
 		{name: "reconcile", in: UpdatePolicyReconcile, want: UpdatePolicyReconcile},
+		{name: "history preserving", in: UpdatePolicyHistoryPreserving, want: UpdatePolicyHistoryPreserving},
 		{name: "add only", in: UpdatePolicyAddOnly, want: UpdatePolicyAddOnly},
 		{name: "unknown", in: UpdatePolicy("custom"), want: UpdatePolicyReconcile},
 	}
@@ -210,6 +211,13 @@ func TestExtractor_UpdatePolicyOptions(t *testing.T) {
 	assert.Contains(t,
 		addOnly.buildSystemPrompt(time.Now(), nil),
 		`<update_policy name="add-only">`,
+	)
+
+	historyPreserving := NewExtractor(m,
+		WithUpdatePolicy(UpdatePolicyHistoryPreserving)).(*memoryExtractor)
+	assert.Contains(t,
+		historyPreserving.buildSystemPrompt(time.Now(), nil),
+		`<update_policy name="history-preserving">`,
 	)
 }
 
