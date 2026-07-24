@@ -49,3 +49,29 @@ func MergeHybrid(
 		return imemory.MergeRankedResults(rankings, k, maxResults)
 	}
 }
+
+func uniqueCandidates(rankings ...[]*memory.Entry) []*memory.Entry {
+	seenIDs := make(map[string]struct{})
+	seenEntries := make(map[*memory.Entry]struct{})
+	candidates := make([]*memory.Entry, 0)
+	for _, entries := range rankings {
+		for _, entry := range entries {
+			if entry == nil {
+				continue
+			}
+			if entry.ID != "" {
+				if _, ok := seenIDs[entry.ID]; ok {
+					continue
+				}
+				seenIDs[entry.ID] = struct{}{}
+			} else {
+				if _, ok := seenEntries[entry]; ok {
+					continue
+				}
+				seenEntries[entry] = struct{}{}
+			}
+			candidates = append(candidates, entry)
+		}
+	}
+	return candidates
+}

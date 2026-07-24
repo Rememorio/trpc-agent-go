@@ -64,3 +64,21 @@ func TestMergeHybridUsesFocusedRanking(t *testing.T) {
 	require.Len(t, results, 2)
 	assert.Equal(t, "languages", results[0].ID)
 }
+
+func TestUniqueCandidatesPreservesRankingOrder(t *testing.T) {
+	t.Parallel()
+
+	first := &memory.Entry{ID: "first"}
+	second := &memory.Entry{ID: "second"}
+	idless := &memory.Entry{}
+
+	results := uniqueCandidates(
+		[]*memory.Entry{first, idless, nil},
+		[]*memory.Entry{second, first, idless},
+	)
+
+	require.Len(t, results, 3)
+	assert.Same(t, first, results[0])
+	assert.Same(t, idless, results[1])
+	assert.Same(t, second, results[2])
+}

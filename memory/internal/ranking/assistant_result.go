@@ -57,24 +57,17 @@ func rankResultsByAssistantResultIntent(
 	rankings ...[]*memory.Entry,
 ) []*memory.Entry {
 	wantAssistantResult := asksForAssistantResult(query)
-	seen := make(map[string]struct{})
 	preferred := make([]*memory.Entry, 0)
 	otherFound := false
-	for _, ranking := range rankings {
-		for _, entry := range ranking {
-			if entry == nil || entry.Memory == nil {
-				continue
-			}
-			if _, ok := seen[entry.ID]; ok {
-				continue
-			}
-			seen[entry.ID] = struct{}{}
-			isAssistantResult := assistantresult.Is(entry.Memory.Memory)
-			if isAssistantResult == wantAssistantResult {
-				preferred = append(preferred, entry)
-			} else {
-				otherFound = true
-			}
+	for _, entry := range uniqueCandidates(rankings...) {
+		if entry.Memory == nil {
+			continue
+		}
+		isAssistantResult := assistantresult.Is(entry.Memory.Memory)
+		if isAssistantResult == wantAssistantResult {
+			preferred = append(preferred, entry)
+		} else {
+			otherFound = true
 		}
 	}
 	if len(preferred) == 0 || !otherFound {
