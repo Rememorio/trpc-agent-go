@@ -60,6 +60,24 @@ func TestRankResultsByAssistantResultIntentRequiresMixedProvenance(t *testing.T)
 	))
 }
 
+func TestRankResultsByAssistantResultIntentKeepsDistinctIDLessEntries(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	assistant := assistantResultEntry("", "Recommended Go.")
+	user := &memory.Entry{
+		Memory: &memory.Memory{Memory: "User knows Java."},
+	}
+
+	actual := rankResultsByAssistantResultIntent(
+		"What did you recommend?",
+		[]*memory.Entry{assistant, user},
+	)
+	require.Len(t, actual, 1)
+	assert.Same(t, assistant, actual[0])
+}
+
 func TestAsksForAssistantResult(t *testing.T) {
 	for _, query := range []string{
 		"What did you recommend?",
