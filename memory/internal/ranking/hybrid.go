@@ -30,8 +30,9 @@ func MergeHybrid(
 	if len(keywordResults) > 0 {
 		rankings = append(rankings, keywordResults)
 	}
+	candidates := uniqueCandidates(vectorResults, keywordResults)
 	if focused := rankResultsByFocusedPassage(
-		query, vectorResults,
+		query, candidates,
 	); len(focused) > 0 {
 		rankings = append(rankings, focused)
 	}
