@@ -97,11 +97,15 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 	assert.Contains(t, m.requests[1].Messages[0].Content,
 		"<assistant_result_recovery>")
 	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_completeness_recovery>")
+	assert.NotContains(t, m.requests[1].Messages[0].Content,
 		"Existing result must stay out of recovery.")
 	assert.NotContains(t, m.requests[1].Messages[0].Content,
 		"<existing_memories>")
 	assert.Equal(t, model.RoleUser,
 		m.requests[1].Messages[len(m.requests[1].Messages)-1].Role)
+	assert.Equal(t, assistantResultRecoveryUserSuffix,
+		m.requests[1].Messages[len(m.requests[1].Messages)-1].Content)
 }
 
 func TestExtractor_DoesNotRecoverWhenCombinedPassHasResult(t *testing.T) {
@@ -212,11 +216,56 @@ func TestExtractor_RecoversMissingStructuredQuantities(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ops, 4)
 	require.Len(t, m.requests, 2)
+	assert.Contains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_completeness_recovery>")
+	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_recovery>")
 	recoveryRequest := m.requests[1].Messages[len(m.requests[1].Messages)-1].Content
+	assert.Contains(t, recoveryRequest,
+		assistantResultCompletenessUserSuffix)
 	assert.Contains(t, recoveryRequest, `"already_extracted_results"`)
 	assert.Contains(t, recoveryRequest, `"structured_labels_to_check"`)
 	assert.Contains(t, recoveryRequest, `Stone Golems (4)`)
 	assert.Contains(t, recoveryRequest, `Ice Wraiths (6)`)
+}
+
+func TestExtractor_UsesOriginalRecoveryWhenNoResultExists(t *testing.T) {
+	resultArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The encounter includes 4 Stone Golems, " +
+			"2 Fire Drakes, and 6 Ice Wraiths.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			nil,
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, resultArgs),
+				},
+			}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Create an encounter."),
+		model.NewAssistantMessage(
+			"* Stone Golems (4): AC 17\n" +
+				"* Fire Drakes (2): AC 15\n" +
+				"* Ice Wraiths (6): AC 14",
+		),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 1)
+	require.Len(t, m.requests, 2)
+	assert.Contains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_recovery>")
+	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_completeness_recovery>")
+	assert.Equal(t, assistantResultRecoveryUserSuffix,
+		m.requests[1].Messages[len(m.requests[1].Messages)-1].Content)
 }
 
 func TestExtractor_CompletenessRecoveryFailurePreservesResult(t *testing.T) {
