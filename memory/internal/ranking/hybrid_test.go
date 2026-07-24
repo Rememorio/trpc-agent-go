@@ -65,6 +65,33 @@ func TestMergeHybridUsesFocusedRanking(t *testing.T) {
 	assert.Equal(t, "languages", results[0].ID)
 }
 
+func TestMergeHybridFocusesKeywordOnlyCandidates(t *testing.T) {
+	t.Parallel()
+
+	resources := &memory.Entry{
+		ID: "resources",
+		Memory: &memory.Memory{
+			Memory: "General development resources include Code Academy.",
+		},
+	}
+	languages := &memory.Entry{
+		ID: "languages",
+		Memory: &memory.Memory{
+			Memory: "Back-end programming languages include Go and Python.",
+		},
+	}
+	results := MergeHybrid(
+		"Which back-end programming languages were recommended?",
+		[]*memory.Entry{resources},
+		[]*memory.Entry{languages, resources},
+		0,
+		2,
+	)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "languages", results[0].ID)
+}
+
 func TestUniqueCandidatesPreservesRankingOrder(t *testing.T) {
 	t.Parallel()
 
