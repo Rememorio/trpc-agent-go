@@ -1498,6 +1498,35 @@ adminService := memoryinmemory.NewMemoryService(
 | `WithMemoryQueueSize(n)`   | 记忆任务队列大小                | 10          |
 | `WithMemoryJobTimeout(d)`  | 每个提取任务的超时时间          | 30s         |
 
+### 提取器策略
+
+内置提取器默认使用 `UpdatePolicyReconcile`，并通过已启用的 add、update、
+delete 和 clear 操作执行现有的自动协调行为。需要更严格保留历史时，可以显式
+选择另外两种策略：
+
+| 策略 | 行为 | 权衡 |
+| ---- | ---- | ---- |
+| `UpdatePolicyReconcile` | 使用标准的自动协调行为。 | 默认的存储与检索行为 |
+| `UpdatePolicyPreserveHistory` | 当覆盖已有值会丢失历史细节时，将新状态保存为独立记忆；用户明确纠错时仍可更新旧值。 | 保留状态历史，但可能存储更多记忆 |
+| `UpdatePolicyAddOnly` | 只添加新记忆或跳过完全重复项；自动提取永不 update、delete 或 clear。 | 历史保留最强，但重复和存储风险最高 |
+
+`WithAssistantResultExtraction(true)` 还会保留 Assistant 产出的具体结果，
+例如用户请求的答案、推荐列表、计划或计算结果。该能力默认关闭。当主提取遗漏
+结构化结果时，提取器可能进行一次有界的恢复模型调用，因此会增加一定的提取
+Token 和延迟。
+
+```go
+memExtractor := extractor.NewExtractor(
+    extractorModel,
+    extractor.WithUpdatePolicy(extractor.UpdatePolicyPreserveHistory),
+    extractor.WithAssistantResultExtraction(true),
+)
+```
+
+这些选项仍受操作开关约束：禁用 `memory_add` 后不会提取 Assistant 结果，
+add-only 也不会绕过已禁用的工具。除非应用需要保留历史状态或后续召回
+Assistant 交付物，否则建议保持默认配置。
+
 ### 提取检查器（Extraction Checkers）
 
 检查器（Checker）用于控制何时触发记忆提取。默认情况下，每轮对话都会触发提取。使用检查器可以优化提取频率，降低 LLM 调用成本。

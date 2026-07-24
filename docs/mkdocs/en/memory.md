@@ -1451,6 +1451,38 @@ adminService := memoryinmemory.NewMemoryService(
 | `WithMemoryQueueSize(n)`   | Size of memory job queue               | 10             |
 | `WithMemoryJobTimeout(d)`  | Timeout for each extraction job        | 30s            |
 
+### Extractor Policies
+
+The built-in extractor uses `UpdatePolicyReconcile` by default. The default
+continues to reconcile related memories through the enabled add, update,
+delete, and clear operations. Two opt-in policies provide stricter history
+retention:
+
+| Policy | Behavior | Trade-off |
+| ------ | -------- | --------- |
+| `UpdatePolicyReconcile` | Use the standard automatic reconciliation behavior. | Default storage and retrieval behavior |
+| `UpdatePolicyPreserveHistory` | Preserve an update as a separate memory when replacing the stored value would lose historical detail. Explicit user corrections can still update the old value. | Retains state history but can store more memories |
+| `UpdatePolicyAddOnly` | Add new memories or suppress exact duplicates; never update, delete, or clear automatically. | Strongest retention with the highest duplication and storage risk |
+
+`WithAssistantResultExtraction(true)` additionally retains concrete results
+produced by the assistant, such as a requested answer, recommendation, list,
+plan, or calculation. It is disabled by default. The extractor may make a
+bounded recovery model call when the primary extraction misses a structured
+result, so enabling it can increase extraction tokens and latency.
+
+```go
+memExtractor := extractor.NewExtractor(
+    extractorModel,
+    extractor.WithUpdatePolicy(extractor.UpdatePolicyPreserveHistory),
+    extractor.WithAssistantResultExtraction(true),
+)
+```
+
+These options respect operation availability. Assistant-result extraction
+does nothing when `memory_add` is disabled, and add-only mode never bypasses
+disabled tools. Start with the defaults unless the application needs historical
+state or later recall of assistant-produced deliverables.
+
 ### Extraction Checkers
 
 Checkers control when memory extraction should be triggered. By default, extraction happens on every conversation turn. Use checkers to optimize extraction frequency and reduce LLM costs.
