@@ -174,22 +174,26 @@ func (e *memoryExtractor) ExtractOperationStages(
 	if err != nil || !includeAssistantResults {
 		return primary, assistantResults, err
 	}
-	if len(assistantResults) == 0 &&
-		hasStructuredAssistantResultCandidate(messages) {
-		recoveryCtx, recovered, recoveryErr :=
-			e.recoverStructuredAssistantResults(
-				ctx, messages,
-			)
-		if recoveryErr != nil {
-			if recoveryCtx.Err() != nil {
-				return primary, nil, recoveryErr
+	if hasStructuredAssistantResultCandidate(messages) {
+		labelsToCheck := missingStructuredQuantityLabels(
+			messages, assistantResults,
+		)
+		if len(assistantResults) == 0 || len(labelsToCheck) > 0 {
+			recoveryCtx, recovered, recoveryErr :=
+				e.recoverStructuredAssistantResults(
+					ctx, messages, assistantResults, labelsToCheck,
+				)
+			if recoveryErr != nil {
+				if recoveryCtx.Err() != nil {
+					return primary, assistantResults, recoveryErr
+				}
+				log.WarnfContext(ctx,
+					"extractor: structured assistant result recovery failed: %v",
+					recoveryErr,
+				)
+			} else {
+				assistantResults = append(assistantResults, recovered...)
 			}
-			log.WarnfContext(ctx,
-				"extractor: structured assistant result recovery failed: %v",
-				recoveryErr,
-			)
-		} else {
-			assistantResults = recovered
 		}
 	}
 	assistantResults = filterGroundedAssistantResultOperations(

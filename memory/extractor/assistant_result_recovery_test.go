@@ -129,6 +129,128 @@ func TestExtractor_DoesNotRecoverWhenCombinedPassHasResult(t *testing.T) {
 	assert.Len(t, m.requests, 1)
 }
 
+func TestMissingStructuredQuantityLabels(t *testing.T) {
+	t.Parallel()
+	messages := []model.Message{
+		model.NewUserMessage("Create an encounter."),
+		model.NewAssistantMessage(
+			"* Stone Golems (4): AC 17\n" +
+				"* Fire Drakes (2): AC 15\n" +
+				"* Ice Wraiths (6): AC 14",
+		),
+	}
+
+	assert.Equal(t,
+		[]string{"Stone Golems (4)", "Fire Drakes (2)", "Ice Wraiths (6)"},
+		missingStructuredQuantityLabels(messages, []*Operation{{
+			Memory: "Assistant result: The encounter has Stone Golems, " +
+				"Fire Drakes, and Ice Wraiths.",
+		}}),
+	)
+	assert.Empty(t, missingStructuredQuantityLabels(messages, []*Operation{{
+		Memory: "Assistant result: The encounter has 4 Stone Golems, " +
+			"2 Fire Drakes, and 6 Ice Wraiths.",
+	}}))
+	assert.Empty(t, missingStructuredQuantityLabels(
+		[]model.Message{model.NewAssistantMessage(
+			"1. Interval 1: sprint\n2. Interval 2: recover\n" +
+				"3. Interval 3: sprint",
+		)},
+		[]*Operation{{Memory: "Assistant result: Alternate sprint and recovery."}},
+	))
+	assert.Empty(t, missingStructuredQuantityLabels(
+		[]model.Message{model.NewAssistantMessage(
+			"* Stone Golems (4): AC 17\n* Fire Drakes: AC 15\n" +
+				"* Ice Wraiths: AC 14",
+		)},
+		[]*Operation{{Memory: "Assistant result: Encounter summary."}},
+	))
+}
+
+func TestExtractor_RecoversMissingStructuredQuantities(t *testing.T) {
+	summaryArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The encounter includes Stone Golems, " +
+			"Fire Drakes, and Ice Wraiths.",
+	})
+	require.NoError(t, err)
+	golemArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The encounter includes 4 Stone Golems.",
+	})
+	require.NoError(t, err)
+	drakeArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The encounter includes 2 Fire Drakes.",
+	})
+	require.NoError(t, err)
+	wraithArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The encounter includes 6 Ice Wraiths.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			{{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
+				makeToolCall(assistantResultAddToolName, summaryArgs),
+			}}}}}},
+			{{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
+				makeToolCall(assistantResultAddToolName, golemArgs),
+				makeToolCall(assistantResultAddToolName, drakeArgs),
+				makeToolCall(assistantResultAddToolName, wraithArgs),
+			}}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Create an encounter."),
+		model.NewAssistantMessage(
+			"* Stone Golems (4): AC 17\n" +
+				"* Fire Drakes (2): AC 15\n" +
+				"* Ice Wraiths (6): AC 14",
+		),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 4)
+	require.Len(t, m.requests, 2)
+	recoveryRequest := m.requests[1].Messages[len(m.requests[1].Messages)-1].Content
+	assert.Contains(t, recoveryRequest, `"already_extracted_results"`)
+	assert.Contains(t, recoveryRequest, `"structured_labels_to_check"`)
+	assert.Contains(t, recoveryRequest, `Stone Golems (4)`)
+	assert.Contains(t, recoveryRequest, `Ice Wraiths (6)`)
+}
+
+func TestExtractor_CompletenessRecoveryFailurePreservesResult(t *testing.T) {
+	summaryArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The encounter includes Stone Golems, " +
+			"Fire Drakes, and Ice Wraiths.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			{{Choices: []model.Choice{{Message: model.Message{ToolCalls: []model.ToolCall{
+				makeToolCall(assistantResultAddToolName, summaryArgs),
+			}}}}}},
+		},
+		errors: []error{nil, errors.New("recovery unavailable")},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Create an encounter."),
+		model.NewAssistantMessage(
+			"* Stone Golems (4): AC 17\n" +
+				"* Fire Drakes (2): AC 15\n" +
+				"* Ice Wraiths (6): AC 14",
+		),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 1)
+	assert.Contains(t, ops[0].Memory, "Stone Golems")
+	assert.Len(t, m.requests, 2)
+}
+
 func TestExtractor_DoesNotRecoverUnstructuredAssistantResult(t *testing.T) {
 	m := &sequenceModel{name: "test-model", responses: [][]*model.Response{nil}}
 	e := NewExtractor(m, WithAssistantResultExtraction(true))
