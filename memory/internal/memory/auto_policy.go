@@ -55,14 +55,15 @@ func (w *AutoMemoryWorker) applyUpdatePolicy(
 	ops = w.preserveAssistantResultTargets(ctx, userKey, ops, existing)
 	preserveHistory :=
 		w.updatePolicy == extractor.UpdatePolicyPreserveHistory
+	ops = w.reconcileOps(
+		ctx, userKey, ops, explicitCorrection,
+	)
 	if preserveHistory {
 		ops = w.preserveLossyOrdinaryUpdates(
 			ctx, userKey, ops, existing, explicitCorrection,
 		)
 	}
-	return w.reconcileOps(
-		ctx, userKey, ops, explicitCorrection,
-	)
+	return ops
 }
 
 func (w *AutoMemoryWorker) applyAddOnlyPolicy(

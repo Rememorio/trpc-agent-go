@@ -74,7 +74,7 @@ func (w *AutoMemoryWorker) preserveLossyOrdinaryUpdates(
 		if out == nil {
 			out = append([]*extractor.Operation(nil), ops...)
 		}
-		out[index] = asAddOperation(op)
+		out[index] = asHistoryPreservingAdd(op, stored)
 		logLossAwareDecision(
 			ctx, userKey, op, stored, "add",
 			"update would discard historical detail",
@@ -84,6 +84,22 @@ func (w *AutoMemoryWorker) preserveLossyOrdinaryUpdates(
 		return ops
 	}
 	return out
+}
+
+func asHistoryPreservingAdd(
+	op *extractor.Operation,
+	stored *memory.Entry,
+) *extractor.Operation {
+	add := asAddOperation(op)
+	add.Memory = "Updated state: " + strings.TrimSpace(op.Memory) +
+		" Previously: " + strings.TrimSpace(stored.Memory.Memory)
+	add.Topics = mergeTopics(stored.Memory.Topics, op.Topics)
+	return add
+}
+
+func reconcileReplacementLosesHistory(oldText, newText string) bool {
+	return replacementLosesHistory(oldText, newText) ||
+		!materialTokensPreserved(oldText, newText)
 }
 
 func hasExplicitCorrection(messages []model.Message) bool {

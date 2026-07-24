@@ -120,12 +120,14 @@ func TestUpdatePolicyPreservesLossyOrdinaryUpdate(t *testing.T) {
 		ID: "baseballs",
 		Memory: &memory.Memory{
 			Memory: "Has 15 autographed baseballs as of 2023-07-11.",
+			Topics: []string{"baseball", "collection"},
 		},
 	}}
 	in := []*extractor.Operation{{
 		Type:     extractor.OperationUpdate,
 		MemoryID: "baseballs",
 		Memory:   "Has 35 autographed baseballs as of 2023-12-30.",
+		Topics:   []string{"collection", "autographs"},
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
 
@@ -143,8 +145,18 @@ func TestUpdatePolicyPreservesLossyOrdinaryUpdate(t *testing.T) {
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 	assert.Empty(t, out[0].MemoryID)
+	assert.Equal(t,
+		"Updated state: Has 35 autographed baseballs as of 2023-12-30. "+
+			"Previously: Has 15 autographed baseballs as of 2023-07-11.",
+		out[0].Memory)
+	assert.Equal(t,
+		[]string{"baseball", "collection", "autographs"},
+		out[0].Topics)
 	assert.Equal(t, extractor.OperationUpdate, in[0].Type)
 	assert.Equal(t, "baseballs", in[0].MemoryID)
+	assert.Equal(t,
+		"Has 35 autographed baseballs as of 2023-12-30.",
+		in[0].Memory)
 
 	out = worker.applyUpdatePolicy(
 		context.Background(), reconcileUserKey(), in, existing, true,
@@ -199,6 +211,40 @@ func TestReconcileKeepsLossyReplacementAsAdd(t *testing.T) {
 	assert.Nil(t, worker.decideAddOp(
 		context.Background(), reconcileUserKey(), in, false,
 	))
+	worker.updatePolicy = extractor.UpdatePolicyPreserveHistory
+	out := worker.decideAddOp(
+		context.Background(), reconcileUserKey(), in, false,
+	)
+	require.NotNil(t, out)
+	assert.Same(t, in, out)
+	assert.Equal(t, extractor.OperationAdd, out.Type)
+	assert.Empty(t, out.MemoryID)
+}
+
+func TestReconcileKeepsMateriallyDistinctFactAsAdd(t *testing.T) {
+	operator := newMockOperator()
+	operator.searchResults = []*memory.Entry{{
+		ID: "album",
+		Memory: &memory.Memory{
+			Memory: "Has been listening to Billie Eilish's album " +
+				"\"Happier Than Ever,\" downloaded on Spotify.",
+		},
+		Score: 0.75,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, operator)
+	in := &extractor.Operation{
+		Type: extractor.OperationAdd,
+		Memory: "Has been listening to music podcasts, specifically " +
+			"\"All Songs Considered\" and \"Pitchfork.\"",
+	}
+
+	defaultOut := worker.decideAddOp(
+		context.Background(), reconcileUserKey(), in, false,
+	)
+	require.NotNil(t, defaultOut)
+	assert.Equal(t, extractor.OperationUpdate, defaultOut.Type)
+	assert.Equal(t, "album", defaultOut.MemoryID)
+
 	worker.updatePolicy = extractor.UpdatePolicyPreserveHistory
 	out := worker.decideAddOp(
 		context.Background(), reconcileUserKey(), in, false,

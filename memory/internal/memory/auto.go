@@ -957,7 +957,9 @@ func (w *AutoMemoryWorker) decideAddOp(
 	}
 	if w.updatePolicy == extractor.UpdatePolicyPreserveHistory &&
 		bestTier > reconcileTierNone &&
-		replacementLosesHistory(best.Memory.Memory, op.Memory) {
+		reconcileReplacementLosesHistory(
+			best.Memory.Memory, op.Memory,
+		) {
 		if explicitCorrection {
 			logLossAwareDecision(
 				ctx, userKey, op, best, "update",
@@ -967,7 +969,7 @@ func (w *AutoMemoryWorker) decideAddOp(
 		}
 		logLossAwareDecision(
 			ctx, userKey, op, best, "add",
-			"reconcile replacement would discard historical detail",
+			"reconcile replacement would discard material detail",
 		)
 		return op
 	}
