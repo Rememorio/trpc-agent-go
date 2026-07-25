@@ -40,13 +40,17 @@ func (w *AutoMemoryWorker) applyAssistantResultPolicy(
 	if len(ops) == 0 {
 		return nil
 	}
-	existing = assistantResultEntries(existing)
-	if w.updatePolicy == extractor.UpdatePolicyAddOnly {
+	switch w.updatePolicy {
+	case extractor.UpdatePolicyAddOnly:
+		existing = assistantResultEntries(existing)
 		return w.applyAddOnlyPolicy(ctx, userKey, ops, existing)
+	case extractor.UpdatePolicyHistoryPreserving:
+		return w.applyAssistantResultPreservingPolicy(
+			ctx, userKey, ops, assistantResultEntries(existing),
+		)
+	default:
+		return w.reconcileOps(ctx, userKey, ops)
 	}
-	return w.applyAssistantResultPreservingPolicy(
-		ctx, userKey, ops, existing,
-	)
 }
 
 // preserveAssistantResultTargets converts primary updates aimed at an

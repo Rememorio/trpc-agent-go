@@ -77,6 +77,13 @@ func WithUpdatePolicy(policy UpdatePolicy) Option {
 	}
 }
 
+// UpdatePolicy returns the built-in automatic-memory update policy. The
+// concrete extractor is private; the memory worker consumes this through an
+// internal capability rather than treating Metadata as a control plane.
+func (e *memoryExtractor) UpdatePolicy() UpdatePolicy {
+	return e.updatePolicy
+}
+
 // WithAssistantResultExtraction controls extraction of concrete results
 // produced by the assistant. It is disabled by default to preserve the
 // existing extractor behavior.
@@ -637,7 +644,9 @@ func (e *memoryExtractor) actionEnabled(name string) bool {
 
 func normalizeUpdatePolicy(policy UpdatePolicy) UpdatePolicy {
 	switch policy {
-	case UpdatePolicyAddOnly:
+	case UpdatePolicyReconcile,
+		UpdatePolicyHistoryPreserving,
+		UpdatePolicyAddOnly:
 		return policy
 	default:
 		return UpdatePolicyReconcile
@@ -646,12 +655,26 @@ func normalizeUpdatePolicy(policy UpdatePolicy) UpdatePolicy {
 
 func updatePolicyPrompt(policy UpdatePolicy) string {
 	switch normalizeUpdatePolicy(policy) {
+	case UpdatePolicyHistoryPreserving:
+		return historyPreservingPrompt
 	case UpdatePolicyAddOnly:
 		return addOnlyPrompt
 	default:
 		return ""
 	}
 }
+
+const historyPreservingPrompt = `
+
+<update_policy name="history-preserving">
+- Preserve distinct events and states as separate memories. A change over time
+  is new history, not a rewrite of the earlier state.
+- Use memory_update only to correct or enrich the same fact or event. If an
+  event time, participant, location, subject, or state differs, use memory_add.
+- Explicit requests to forget information may still use memory_delete or
+  memory_clear.
+</update_policy>
+`
 
 const assistantResultExtractionPrompt = `
 

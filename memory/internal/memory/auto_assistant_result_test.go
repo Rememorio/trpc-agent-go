@@ -35,6 +35,7 @@ func TestAssistantResultPolicyPreservesDistinctResult(t *testing.T) {
 	op := newMockOperator()
 	op.searchResults = stored
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 
 	ordinary := worker.applyUpdatePolicy(
 		context.Background(), reconcileUserKey(), incoming, stored,
@@ -93,6 +94,7 @@ func TestAssistantResultPolicy_StrictEnrichmentUpdates(t *testing.T) {
 		EventTime:  &newTime,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 
 	out := worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(), in, existing,
@@ -113,6 +115,7 @@ func TestAssistantResultPolicy_ChangedStateRemainsAdditive(t *testing.T) {
 		},
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 
 	for _, operationType := range []extractor.OperationType{
 		extractor.OperationAdd,
@@ -149,6 +152,7 @@ func TestAssistantResultPolicy_ExactDuplicateIsNoOp(t *testing.T) {
 		},
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 	out := worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(),
 		[]*extractor.Operation{{
@@ -169,6 +173,7 @@ func TestAssistantResultPolicy_UpdateOperations(t *testing.T) {
 		},
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 
 	duplicate := worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(),
@@ -225,6 +230,7 @@ func TestApplyUpdatePolicy_PreservesAssistantResultTarget(t *testing.T) {
 		},
 	}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 
 	out := worker.applyUpdatePolicy(
 		context.Background(), reconcileUserKey(), ops, existing,
@@ -247,6 +253,7 @@ func TestAssistantResultPolicy_OnlyReconcilesSameProvenance(t *testing.T) {
 		Memory: "Assistant result: Recommended Miss Bee Providore nearby.",
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 
 	ordinary := []*memory.Entry{{
 		ID: "ordinary",
@@ -272,6 +279,55 @@ func TestAssistantResultPolicy_OnlyReconcilesSameProvenance(t *testing.T) {
 	out = worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(), incoming, assistant,
 	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "assistant", out[0].MemoryID)
+}
+
+func TestAssistantResultPolicy_ReconcileUsesLegacyCandidates(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID: "ordinary",
+		Memory: &memory.Memory{
+			Memory: "Recommended Miss Bee Providore.",
+			Topics: []string{"restaurant"},
+		},
+		Score: 1,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	in := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Assistant result: Recommended Miss Bee Providore.",
+		Topics: []string{"restaurant", "assistant result"},
+	}}
+
+	out := worker.applyAssistantResultPolicy(
+		context.Background(), reconcileUserKey(), in, op.searchResults,
+	)
+
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "ordinary", out[0].MemoryID)
+}
+
+func TestApplyUpdatePolicy_ReconcileKeepsExplicitAssistantTarget(t *testing.T) {
+	existing := []*memory.Entry{{
+		ID: "assistant",
+		Memory: &memory.Memory{
+			Memory: "Assistant result: Recommended Miss Bee Providore.",
+		},
+	}}
+	in := []*extractor.Operation{{
+		Type:     extractor.OperationUpdate,
+		MemoryID: "assistant",
+		Memory:   "Plans to try Miss Bee Providore.",
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), in, existing,
+	)
+
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
 	assert.Equal(t, "assistant", out[0].MemoryID)

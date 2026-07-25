@@ -2256,7 +2256,9 @@ func TestReconcileOps_KeepsOpWhenNotSimilar(t *testing.T) {
 	assert.Empty(t, out[0].MemoryID)
 }
 
-func TestReconcileOps_DoesNotMergeIntoAssistantResult(t *testing.T) {
+func TestReconcileOps_HistoryPreservingDoesNotMergeIntoAssistantResult(
+	t *testing.T,
+) {
 	op := newMockOperator()
 	op.searchResults = []*memory.Entry{{
 		ID:      "assistant-result",
@@ -2268,6 +2270,7 @@ func TestReconcileOps_DoesNotMergeIntoAssistantResult(t *testing.T) {
 		Score: 0.99,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 	in := []*extractor.Operation{{
 		Type: extractor.OperationAdd,
 		Memory: "Plans to try Miss Bee Providore at Cihampelas Walk " +
@@ -2283,7 +2286,9 @@ func TestReconcileOps_DoesNotMergeIntoAssistantResult(t *testing.T) {
 	assert.Empty(t, out[0].MemoryID)
 }
 
-func TestReconcileOps_KeepsEpisodesWithDifferentEventTimes(t *testing.T) {
+func TestReconcileOps_HistoryPreservingKeepsDifferentEventTimes(
+	t *testing.T,
+) {
 	storedTime := time.Date(2023, 6, 17, 0, 0, 0, 0, time.UTC)
 	freshTime := time.Date(2023, 6, 3, 0, 0, 0, 0, time.UTC)
 	op := newMockOperator()
@@ -2298,6 +2303,7 @@ func TestReconcileOps_KeepsEpisodesWithDifferentEventTimes(t *testing.T) {
 		Score: 0.95,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 	in := []*extractor.Operation{{
 		Type:       extractor.OperationAdd,
 		Memory:     "Attended a BBQ at a colleague's house on June 3",
@@ -2336,7 +2342,9 @@ func TestReconcileOps_ReconcilesEpisodesWithCompatibleEventTimes(t *testing.T) {
 	require.Empty(t, out)
 }
 
-func TestReconcileOps_KeepsEpisodesWithDifferentParticipants(t *testing.T) {
+func TestReconcileOps_HistoryPreservingKeepsDifferentParticipants(
+	t *testing.T,
+) {
 	eventTime := time.Date(2023, 1, 15, 0, 0, 0, 0, time.UTC)
 	op := newMockOperator()
 	op.searchResults = []*memory.Entry{{
@@ -2352,6 +2360,7 @@ func TestReconcileOps_KeepsEpisodesWithDifferentParticipants(t *testing.T) {
 		Score: 0.95,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 	in := []*extractor.Operation{{
 		Type:         extractor.OperationAdd,
 		Memory:       "Met artists at the museum reception",
@@ -2367,7 +2376,9 @@ func TestReconcileOps_KeepsEpisodesWithDifferentParticipants(t *testing.T) {
 	assert.Empty(t, out[0].MemoryID)
 }
 
-func TestReconcileOps_KeepsEpisodesWithDifferentLocations(t *testing.T) {
+func TestReconcileOps_HistoryPreservingKeepsDifferentLocations(
+	t *testing.T,
+) {
 	eventTime := time.Date(2023, 1, 15, 0, 0, 0, 0, time.UTC)
 	op := newMockOperator()
 	op.searchResults = []*memory.Entry{{
@@ -2382,6 +2393,7 @@ func TestReconcileOps_KeepsEpisodesWithDifferentLocations(t *testing.T) {
 		Score: 0.95,
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
 	in := []*extractor.Operation{{
 		Type:       extractor.OperationAdd,
 		Memory:     "Visited a museum exhibition",
@@ -2394,6 +2406,36 @@ func TestReconcileOps_KeepsEpisodesWithDifferentLocations(t *testing.T) {
 	require.Len(t, out, 1)
 	assert.Equal(t, extractor.OperationAdd, out[0].Type)
 	assert.Empty(t, out[0].MemoryID)
+}
+
+func TestReconcileOps_ReconcileKeepsLegacyScoreBasedMerge(t *testing.T) {
+	storedTime := time.Date(2023, 6, 17, 0, 0, 0, 0, time.UTC)
+	freshTime := time.Date(2023, 6, 3, 0, 0, 0, 0, time.UTC)
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID: "mem-bbq",
+		Memory: &memory.Memory{
+			Memory:    "Attended a BBQ at a friend's house on June 17",
+			Topics:    []string{"social"},
+			Kind:      memory.KindEpisode,
+			EventTime: &storedTime,
+		},
+		Score: 0.95,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	in := []*extractor.Operation{{
+		Type:       extractor.OperationAdd,
+		Memory:     "Attended a BBQ at a colleague's house on June 3",
+		Topics:     []string{"social", "colleague"},
+		MemoryKind: memory.KindEpisode,
+		EventTime:  &freshTime,
+	}}
+
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(), in)
+
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "mem-bbq", out[0].MemoryID)
 }
 
 func TestReconcileOps_ReconcilesEpisodeParticipantEnrichment(t *testing.T) {

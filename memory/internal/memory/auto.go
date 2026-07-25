@@ -22,7 +22,6 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
-	"trpc.group/trpc-go/trpc-agent-go/memory/internal/assistantresult"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -229,7 +228,7 @@ func NewAutoMemoryWorker(
 	return &AutoMemoryWorker{
 		config:       config,
 		operator:     operator,
-		updatePolicy: updatePolicyFromMetadata(config.Extractor),
+		updatePolicy: updatePolicyFromExtractor(config.Extractor),
 	}
 }
 
@@ -926,12 +925,7 @@ func (w *AutoMemoryWorker) decideAddOp(
 		if c == nil || c.Memory == nil {
 			continue
 		}
-		// Assistant results and user facts have independent lifecycles.
-		// A similar user fact must not rewrite an answer the assistant gave.
-		if assistantresult.Is(c.Memory.Memory) {
-			continue
-		}
-		if !reconcileMetadataCompatible(op, c.Memory) {
+		if !w.reconcileCandidateCompatible(op, c.Memory) {
 			continue
 		}
 		j := tokenJaccard(op.Memory, c.Memory.Memory)
@@ -983,9 +977,8 @@ func (w *AutoMemoryWorker) decideAddOp(
 	}
 }
 
-// reconcileMetadataCompatible rejects candidates whose explicit identity
-// metadata proves that they describe different memories. Missing metadata
-// keeps the legacy text-and-score reconciliation behavior unchanged.
+// reconcileMetadataCompatible reports whether explicit identity metadata can
+// describe the same historical state. Missing metadata remains compatible.
 func reconcileMetadataCompatible(
 	op *extractor.Operation,
 	stored *memory.Memory,

@@ -11,6 +11,7 @@ package memory
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,32 +20,69 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
 )
 
-func TestUpdatePolicyFromMetadata(t *testing.T) {
+type mockUpdatePolicyExtractor struct {
+	*mockExtractor
+	policy extractor.UpdatePolicy
+}
+
+func (m *mockUpdatePolicyExtractor) UpdatePolicy() extractor.UpdatePolicy {
+	return m.policy
+}
+
+func TestUpdatePolicyFromExtractor(t *testing.T) {
 	tests := []struct {
 		name string
-		raw  any
+		ext  extractor.MemoryExtractor
 		want extractor.UpdatePolicy
 	}{
-		{name: "missing", want: extractor.UpdatePolicyReconcile},
-		{name: "reconcile", raw: "reconcile", want: extractor.UpdatePolicyReconcile},
-		{name: "typed add only", raw: extractor.UpdatePolicyAddOnly, want: extractor.UpdatePolicyAddOnly},
-		{name: "removed history policy", raw: "history-preserving", want: extractor.UpdatePolicyReconcile},
-		{name: "unknown", raw: "custom", want: extractor.UpdatePolicyReconcile},
-		{name: "wrong type", raw: 42, want: extractor.UpdatePolicyReconcile},
+		{
+			name: "nil",
+			want: extractor.UpdatePolicyReconcile,
+		},
+		{
+			name: "metadata is diagnostic only",
+			ext: &mockExtractor{metadata: map[string]any{
+				"update_policy": string(extractor.UpdatePolicyAddOnly),
+			}},
+			want: extractor.UpdatePolicyReconcile,
+		},
+		{
+			name: "reconcile",
+			ext: extractor.NewExtractor(nil,
+				extractor.WithUpdatePolicy(extractor.UpdatePolicyReconcile)),
+			want: extractor.UpdatePolicyReconcile,
+		},
+		{
+			name: "history preserving",
+			ext: extractor.NewExtractor(nil, extractor.WithUpdatePolicy(
+				extractor.UpdatePolicyHistoryPreserving,
+			)),
+			want: extractor.UpdatePolicyHistoryPreserving,
+		},
+		{
+			name: "add only",
+			ext: extractor.NewExtractor(nil,
+				extractor.WithUpdatePolicy(extractor.UpdatePolicyAddOnly)),
+			want: extractor.UpdatePolicyAddOnly,
+		},
+		{
+			name: "unknown",
+			ext: &mockUpdatePolicyExtractor{
+				mockExtractor: &mockExtractor{},
+				policy:        extractor.UpdatePolicy("custom"),
+			},
+			want: extractor.UpdatePolicyReconcile,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			metadata := map[string]any{}
-			if tt.raw != nil {
-				metadata[extractorMetadataUpdatePolicy] = tt.raw
-			}
-			ext := &mockExtractor{metadata: metadata}
-			assert.Equal(t, tt.want, updatePolicyFromMetadata(ext))
-			worker := NewAutoMemoryWorker(AutoMemoryConfig{Extractor: ext}, nil)
+			assert.Equal(t, tt.want, updatePolicyFromExtractor(tt.ext))
+			worker := NewAutoMemoryWorker(
+				AutoMemoryConfig{Extractor: tt.ext}, nil,
+			)
 			assert.Equal(t, tt.want, worker.updatePolicy)
 		})
 	}
-	assert.Equal(t, extractor.UpdatePolicyReconcile, updatePolicyFromMetadata(nil))
 }
 
 func TestAddOnlyPolicy_EnforcesAllowedOperationsAndDeduplicates(t *testing.T) {
@@ -77,4 +115,81 @@ func TestAddOnlyPolicy_EnforcesAllowedOperationsAndDeduplicates(t *testing.T) {
 	assert.Equal(t, "Works at Globex", out[0].Memory)
 	assert.Equal(t, []string{"work"}, out[0].Topics)
 	assert.Equal(t, "Enjoys hiking", out[1].Memory)
+}
+
+func TestHistoryPreservingPolicy_ConvertsConflictingUpdateToAdd(
+	t *testing.T,
+) {
+	storedTime := time.Date(2023, 6, 17, 0, 0, 0, 0, time.UTC)
+	freshTime := time.Date(2023, 6, 3, 0, 0, 0, 0, time.UTC)
+	existing := []*memory.Entry{{
+		ID: "bbq",
+		Memory: &memory.Memory{
+			Memory:    "Attended a BBQ on June 17",
+			Kind:      memory.KindEpisode,
+			EventTime: &storedTime,
+			Location:  "Alice's house",
+		},
+	}}
+	ops := []*extractor.Operation{
+		{
+			Type:       extractor.OperationUpdate,
+			MemoryID:   "bbq",
+			Memory:     "Attended a BBQ on June 3",
+			MemoryKind: memory.KindEpisode,
+			EventTime:  &freshTime,
+			Location:   "Bob's house",
+		},
+		{
+			Type:     extractor.OperationDelete,
+			MemoryID: "bbq",
+		},
+	}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), ops, existing,
+	)
+
+	require.Len(t, out, 2)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+	assert.Equal(t, extractor.OperationUpdate, ops[0].Type)
+	assert.Equal(t, "bbq", ops[0].MemoryID)
+	assert.Equal(t, extractor.OperationDelete, out[1].Type)
+	assert.Equal(t, "bbq", out[1].MemoryID)
+}
+
+func TestHistoryPreservingPolicy_KeepsCompatibleEnrichmentUpdate(
+	t *testing.T,
+) {
+	eventTime := time.Date(2023, 6, 17, 0, 0, 0, 0, time.UTC)
+	existing := []*memory.Entry{{
+		ID: "bbq",
+		Memory: &memory.Memory{
+			Memory:    "Attended a BBQ on June 17",
+			Kind:      memory.KindEpisode,
+			EventTime: &eventTime,
+			Location:  "Alice's house",
+		},
+	}}
+	ops := []*extractor.Operation{{
+		Type:       extractor.OperationUpdate,
+		MemoryID:   "bbq",
+		Memory:     "Attended Alice's birthday BBQ on June 17",
+		MemoryKind: memory.KindEpisode,
+		EventTime:  &eventTime,
+		Location:   "alice's house",
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), ops, existing,
+	)
+
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "bbq", out[0].MemoryID)
 }
