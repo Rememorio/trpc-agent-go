@@ -175,24 +175,49 @@ func (e *memoryExtractor) ExtractOperationStages(
 		return primary, assistantResults, err
 	}
 	if hasStructuredAssistantResultCandidate(messages) {
-		evidence := detectAssistantResultCompleteness(
-			messages, assistantResults,
-		)
-		if len(assistantResults) == 0 || !evidence.empty() {
-			recoveryCtx, recovered, recoveryErr :=
-				e.recoverStructuredAssistantResults(
-					ctx, messages, assistantResults, evidence,
+		hadAssistantResults := len(assistantResults) > 0
+		if !hadAssistantResults {
+			ctx, assistantResults, err =
+				e.appendRecoveredAssistantResults(
+					ctx, messages, assistantResults,
+					assistantResultCompletenessEvidence{},
 				)
-			if recoveryErr != nil {
-				if recoveryCtx.Err() != nil {
-					return primary, assistantResults, recoveryErr
+			if err != nil {
+				return primary, assistantResults, err
+			}
+		}
+		if hadAssistantResults {
+			quantityEvidence := assistantResultCompletenessEvidence{
+				StructuredLabels: missingStructuredQuantityLabels(
+					messages, assistantResults,
+				),
+			}
+			if !quantityEvidence.empty() {
+				ctx, assistantResults, err =
+					e.appendRecoveredAssistantResults(
+						ctx, messages, assistantResults,
+						quantityEvidence,
+					)
+				if err != nil {
+					return primary, assistantResults, err
 				}
-				log.WarnfContext(ctx,
-					"extractor: structured assistant result recovery failed: %v",
-					recoveryErr,
-				)
-			} else {
-				assistantResults = append(assistantResults, recovered...)
+			}
+		}
+		if len(assistantResults) > 0 {
+			resourceEvidence := assistantResultCompletenessEvidence{
+				ResourceURLs: missingStructuredResourceURLs(
+					messages, assistantResults,
+				),
+			}
+			if !resourceEvidence.empty() {
+				ctx, assistantResults, err =
+					e.appendRecoveredAssistantResults(
+						ctx, messages, assistantResults,
+						resourceEvidence,
+					)
+				if err != nil {
+					return primary, assistantResults, err
+				}
 			}
 		}
 	}
@@ -207,6 +232,28 @@ func (e *memoryExtractor) ExtractOperationStages(
 	)
 	qualifyAssistantResultOperations(assistantResults)
 	return primary, assistantResults, nil
+}
+
+func (e *memoryExtractor) appendRecoveredAssistantResults(
+	ctx context.Context,
+	messages []model.Message,
+	current []*Operation,
+	evidence assistantResultCompletenessEvidence,
+) (context.Context, []*Operation, error) {
+	recoveryCtx, recovered, err := e.recoverStructuredAssistantResults(
+		ctx, messages, current, evidence,
+	)
+	if err == nil {
+		return recoveryCtx, append(current, recovered...), nil
+	}
+	if recoveryCtx.Err() != nil {
+		return recoveryCtx, current, err
+	}
+	log.WarnfContext(ctx,
+		"extractor: structured assistant result recovery failed: %v",
+		err,
+	)
+	return ctx, current, nil
 }
 
 func splitExtractionOperations(

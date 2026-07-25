@@ -328,6 +328,68 @@ func TestExtractor_RecoversMissingStructuredResourceURLs(t *testing.T) {
 	assert.Contains(t, recoveryRequest, `https://example.com/stretch`)
 }
 
+func TestExtractor_RecoversQuantitiesBeforeResourceURLs(t *testing.T) {
+	summaryArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: Recommended Alpha, Beta, and Gamma.",
+	})
+	require.NoError(t, err)
+	quantitiesArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: Recommended 2 Alpha, 3 Beta, and 4 Gamma.",
+	})
+	require.NoError(t, err)
+	linksArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: Resource links are " +
+			"https://example.com/alpha, https://example.com/beta, and " +
+			"https://example.com/gamma.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, summaryArgs),
+				},
+			}}}}},
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, quantitiesArgs),
+				},
+			}}}}},
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, linksArgs),
+				},
+			}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Which resources should I use?"),
+		model.NewAssistantMessage(
+			"1. Alpha (2): https://example.com/alpha\n" +
+				"2. Beta (3): https://example.com/beta\n" +
+				"3. Gamma (4): https://example.com/gamma",
+		),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 3)
+	require.Len(t, m.requests, 3)
+	quantityRequest := m.requests[1].Messages[len(m.requests[1].Messages)-1].Content
+	assert.Contains(t, quantityRequest, assistantResultCompletenessUserSuffix)
+	assert.Contains(t, quantityRequest, `"structured_labels_to_check"`)
+	assert.NotContains(t, quantityRequest, `"resource_urls_to_check"`)
+	resourceRequest := m.requests[2].Messages[len(m.requests[2].Messages)-1].Content
+	assert.Contains(t, resourceRequest,
+		assistantResultResourceCompletenessUserSuffix)
+	assert.NotContains(t, resourceRequest, `"structured_labels_to_check"`)
+	assert.Contains(t, resourceRequest, `"resource_urls_to_check"`)
+	assert.Contains(t, resourceRequest,
+		"Assistant result: Recommended 2 Alpha, 3 Beta, and 4 Gamma.")
+}
+
 func TestExtractor_UsesOriginalRecoveryWhenNoResultExists(t *testing.T) {
 	resultArgs, err := json.Marshal(map[string]any{
 		"memory": "Assistant result: The encounter includes 4 Stone Golems, " +

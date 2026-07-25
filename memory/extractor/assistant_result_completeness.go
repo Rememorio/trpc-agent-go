@@ -39,20 +39,6 @@ func (e assistantResultCompletenessEvidence) empty() bool {
 	return len(e.StructuredLabels) == 0 && len(e.ResourceURLs) == 0
 }
 
-func detectAssistantResultCompleteness(
-	messages []model.Message,
-	operations []*Operation,
-) assistantResultCompletenessEvidence {
-	return assistantResultCompletenessEvidence{
-		StructuredLabels: missingStructuredQuantityLabels(
-			messages, operations,
-		),
-		ResourceURLs: missingStructuredResourceURLs(
-			messages, operations,
-		),
-	}
-}
-
 // missingStructuredQuantityLabels identifies a narrow completeness failure:
 // multiple structured item labels carry quantities that no extracted result
 // retained. Requiring multiple labels avoids a second model call for an
