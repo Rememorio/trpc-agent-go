@@ -341,6 +341,58 @@ func TestExtractor_AssistantResultExtractionCombinedPass(t *testing.T) {
 		m.requests[0].Messages[len(m.requests[0].Messages)-1].Role)
 }
 
+func TestExtractor_AssistantResultExtractionScopesTopicQualification(t *testing.T) {
+	args, err := json.Marshal(map[string]any{
+		"memory": "Leads three UX researchers.",
+		"topics": []string{"UX researchers", "Product Owner"},
+	})
+	require.NoError(t, err)
+	messages := []model.Message{
+		model.NewUserMessage(
+			"As Product Owner, I lead three UX researchers.",
+		),
+		model.NewAssistantMessage("Understood."),
+	}
+
+	tests := []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{
+			name: "default behavior remains unchanged",
+			want: "Leads three UX researchers.",
+		},
+		{
+			name:    "assistant result extraction qualifies grounded context",
+			enabled: true,
+			want:    "Product Owner: Leads three UX researchers.",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			m := newMockModelWithToolCalls([]model.ToolCall{
+				makeToolCall(memory.AddToolName, args),
+			})
+			options := []Option(nil)
+			if test.enabled {
+				options = append(
+					options,
+					WithAssistantResultExtraction(true),
+				)
+			}
+			e := NewExtractor(m, options...)
+
+			operations, err := e.Extract(
+				context.Background(), messages, nil,
+			)
+			require.NoError(t, err)
+			require.Len(t, operations, 1)
+			assert.Equal(t, test.want, operations[0].Memory)
+		})
+	}
+}
+
 func TestExtractor_AssistantResultStageOwnsNearDuplicate(t *testing.T) {
 	primaryArgs, err := json.Marshal(map[string]any{
 		"memory": "Assistant recommended resources for front-end and back-end development: Codecademy for HTML, CSS, and JavaScript; Node.js, Python, SQL, and Java for back-end.",

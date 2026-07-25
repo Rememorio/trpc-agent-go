@@ -169,9 +169,11 @@ func (e *memoryExtractor) ExtractOperationStages(
 	ctx, primary, assistantResults, err := e.generateOperations(
 		ctx, primaryRequest,
 	)
-	qualifyOperationsWithGroundedTopics(
-		conversationSourceText(messages), primary,
-	)
+	if includeAssistantResults {
+		qualifyOperationsWithGroundedTopics(
+			conversationSourceText(messages), primary,
+		)
+	}
 	if err != nil || !includeAssistantResults {
 		return primary, assistantResults, err
 	}
