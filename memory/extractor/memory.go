@@ -166,8 +166,9 @@ func (e *memoryExtractor) ExtractOperationStages(
 		Messages: e.buildMessages(ctx, messages, existing),
 		Tools:    e.extractionTools(includeAssistantResults),
 	}
-	ctx, ops, err := e.generateOperations(ctx, primaryRequest)
-	primary, assistantResults := splitExtractionOperations(ops)
+	ctx, primary, assistantResults, err := e.generateOperations(
+		ctx, primaryRequest,
+	)
 	qualifyOperationsWithGroundedTopics(
 		conversationSourceText(messages), primary,
 	)
@@ -205,19 +206,6 @@ func (e *memoryExtractor) ExtractOperationStages(
 	return primary, assistantResults, nil
 }
 
-func splitExtractionOperations(
-	operations []*Operation,
-) (primary, assistantResults []*Operation) {
-	for _, operation := range operations {
-		if operation != nil && operation.assistantResult {
-			assistantResults = append(assistantResults, operation)
-			continue
-		}
-		primary = append(primary, operation)
-	}
-	return primary, assistantResults
-}
-
 func (e *memoryExtractor) extractionTools(
 	includeAssistantResults bool,
 ) map[string]tool.Tool {
@@ -236,41 +224,43 @@ func (e *memoryExtractor) extractionTools(
 func (e *memoryExtractor) generateOperations(
 	ctx context.Context,
 	req *model.Request,
-) (context.Context, []*Operation, error) {
+) (context.Context, []*Operation, []*Operation, error) {
 	ctx, rspChan, err := e.runBeforeModelCallbacks(ctx, req)
 	if err != nil {
-		return ctx, nil, err
+		return ctx, nil, nil, err
 	}
 	if rspChan == nil {
 		rspChan, err = e.model.GenerateContent(ctx, req)
 		if err != nil {
 			log.WarnfContext(ctx, "extractor: model call failed: %v", err)
-			return ctx, nil, fmt.Errorf("model call failed: %w", err)
+			return ctx, nil, nil, fmt.Errorf("model call failed: %w", err)
 		}
 	}
 	if rspChan == nil {
-		return ctx, nil, errors.New("model returned nil response channel")
+		return ctx, nil, nil, errors.New("model returned nil response channel")
 	}
 
 	// Parse tool calls into operations.
-	var ops []*Operation
+	var primary, assistantResults []*Operation
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx, nil, fmt.Errorf("memory extraction canceled: %w", ctx.Err())
+			return ctx, nil, nil,
+				fmt.Errorf("memory extraction canceled: %w", ctx.Err())
 		case rsp, ok := <-rspChan:
 			if !ok {
-				return ctx, ops, nil
+				return ctx, primary, assistantResults, nil
 			}
 			ctx, rsp, err = e.runAfterModelCallbacks(ctx, req, rsp)
 			if err != nil {
-				return ctx, nil, err
+				return ctx, nil, nil, err
 			}
 			if rsp == nil {
 				continue
 			}
 			if rsp.Error != nil {
-				return ctx, nil, fmt.Errorf("model error: %s", rsp.Error.Message)
+				return ctx, nil, nil,
+					fmt.Errorf("model error: %s", rsp.Error.Message)
 			}
 			if len(rsp.Choices) == 0 {
 				continue
@@ -281,7 +271,11 @@ func (e *memoryExtractor) generateOperations(
 			for _, call := range rsp.Choices[0].Message.ToolCalls {
 				op := e.parseToolCall(ctx, call)
 				if op != nil {
-					ops = append(ops, op)
+					if call.Function.Name == assistantResultAddToolName {
+						assistantResults = append(assistantResults, op)
+					} else {
+						primary = append(primary, op)
+					}
 				}
 			}
 		}

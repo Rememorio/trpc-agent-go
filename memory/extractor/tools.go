@@ -112,10 +112,9 @@ func parseToolCallArgs(toolName string, args map[string]any) *Operation {
 			return nil
 		}
 		op := &Operation{
-			Type:            OperationAdd,
-			Memory:          mem,
-			Topics:          toStringSlice(args[argKeyTopics]),
-			assistantResult: toolName == assistantResultAddToolName,
+			Type:   OperationAdd,
+			Memory: mem,
+			Topics: toStringSlice(args[argKeyTopics]),
 		}
 		parseEpisodicArgs(op, args)
 		return op
