@@ -175,13 +175,13 @@ func (e *memoryExtractor) ExtractOperationStages(
 		return primary, assistantResults, err
 	}
 	if hasStructuredAssistantResultCandidate(messages) {
-		labelsToCheck := missingStructuredQuantityLabels(
+		evidence := detectAssistantResultCompleteness(
 			messages, assistantResults,
 		)
-		if len(assistantResults) == 0 || len(labelsToCheck) > 0 {
+		if len(assistantResults) == 0 || !evidence.empty() {
 			recoveryCtx, recovered, recoveryErr :=
 				e.recoverStructuredAssistantResults(
-					ctx, messages, assistantResults, labelsToCheck,
+					ctx, messages, assistantResults, evidence,
 				)
 			if recoveryErr != nil {
 				if recoveryCtx.Err() != nil {

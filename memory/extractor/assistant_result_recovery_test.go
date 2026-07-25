@@ -171,6 +171,47 @@ func TestMissingStructuredQuantityLabels(t *testing.T) {
 	))
 }
 
+func TestMissingStructuredResourceURLs(t *testing.T) {
+	t.Parallel()
+	messages := []model.Message{
+		model.NewUserMessage("Which videos should I share?"),
+		model.NewAssistantMessage(
+			"1. Posture basics: <https://example.com/posture>\n" +
+				"2. Desk setup: https://example.com/desk\n" +
+				"3. Stretching: https://example.com/stretch.",
+		),
+	}
+
+	assert.Equal(t, []string{
+		"https://example.com/posture",
+		"https://example.com/desk",
+		"https://example.com/stretch",
+	}, missingStructuredResourceURLs(messages, []*Operation{{
+		Memory: "Assistant result: Recommended Posture basics, Desk setup, " +
+			"and Stretching.",
+	}}))
+	assert.Equal(t, []string{
+		"https://example.com/desk",
+		"https://example.com/stretch",
+	}, missingStructuredResourceURLs(messages, []*Operation{{
+		Memory: "Assistant result: Recommended Posture basics at " +
+			"https://example.com/posture, Desk setup, and Stretching.",
+	}}))
+	assert.Empty(t, missingStructuredResourceURLs(messages, []*Operation{{
+		Memory: "Assistant result: Recommended Posture basics at " +
+			"https://example.com/posture, Desk setup at " +
+			"https://example.com/desk, and Stretching at " +
+			"https://example.com/stretch.",
+	}}))
+	assert.Empty(t, missingStructuredResourceURLs(
+		[]model.Message{model.NewAssistantMessage(
+			"1. Documentation: https://example.com/docs\n" +
+				"2. Community forum\n3. Office hours",
+		)},
+		[]*Operation{{Memory: "Assistant result: Recommended the documentation."}},
+	))
+}
+
 func TestExtractor_RecoversMissingStructuredQuantities(t *testing.T) {
 	summaryArgs, err := json.Marshal(map[string]any{
 		"memory": "Assistant result: The encounter includes Stone Golems, " +
@@ -227,6 +268,58 @@ func TestExtractor_RecoversMissingStructuredQuantities(t *testing.T) {
 	assert.Contains(t, recoveryRequest, `"structured_labels_to_check"`)
 	assert.Contains(t, recoveryRequest, `Stone Golems (4)`)
 	assert.Contains(t, recoveryRequest, `Ice Wraiths (6)`)
+}
+
+func TestExtractor_RecoversMissingStructuredResourceURLs(t *testing.T) {
+	summaryArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: Recommended Posture Basics, Desk Setup, " +
+			"and Stretching videos.",
+	})
+	require.NoError(t, err)
+	linksArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: Resource links are Posture Basics at " +
+			"https://example.com/posture, Desk Setup at " +
+			"https://example.com/desk, and Stretching at " +
+			"https://example.com/stretch.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, summaryArgs),
+				},
+			}}}}},
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, linksArgs),
+				},
+			}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Which videos should I share?"),
+		model.NewAssistantMessage(
+			"1. Posture Basics: https://example.com/posture\n" +
+				"2. Desk Setup: https://example.com/desk\n" +
+				"3. Stretching: https://example.com/stretch",
+		),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 2)
+	require.Len(t, m.requests, 2)
+	assert.Contains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_completeness_recovery>")
+	recoveryRequest := m.requests[1].Messages[len(m.requests[1].Messages)-1].Content
+	assert.Contains(t, recoveryRequest, `"already_extracted_results"`)
+	assert.Contains(t, recoveryRequest, `"resource_urls_to_check"`)
+	assert.NotContains(t, recoveryRequest, `"structured_labels_to_check"`)
+	assert.Contains(t, recoveryRequest, `https://example.com/posture`)
+	assert.Contains(t, recoveryRequest, `https://example.com/stretch`)
 }
 
 func TestExtractor_UsesOriginalRecoveryWhenNoResultExists(t *testing.T) {

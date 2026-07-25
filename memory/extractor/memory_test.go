@@ -570,18 +570,22 @@ func TestFilterGroundedAssistantResultOperations(t *testing.T) {
 		{Memory: "Options: (1) train; (2) taxi."},
 		{Memory: "Airport Limousine Bus costs $10."},
 		{Memory: "Taxi fare estimate: USD 140 to 180."},
+		{Memory: "Timetable: https://example.com/timetable."},
+		{Memory: "Timetable: https://example.com/invented."},
 		nil,
 	}
+	messages[1].Content += " Timetable: <https://example.com/timetable>."
 
 	got := filterGroundedAssistantResultOperations(
 		context.Background(), messages, operations,
 	)
-	require.Len(t, got, 5)
+	require.Len(t, got, 6)
 	assert.Same(t, operations[0], got[0])
 	assert.Same(t, operations[1], got[1])
 	assert.Same(t, operations[2], got[2])
 	assert.Same(t, operations[3], got[3])
 	assert.Same(t, operations[5], got[4])
+	assert.Same(t, operations[6], got[5])
 }
 
 func TestFilterGroundedAssistantResultOperations_NormalizesCurrencies(t *testing.T) {

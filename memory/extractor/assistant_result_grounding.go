@@ -39,9 +39,12 @@ func filterGroundedAssistantResultOperations(
 	operations []*Operation,
 ) []*Operation {
 	// Monetary hallucinations are both high-impact and reliably comparable
-	// after normalization. Other quantities can be legitimate derivations or
+	// after normalization. URLs are opaque and must be copied exactly from the
+	// assistant response. Other quantities can be legitimate derivations or
 	// formatting changes, so the deterministic guard intentionally stays narrow.
-	grounded := moneyClaimSet(assistantResultSourceText(messages))
+	source := assistantResultSourceText(messages)
+	grounded := moneyClaimSet(source)
+	groundedURLs := resourceURLSet(source)
 	result := make([]*Operation, 0, len(operations))
 	for _, operation := range operations {
 		if operation == nil {
@@ -52,6 +55,16 @@ func filterGroundedAssistantResultOperations(
 			log.DebugfContext(ctx,
 				"extractor: dropped assistant result with ungrounded amount %q",
 				claim,
+			)
+			continue
+		}
+		resourceURL, ok := firstUngroundedResourceURL(
+			operation.Memory, groundedURLs,
+		)
+		if ok {
+			log.DebugfContext(ctx,
+				"extractor: dropped assistant result with ungrounded URL %q",
+				resourceURL,
 			)
 			continue
 		}
@@ -92,6 +105,26 @@ func firstUngroundedMoneyClaim(
 	for _, claim := range assistantResultMoneyPattern.FindAllString(text, -1) {
 		if _, ok := grounded[normalizeMoneyClaim(claim)]; !ok {
 			return claim, true
+		}
+	}
+	return "", false
+}
+
+func resourceURLSet(text string) map[string]struct{} {
+	result := make(map[string]struct{})
+	for _, value := range assistantResultResourceURLs(text) {
+		result[value] = struct{}{}
+	}
+	return result
+}
+
+func firstUngroundedResourceURL(
+	text string,
+	grounded map[string]struct{},
+) (string, bool) {
+	for _, value := range assistantResultResourceURLs(text) {
+		if _, ok := grounded[value]; !ok {
+			return value, true
 		}
 	}
 	return "", false
