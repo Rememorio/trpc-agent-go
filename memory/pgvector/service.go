@@ -602,14 +602,14 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search fuses vector, keyword, and focused-passage rankings.
+	// Hybrid search fuses the backend vector and keyword rankings.
 	if opts.HybridSearch {
 		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
 		if kwErr != nil {
 			keywordResults = nil
 		}
 		results = iranking.MergeHybrid(
-			query, results, keywordResults, opts.HybridRRFK, maxResults,
+			results, keywordResults, opts.HybridRRFK, maxResults,
 		)
 	}
 

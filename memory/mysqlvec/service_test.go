@@ -1271,7 +1271,7 @@ func TestService_SearchMemories_KindFallback(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestService_SearchMemories_HybridSearch(t *testing.T) {
+func TestService_SearchMemories_HybridSearchUsesBackendRankings(t *testing.T) {
 	db, mock := setupMockDB(t)
 	defer db.Close()
 	svc := setupMockService(t, db, mock, WithSkipDBInit(true), WithSimilarityThreshold(0))
@@ -1299,7 +1299,7 @@ func TestService_SearchMemories_HybridSearch(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, results, 2)
-	require.Equal(t, "m1", results[0].ID)
+	require.Equal(t, "m2", results[0].ID)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

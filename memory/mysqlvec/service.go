@@ -717,7 +717,7 @@ func (s *Service) applyHybridSearch(
 		keywordResults = nil
 	}
 	return iranking.MergeHybrid(
-		opts.Query, results, keywordResults, opts.HybridRRFK, maxResults,
+		results, keywordResults, opts.HybridRRFK, maxResults,
 	)
 }
 

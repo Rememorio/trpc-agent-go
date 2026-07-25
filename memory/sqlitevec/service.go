@@ -720,7 +720,6 @@ func (s *Service) SearchMemories(
 			keywordResults = nil
 		}
 		results = iranking.MergeHybrid(
-			searchOpts.Query,
 			results,
 			keywordResults,
 			searchOpts.HybridRRFK,
