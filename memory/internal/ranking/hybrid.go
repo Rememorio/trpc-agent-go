@@ -17,7 +17,7 @@ import (
 // shared query-aware rankings. The latter only reorder candidates already
 // retrieved by the backend.
 func MergeHybrid(
-	query string,
+	_ string,
 	vectorResults []*memory.Entry,
 	keywordResults []*memory.Entry,
 	k int,
@@ -29,11 +29,6 @@ func MergeHybrid(
 	}
 	if len(keywordResults) > 0 {
 		rankings = append(rankings, keywordResults)
-	}
-	if provenance := rankResultsByAssistantResultIntent(
-		query, vectorResults, keywordResults,
-	); len(provenance) > 0 {
-		rankings = append(rankings, provenance)
 	}
 	switch len(rankings) {
 	case 0:

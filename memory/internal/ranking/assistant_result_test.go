@@ -102,7 +102,7 @@ func TestAsksForAssistantResult(t *testing.T) {
 	}
 }
 
-func TestAssistantResultIntentContributesToHybridRanking(t *testing.T) {
+func TestAssistantResultIntentDoesNotChangeBackendRanking(t *testing.T) {
 	assistant := assistantResultEntry("assistant", "Estimated cost is $40.")
 	user := &memory.Entry{
 		ID: "user", Memory: &memory.Memory{Memory: "Taxi cost is $60."},
@@ -113,8 +113,8 @@ func TestAssistantResultIntentContributesToHybridRanking(t *testing.T) {
 	)
 
 	require.Len(t, actual, 2)
-	assert.Equal(t, "user", actual[0].ID)
-	assert.Greater(t, actual[0].Score, actual[1].Score)
+	assert.Equal(t, "assistant", actual[0].ID)
+	assert.Equal(t, vector, actual)
 }
 
 func assistantResultEntry(id, content string) *memory.Entry {

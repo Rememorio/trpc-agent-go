@@ -92,6 +92,33 @@ func TestMergeHybridUsesOnlyBackendRankingsWithoutFocusedRanking(t *testing.T) {
 	assert.Equal(t, "resources", results[0].ID)
 }
 
+func TestMergeHybridPreservesVectorOrderWithoutProvenanceRanking(t *testing.T) {
+	t.Parallel()
+
+	userFact := &memory.Entry{
+		ID: "user-fact",
+		Memory: &memory.Memory{
+			Memory: "The user discussed several implementation options.",
+		},
+	}
+	assistantResult := &memory.Entry{
+		ID: "assistant-result",
+		Memory: &memory.Memory{
+			Memory: "Assistant result: choose the second implementation option.",
+		},
+	}
+	results := MergeHybrid(
+		"What did you recommend earlier?",
+		[]*memory.Entry{userFact, assistantResult},
+		nil,
+		0,
+		2,
+	)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "user-fact", results[0].ID)
+}
+
 func TestUniqueCandidatesPreservesRankingOrder(t *testing.T) {
 	t.Parallel()
 
