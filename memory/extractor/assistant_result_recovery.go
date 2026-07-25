@@ -59,11 +59,10 @@ func (e *memoryExtractor) recoverStructuredAssistantResults(
 			assistantResultAddToolName: assistantResultAddTool,
 		},
 	}
-	ctx, operations, err := e.generateOperations(ctx, req)
+	ctx, _, assistantResults, err := e.generateOperations(ctx, req)
 	if err != nil {
 		return ctx, nil, err
 	}
-	_, assistantResults := splitExtractionOperations(operations)
 	return ctx, assistantResults, nil
 }
 
