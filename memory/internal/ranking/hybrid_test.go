@@ -38,7 +38,7 @@ func TestMergeHybridFusesBackendRankings(t *testing.T) {
 	assert.Greater(t, results[0].Score, results[1].Score)
 }
 
-func TestMergeHybridUsesFocusedRanking(t *testing.T) {
+func TestMergeHybridPreservesVectorOrderWithoutFocusedRanking(t *testing.T) {
 	t.Parallel()
 
 	resources := &memory.Entry{
@@ -62,10 +62,10 @@ func TestMergeHybridUsesFocusedRanking(t *testing.T) {
 	)
 
 	require.Len(t, results, 2)
-	assert.Equal(t, "languages", results[0].ID)
+	assert.Equal(t, "resources", results[0].ID)
 }
 
-func TestMergeHybridFocusesKeywordOnlyCandidates(t *testing.T) {
+func TestMergeHybridUsesOnlyBackendRankingsWithoutFocusedRanking(t *testing.T) {
 	t.Parallel()
 
 	resources := &memory.Entry{
@@ -89,7 +89,7 @@ func TestMergeHybridFocusesKeywordOnlyCandidates(t *testing.T) {
 	)
 
 	require.Len(t, results, 2)
-	assert.Equal(t, "languages", results[0].ID)
+	assert.Equal(t, "resources", results[0].ID)
 }
 
 func TestUniqueCandidatesPreservesRankingOrder(t *testing.T) {
