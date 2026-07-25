@@ -264,6 +264,8 @@ func TestExtractor_RecoversMissingStructuredQuantities(t *testing.T) {
 	recoveryRequest := m.requests[1].Messages[len(m.requests[1].Messages)-1].Content
 	assert.Contains(t, recoveryRequest,
 		assistantResultCompletenessUserSuffix)
+	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"resource_urls_to_check")
 	assert.Contains(t, recoveryRequest, `"already_extracted_results"`)
 	assert.Contains(t, recoveryRequest, `"structured_labels_to_check"`)
 	assert.Contains(t, recoveryRequest, `Stone Golems (4)`)
@@ -315,6 +317,10 @@ func TestExtractor_RecoversMissingStructuredResourceURLs(t *testing.T) {
 	assert.Contains(t, m.requests[1].Messages[0].Content,
 		"<assistant_result_completeness_recovery>")
 	recoveryRequest := m.requests[1].Messages[len(m.requests[1].Messages)-1].Content
+	assert.Contains(t, recoveryRequest,
+		assistantResultResourceCompletenessUserSuffix)
+	assert.NotContains(t, recoveryRequest,
+		assistantResultCompletenessUserSuffix)
 	assert.Contains(t, recoveryRequest, `"already_extracted_results"`)
 	assert.Contains(t, recoveryRequest, `"resource_urls_to_check"`)
 	assert.NotContains(t, recoveryRequest, `"structured_labels_to_check"`)
