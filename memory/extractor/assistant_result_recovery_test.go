@@ -96,9 +96,9 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 	primary, assistantResults, err := e.ExtractOperationStages(
 		context.Background(),
 		[]model.Message{
-			model.NewUserMessage("Predict the entities in this article."),
-			model.NewAssistantMessage("* Dr. Arati Prabhakar\n* ITER\n" +
-				"* Livermore National Laboratory"),
+			model.NewUserMessage("Which entities appear in this article?"),
+			model.NewAssistantMessage("* \"Dr. Arati Prabhakar\"\n* \"ITER\"\n" +
+				"* \"Livermore National Laboratory\""),
 		},
 		existing,
 	)
@@ -112,6 +112,10 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 	assert.Contains(t, m.requests[1].Tools, assistantResultAddToolName)
 	assert.Contains(t, m.requests[1].Messages[0].Content,
 		"<assistant_result_recovery>")
+	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"<quoted_assistant_result_recovery>")
+	assert.Equal(t, assistantResultRecoveryUserSuffix,
+		m.requests[1].Messages[len(m.requests[1].Messages)-1].Content)
 	assert.NotContains(t, m.requests[1].Messages[0].Content,
 		"Existing result must stay out of recovery.")
 	assert.NotContains(t, m.requests[1].Messages[0].Content,
