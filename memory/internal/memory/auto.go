@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+	"trpc.group/trpc-go/trpc-agent-go/memory/internal/assistantresult"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -224,14 +225,13 @@ type MemoryOperator interface {
 
 // AutoMemoryWorker manages async memory extraction workers.
 type AutoMemoryWorker struct {
-	config             AutoMemoryConfig
-	operator           MemoryOperator
-	updatePolicy       extractor.UpdatePolicy
-	lossAwareReconcile bool
-	jobChans           []chan *MemoryJob
-	wg                 sync.WaitGroup
-	mu                 sync.RWMutex
-	started            bool
+	config       AutoMemoryConfig
+	operator     MemoryOperator
+	updatePolicy extractor.UpdatePolicy
+	jobChans     []chan *MemoryJob
+	wg           sync.WaitGroup
+	mu           sync.RWMutex
+	started      bool
 }
 
 // NewAutoMemoryWorker creates a new auto memory worker.
@@ -247,9 +247,6 @@ func NewAutoMemoryWorker(
 		config:       config,
 		operator:     operator,
 		updatePolicy: policy,
-		lossAwareReconcile: lossAwareReconcileFromMetadata(
-			config.Extractor, policy,
-		),
 	}
 }
 
@@ -980,7 +977,7 @@ func (w *AutoMemoryWorker) decideAddOp(
 	}
 	best, bestJaccard, bestTier := selectReconcileCandidate(
 		op, candidates,
-		w.lossAwareReconcile,
+		w.updatePolicy == extractor.UpdatePolicyHistoryPreserving,
 	)
 	if best == nil || best.Memory == nil || best.ID == "" {
 		return op
@@ -1032,6 +1029,11 @@ func selectReconcileCandidate(
 	bestTier := -1
 	for _, candidate := range candidates {
 		if candidate == nil || candidate.Memory == nil {
+			continue
+		}
+		// Assistant results use their own reconciliation path and must not
+		// become update targets for primary extracted memories.
+		if assistantresult.Is(candidate.Memory.Memory) {
 			continue
 		}
 		if preserveStoredMemory &&

@@ -49,25 +49,52 @@ func TestUpdatePolicyFromMetadata(t *testing.T) {
 	assert.Equal(t, extractor.UpdatePolicyReconcile, updatePolicyFromMetadata(nil))
 }
 
-func TestLossAwareReconcileFromMetadata(t *testing.T) {
-	assert.False(t, lossAwareReconcileFromMetadata(
-		nil, extractor.UpdatePolicyReconcile,
-	))
-	assert.True(t, lossAwareReconcileFromMetadata(
-		nil, extractor.UpdatePolicyHistoryPreserving,
-	))
-	assert.False(t, lossAwareReconcileFromMetadata(
-		&mockExtractor{metadata: map[string]any{
-			extractorMetadataAssistantResults: "true",
-		}},
-		extractor.UpdatePolicyReconcile,
-	))
-	assert.True(t, lossAwareReconcileFromMetadata(
-		&mockExtractor{metadata: map[string]any{
-			extractorMetadataAssistantResults: true,
-		}},
-		extractor.UpdatePolicyReconcile,
-	))
+func TestAssistantResultExtractionDoesNotChangeOrdinaryReconcile(
+	t *testing.T,
+) {
+	operator := newMockOperator()
+	operator.searchResults = []*memory.Entry{{
+		ID: "reservation",
+		Memory: &memory.Memory{
+			Memory: "Dinner reservation is for 8 people at 7 PM.",
+		},
+		Score: 0.97,
+	}}
+	incoming := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Dinner reservation is at 7 PM.",
+		Topics: []string{"reservation"},
+	}}
+
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{
+		Extractor: extractor.NewExtractor(
+			nil,
+			extractor.WithAssistantResultExtraction(true),
+		),
+	}, operator)
+	assert.Equal(t, extractor.UpdatePolicyReconcile, worker.updatePolicy)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), incoming,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "reservation", out[0].MemoryID)
+
+	worker = NewAutoMemoryWorker(AutoMemoryConfig{
+		Extractor: extractor.NewExtractor(
+			nil,
+			extractor.WithAssistantResultExtraction(true),
+			extractor.WithUpdatePolicy(
+				extractor.UpdatePolicyHistoryPreserving,
+			),
+		),
+	}, operator)
+	out = worker.reconcileOps(
+		context.Background(), reconcileUserKey(), incoming,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
 }
 
 func TestHistoryPreservingPolicy_ReconcilesAddsAndPreservesHistory(
@@ -158,8 +185,13 @@ func TestUpdatePoliciesPreserveDistinctResult(t *testing.T) {
 	assert.Equal(t, extractor.OperationAdd, ordinary[0].Type)
 	assert.Empty(t, ordinary[0].MemoryID)
 
+	assistantIncoming := []*extractor.Operation{{
+		Type: extractor.OperationAdd,
+		Memory: "Assistant result: Resources: Codecademy, FreeCodeCamp, " +
+			"and The Odin Project.",
+	}}
 	assistantResult := worker.applyAssistantResultPolicy(
-		context.Background(), reconcileUserKey(), incoming, stored,
+		context.Background(), reconcileUserKey(), assistantIncoming, stored,
 	)
 	require.Len(t, assistantResult, 1)
 	assert.Equal(t, extractor.OperationAdd, assistantResult[0].Type)
@@ -175,12 +207,96 @@ func TestUpdatePoliciesPreserveDistinctResult(t *testing.T) {
 		context.Background(), reconcileUserKey(), []*extractor.Operation{{
 			Type:     extractor.OperationUpdate,
 			MemoryID: "tips",
-			Memory:   "Updated recommendation.",
+			Memory:   "Assistant result: Updated recommendation.",
 		}}, stored,
 	)
 	require.Len(t, assistantResult, 1)
 	assert.Equal(t, extractor.OperationAdd, assistantResult[0].Type)
 	assert.Empty(t, assistantResult[0].MemoryID)
+}
+
+func TestApplyUpdatePolicyPreservesAssistantResultTarget(t *testing.T) {
+	existing := []*memory.Entry{
+		{
+			ID: "assistant",
+			Memory: &memory.Memory{
+				Memory: "Assistant result: Recommended Miss Bee Providore.",
+			},
+		},
+		{
+			ID: "ordinary",
+			Memory: &memory.Memory{
+				Memory: "Plans to visit Bandung.",
+			},
+		},
+	}
+	ops := []*extractor.Operation{
+		{
+			Type:     extractor.OperationUpdate,
+			MemoryID: "assistant",
+			Memory:   "Plans to try Miss Bee Providore.",
+		},
+		{
+			Type:     extractor.OperationUpdate,
+			MemoryID: "ordinary",
+			Memory:   "Plans to visit Bandung tomorrow.",
+		},
+		{
+			Type:     extractor.OperationDelete,
+			MemoryID: "assistant",
+		},
+	}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+
+	out := worker.applyUpdatePolicy(
+		context.Background(), reconcileUserKey(), ops, existing,
+	)
+
+	require.Len(t, out, 3)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+	assert.Equal(t, extractor.OperationUpdate, ops[0].Type)
+	assert.Equal(t, "assistant", ops[0].MemoryID)
+	assert.Equal(t, extractor.OperationUpdate, out[1].Type)
+	assert.Equal(t, "ordinary", out[1].MemoryID)
+	assert.Equal(t, extractor.OperationDelete, out[2].Type)
+	assert.Equal(t, "assistant", out[2].MemoryID)
+}
+
+func TestAssistantResultPolicyOnlyReconcilesSameProvenance(t *testing.T) {
+	incoming := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Assistant result: Recommended Miss Bee Providore nearby.",
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
+
+	ordinary := []*memory.Entry{{
+		ID: "ordinary",
+		Memory: &memory.Memory{
+			Memory: "Result: Recommended Miss Bee Providore.",
+		},
+		Score: 1,
+	}}
+	out := worker.applyAssistantResultPolicy(
+		context.Background(), reconcileUserKey(), incoming, ordinary,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
+
+	assistant := []*memory.Entry{{
+		ID: "assistant",
+		Memory: &memory.Memory{
+			Memory: "Assistant result: Recommended Miss Bee Providore.",
+		},
+		Score: 1,
+	}}
+	out = worker.applyAssistantResultPolicy(
+		context.Background(), reconcileUserKey(), incoming, assistant,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "assistant", out[0].MemoryID)
 }
 
 func TestAssistantResultPolicy_StrictEnrichmentUpdates(t *testing.T) {
@@ -189,15 +305,17 @@ func TestAssistantResultPolicy_StrictEnrichmentUpdates(t *testing.T) {
 	existing := []*memory.Entry{{
 		ID: "alice-visit",
 		Memory: &memory.Memory{
-			Memory:    "Alice visited Bob on December 1st, 2025.",
+			Memory: "Assistant result: Alice visited Bob on " +
+				"December 1st, 2025.",
 			Topics:    []string{"Alice", "Bob", "visit"},
 			Kind:      memory.KindEpisode,
 			EventTime: &oldTime,
 		},
 	}}
 	in := []*extractor.Operation{{
-		Type:       extractor.OperationAdd,
-		Memory:     "Alice visited Bob at 4pm on December 1st, 2025.",
+		Type: extractor.OperationAdd,
+		Memory: "Assistant result: Alice visited Bob at 4pm on " +
+			"December 1st, 2025.",
 		Topics:     []string{"Alice", "Bob", "visit", "time"},
 		MemoryKind: memory.KindEpisode,
 		EventTime:  &newTime,
@@ -222,15 +340,17 @@ func TestAssistantResultPolicy_StrictEnrichmentRespectsUpdatePolicy(
 	existing := []*memory.Entry{{
 		ID: "alice-visit",
 		Memory: &memory.Memory{
-			Memory:    "Alice visited Bob on December 1st, 2025.",
+			Memory: "Assistant result: Alice visited Bob on " +
+				"December 1st, 2025.",
 			Topics:    []string{"Alice", "Bob", "visit"},
 			Kind:      memory.KindEpisode,
 			EventTime: &oldTime,
 		},
 	}}
 	in := []*extractor.Operation{{
-		Type:       extractor.OperationAdd,
-		Memory:     "Alice visited Bob at 4pm on December 1st, 2025.",
+		Type: extractor.OperationAdd,
+		Memory: "Assistant result: Alice visited Bob at 4pm on " +
+			"December 1st, 2025.",
 		Topics:     []string{"Alice", "Bob", "visit", "time"},
 		MemoryKind: memory.KindEpisode,
 		EventTime:  &newTime,
@@ -319,7 +439,7 @@ func TestAssistantResultPolicy_ChangedStateRemainsAdditive(t *testing.T) {
 	existing := []*memory.Entry{{
 		ID: "job",
 		Memory: &memory.Memory{
-			Memory: "Works at Acme as an engineer.",
+			Memory: "Assistant result: Works at Acme as an engineer.",
 			Kind:   memory.KindFact,
 		},
 	}}
@@ -335,9 +455,10 @@ func TestAssistantResultPolicy_ChangedStateRemainsAdditive(t *testing.T) {
 				memoryID = "job"
 			}
 			in := []*extractor.Operation{{
-				Type:       operationType,
-				MemoryID:   memoryID,
-				Memory:     "Now works at Globex as an engineer.",
+				Type:     operationType,
+				MemoryID: memoryID,
+				Memory: "Assistant result: Now works at Globex " +
+					"as an engineer.",
 				MemoryKind: memory.KindFact,
 			}}
 			out := worker.applyAssistantResultPolicy(
@@ -354,14 +475,17 @@ func TestAssistantResultPolicy_ExactDuplicateIsNoOp(t *testing.T) {
 	existing := []*memory.Entry{{
 		ID: "coffee",
 		Memory: &memory.Memory{
-			Memory: "Likes coffee.",
+			Memory: "Assistant result: Likes coffee.",
 			Kind:   memory.KindFact,
 		},
 	}}
 	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
 	out := worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(),
-		[]*extractor.Operation{{Type: extractor.OperationAdd, Memory: " LIKES coffee "}},
+		[]*extractor.Operation{{
+			Type:   extractor.OperationAdd,
+			Memory: " assistant RESULT: LIKES coffee ",
+		}},
 		existing,
 	)
 	assert.Empty(t, out)
@@ -371,7 +495,7 @@ func TestAssistantResultPolicy_UpdateOperations(t *testing.T) {
 	existing := []*memory.Entry{{
 		ID: "trip",
 		Memory: &memory.Memory{
-			Memory: "Alice visited Paris in May.",
+			Memory: "Assistant result: Alice visited Paris in May.",
 			Kind:   memory.KindFact,
 		},
 	}}
@@ -382,7 +506,7 @@ func TestAssistantResultPolicy_UpdateOperations(t *testing.T) {
 		[]*extractor.Operation{{
 			Type:     extractor.OperationUpdate,
 			MemoryID: "trip",
-			Memory:   "Alice visited Paris in May.",
+			Memory:   "Assistant result: Alice visited Paris in May.",
 		}}, existing,
 	)
 	assert.Empty(t, duplicate)
@@ -392,7 +516,8 @@ func TestAssistantResultPolicy_UpdateOperations(t *testing.T) {
 		[]*extractor.Operation{{
 			Type:     extractor.OperationUpdate,
 			MemoryID: "trip",
-			Memory:   "Alice visited Paris in May 2025.",
+			Memory: "Assistant result: Alice visited Paris " +
+				"in May 2025.",
 		}}, existing,
 	)
 	require.Len(t, enrichment, 1)
