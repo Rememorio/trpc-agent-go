@@ -22,6 +22,7 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/log"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	"trpc.group/trpc-go/trpc-agent-go/memory/extractor"
+	"trpc.group/trpc-go/trpc-agent-go/memory/internal/assistantresult"
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 )
@@ -1028,6 +1029,11 @@ func selectReconcileCandidate(
 	bestTier := -1
 	for _, candidate := range candidates {
 		if candidate == nil || candidate.Memory == nil {
+			continue
+		}
+		// Assistant results use their own reconciliation path and must not
+		// become update targets for primary extracted memories.
+		if assistantresult.Is(candidate.Memory.Memory) {
 			continue
 		}
 		if preserveStoredMemory &&
