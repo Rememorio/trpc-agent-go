@@ -31,6 +31,11 @@ var (
 
 func normalizeCriticalValue(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "not", "no", "never", "without", "n't",
+		"不再", "不是", "没有", "从未", "未", "无":
+		return "negation"
+	}
 	words := strings.Fields(strings.ReplaceAll(normalized, "-", " "))
 	if len(words) == 0 || len(words) > 2 {
 		return normalized

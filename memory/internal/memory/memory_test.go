@@ -983,6 +983,72 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		assert.Equal(t, "second", deduped[1].ID)
 	})
 
+	t.Run("topic identity does not reorder repeated dated episodes", func(t *testing.T) {
+		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
+		topics := []string{"Rachel", "design team", "meeting", "project"}
+		first := &memory.Entry{
+			ID:        "first",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "Rachel met the design team about the project on 2023-01-18.",
+				Topics: topics,
+			},
+		}
+		second := &memory.Entry{
+			ID:        "second",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "The project meeting with Rachel and the design team was on 2023-02-20.",
+				Topics: []string{"project", "meeting", "design team", "Rachel"},
+			},
+		}
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{first, second},
+		)
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "first", deduped[0].ID)
+		assert.Equal(t, "second", deduped[1].ID)
+	})
+
+	t.Run("topic identity normalizes equivalent negations", func(t *testing.T) {
+		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
+		topics := []string{"Rachel", "team", "management", "direct reports"}
+		noReports := &memory.Entry{
+			ID:        "no-reports",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "Rachel currently has no direct reports.",
+				Topics: topics,
+			},
+		}
+		withoutReports := &memory.Entry{
+			ID:        "without-reports",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "Rachel is currently without direct reports.",
+				Topics: []string{"direct reports", "management", "team", "Rachel"},
+			},
+		}
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{noReports, withoutReports},
+		)
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "no-reports", deduped[0].ID)
+		assert.Equal(t, "without-reports", deduped[1].ID)
+	})
+
 	t.Run("deduplicate normalizes equivalent number forms", func(t *testing.T) {
 		results := []*memory.Entry{
 			{ID: "word", Score: 0.9, Memory: &memory.Memory{
@@ -1002,6 +1068,15 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		assert.Equal(t, "21", normalizeCriticalValue("twenty-one"))
 		assert.Equal(t, "21", normalizeCriticalValue("twenty one"))
 		assert.Equal(t, "21", normalizeCriticalValue("21"))
+	})
+
+	t.Run("deduplicate normalizes equivalent negation forms", func(t *testing.T) {
+		for _, value := range []string{
+			"not", "no", "never", "without", "n't",
+			"不再", "不是", "没有", "从未", "未", "无",
+		} {
+			assert.Equal(t, "negation", normalizeCriticalValue(value))
+		}
 	})
 }
 

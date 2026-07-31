@@ -1583,8 +1583,9 @@ func DeduplicateResults(results []*memory.Entry) []*memory.Entry {
 
 // DeduplicateResultsPreservingConflicts behaves like DeduplicateResults but
 // retains different critical values as state history and orders the newer
-// conflicting state first. Exact, sufficiently specific topic identity is a
-// conservative fallback when differently worded states are not near-duplicates.
+// conflicting state first. Exact, sufficiently specific topic identity plus
+// an explicit state-change marker is a conservative fallback when differently
+// worded states are not near-duplicates.
 func DeduplicateResultsPreservingConflicts(
 	results []*memory.Entry,
 ) []*memory.Entry {
@@ -1606,11 +1607,13 @@ func deduplicateResults(
 	// Build token sets once per entry; reused across all comparisons.
 	sets := make([]map[string]struct{}, len(results))
 	topicSets := make([]map[string]struct{}, len(results))
+	stateMarkers := make([]bool, len(results))
 	criticalValues := make([]string, len(results))
 	for i, r := range results {
 		sets[i] = entryTokenSet(r)
 		if preserveConflicts {
 			topicSets[i] = entryTopicSet(r)
+			stateMarkers[i] = memoryStateChangeMarker(r)
 			criticalValues[i] = memoryCriticalValueSignature(r)
 		}
 	}
@@ -1661,6 +1664,8 @@ func deduplicateResults(
 					sets[k],
 					topicSets[idx],
 					topicSets[k],
+					stateMarkers[idx],
+					stateMarkers[k],
 					criticalValues[idx],
 					criticalValues[k],
 					jaccardThreshold,
@@ -1681,12 +1686,14 @@ func deduplicateResults(
 	deduped := make([]*memory.Entry, 0, len(results))
 	dedupedSets := make([]map[string]struct{}, 0, len(results))
 	dedupedTopicSets := make([]map[string]struct{}, 0, len(results))
+	dedupedStateMarkers := make([]bool, 0, len(results))
 	dedupedCriticalValues := make([]string, 0, len(results))
 	for i, r := range results {
 		if kept[i] {
 			deduped = append(deduped, r)
 			dedupedSets = append(dedupedSets, sets[i])
 			dedupedTopicSets = append(dedupedTopicSets, topicSets[i])
+			dedupedStateMarkers = append(dedupedStateMarkers, stateMarkers[i])
 			dedupedCriticalValues = append(dedupedCriticalValues, criticalValues[i])
 		}
 	}
@@ -1695,6 +1702,7 @@ func deduplicateResults(
 			deduped,
 			dedupedSets,
 			dedupedTopicSets,
+			dedupedStateMarkers,
 			dedupedCriticalValues,
 			jaccardThreshold,
 			minimumConflictTopics,
@@ -1710,6 +1718,7 @@ func criticalValuesConflict(left, right string) bool {
 func relatedConflictingMemoryStates(
 	leftTokens, rightTokens map[string]struct{},
 	leftTopics, rightTopics map[string]struct{},
+	leftStateMarker, rightStateMarker bool,
 	leftValues, rightValues string,
 	contentThreshold float64,
 	minimumTopics int,
@@ -1720,7 +1729,8 @@ func relatedConflictingMemoryStates(
 	if jaccardAtLeast(leftTokens, rightTokens, contentThreshold) {
 		return true
 	}
-	return sameTopicIdentity(leftTopics, rightTopics, minimumTopics) &&
+	return (leftStateMarker || rightStateMarker) &&
+		sameTopicIdentity(leftTopics, rightTopics, minimumTopics) &&
 		criticalValueAlternativesConflict(leftValues, rightValues)
 }
 
@@ -1793,6 +1803,7 @@ func orderConflictingMemoryStates(
 	results []*memory.Entry,
 	sets []map[string]struct{},
 	topicSets []map[string]struct{},
+	stateMarkers []bool,
 	criticalValues []string,
 	threshold float64,
 	minimumTopics int,
@@ -1804,6 +1815,8 @@ func orderConflictingMemoryStates(
 				sets[j],
 				topicSets[i],
 				topicSets[j],
+				stateMarkers[i],
+				stateMarkers[j],
 				criticalValues[i],
 				criticalValues[j],
 				threshold,
@@ -1815,6 +1828,7 @@ func orderConflictingMemoryStates(
 			results[i], results[j] = results[j], results[i]
 			sets[i], sets[j] = sets[j], sets[i]
 			topicSets[i], topicSets[j] = topicSets[j], topicSets[i]
+			stateMarkers[i], stateMarkers[j] = stateMarkers[j], stateMarkers[i]
 			criticalValues[i], criticalValues[j] = criticalValues[j], criticalValues[i]
 		}
 	}
@@ -1863,6 +1877,11 @@ func entryTopicSet(e *memory.Entry) map[string]struct{} {
 		}
 	}
 	return set
+}
+
+func memoryStateChangeMarker(e *memory.Entry) bool {
+	return e != nil && e.Memory != nil &&
+		changeMarkerPattern.MatchString(e.Memory.Memory)
 }
 
 func jaccardSimilarity(a, b map[string]struct{}) float64 {
