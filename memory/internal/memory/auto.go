@@ -224,13 +224,14 @@ type MemoryOperator interface {
 
 // AutoMemoryWorker manages async memory extraction workers.
 type AutoMemoryWorker struct {
-	config       AutoMemoryConfig
-	operator     MemoryOperator
-	updatePolicy extractor.UpdatePolicy
-	jobChans     []chan *MemoryJob
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
-	started      bool
+	config             AutoMemoryConfig
+	operator           MemoryOperator
+	updatePolicy       extractor.UpdatePolicy
+	lossAwareReconcile bool
+	jobChans           []chan *MemoryJob
+	wg                 sync.WaitGroup
+	mu                 sync.RWMutex
+	started            bool
 }
 
 // NewAutoMemoryWorker creates a new auto memory worker.
@@ -241,10 +242,14 @@ func NewAutoMemoryWorker(
 	operator MemoryOperator,
 ) *AutoMemoryWorker {
 	config.EnabledTools = maps.Clone(config.EnabledTools)
+	policy := updatePolicyFromMetadata(config.Extractor)
 	return &AutoMemoryWorker{
 		config:       config,
 		operator:     operator,
-		updatePolicy: updatePolicyFromMetadata(config.Extractor),
+		updatePolicy: policy,
+		lossAwareReconcile: lossAwareReconcileFromMetadata(
+			config.Extractor, policy,
+		),
 	}
 }
 
@@ -973,7 +978,10 @@ func (w *AutoMemoryWorker) decideAddOp(
 	if err != nil || len(candidates) == 0 {
 		return op
 	}
-	best, bestJaccard, bestTier := selectReconcileCandidate(op, candidates)
+	best, bestJaccard, bestTier := selectReconcileCandidate(
+		op, candidates,
+		w.lossAwareReconcile,
+	)
 	if best == nil || best.Memory == nil || best.ID == "" {
 		return op
 	}
@@ -1017,18 +1025,22 @@ func (w *AutoMemoryWorker) decideAddOp(
 func selectReconcileCandidate(
 	op *extractor.Operation,
 	candidates []*memory.Entry,
+	preserveStoredMemory bool,
 ) (*memory.Entry, float64, int) {
 	var best *memory.Entry
 	bestJaccard := 0.0
 	bestTier := -1
 	for _, candidate := range candidates {
-		if candidate == nil || candidate.Memory == nil ||
+		if candidate == nil || candidate.Memory == nil {
+			continue
+		}
+		if preserveStoredMemory &&
 			!reconcileMetadataCompatible(op, candidate.Memory) {
 			continue
 		}
 		jaccard := tokenJaccard(op.Memory, candidate.Memory.Memory)
 		tier := reconcileDecisionTier(candidate.Score, jaccard)
-		if tier != reconcileTierNone &&
+		if preserveStoredMemory && tier != reconcileTierNone &&
 			!reconcileAddPreservesStoredMemory(op, candidate.Memory) {
 			tier = reconcileTierNone
 		}

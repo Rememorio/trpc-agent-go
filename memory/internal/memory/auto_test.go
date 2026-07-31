@@ -2203,6 +2203,25 @@ func reconcileUserKey() memory.UserKey {
 	return memory.UserKey{AppName: "app", UserID: "u1"}
 }
 
+func newHistoryPreservingReconcileWorker(
+	op MemoryOperator,
+) *AutoMemoryWorker {
+	return newUpdatePolicyWorker(
+		extractor.UpdatePolicyHistoryPreserving, op,
+	)
+}
+
+func newUpdatePolicyWorker(
+	policy extractor.UpdatePolicy,
+	op MemoryOperator,
+) *AutoMemoryWorker {
+	return NewAutoMemoryWorker(AutoMemoryConfig{
+		Extractor: &mockExtractor{metadata: map[string]any{
+			extractorMetadataUpdatePolicy: string(policy),
+		}},
+	}, op)
+}
+
 // TestReconcileOps_SkipOnHighSimilarity verifies that an Add whose
 // content is already covered by an existing entry (identical topics)
 // is dropped entirely without reaching AddMemory or UpdateMemory.
@@ -2299,7 +2318,7 @@ func TestReconcileOps_KeepsRelatedPlanDetail(t *testing.T) {
 		},
 		Score: 0.85,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 
 	in := []*extractor.Operation{{
 		Type: extractor.OperationAdd,
@@ -2324,7 +2343,7 @@ func TestReconcileOps_KeepsLossyCriticalValueRewrite(t *testing.T) {
 		},
 		Score: 0.97,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 
 	in := []*extractor.Operation{{
 		Type:   extractor.OperationAdd,
@@ -2337,6 +2356,30 @@ func TestReconcileOps_KeepsLossyCriticalValueRewrite(t *testing.T) {
 	assert.Empty(t, out[0].MemoryID)
 }
 
+func TestReconcileOps_DefaultKeepsLegacyLossyRewrite(t *testing.T) {
+	op := newMockOperator()
+	op.searchResults = []*memory.Entry{{
+		ID:      "reservation",
+		AppName: "app", UserID: "u1",
+		Memory: &memory.Memory{
+			Memory: "Dinner reservation is for 8 people at 7 PM.",
+		},
+		Score: 0.97,
+	}}
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+
+	out := worker.reconcileOps(context.Background(), reconcileUserKey(),
+		[]*extractor.Operation{{
+			Type:   extractor.OperationAdd,
+			Memory: "Dinner reservation is at 7 PM.",
+			Topics: []string{"reservation"},
+		}})
+
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "reservation", out[0].MemoryID)
+}
+
 func TestReconcileOps_KeepsCommittedStateAfterTentativeState(t *testing.T) {
 	op := newMockOperator()
 	op.searchResults = []*memory.Entry{{
@@ -2347,7 +2390,7 @@ func TestReconcileOps_KeepsCommittedStateAfterTentativeState(t *testing.T) {
 		},
 		Score: 0.97,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 
 	in := []*extractor.Operation{{
 		Type:   extractor.OperationAdd,
@@ -2370,7 +2413,7 @@ func TestReconcileOps_KeepsChangedRelationships(t *testing.T) {
 		},
 		Score: 0.97,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 
 	in := []*extractor.Operation{{
 		Type:   extractor.OperationAdd,
@@ -2424,7 +2467,7 @@ func TestReconcileOps_KeepsEpisodesWithDifferentEventTimes(t *testing.T) {
 		},
 		Score: 0.95,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 	in := []*extractor.Operation{{
 		Type:       extractor.OperationAdd,
 		Memory:     "Attended a BBQ at a colleague's house on June 3",
@@ -2451,7 +2494,7 @@ func TestReconcileOps_ReconcilesEpisodesWithCompatibleEventTimes(t *testing.T) {
 		},
 		Score: 0.95,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 	in := []*extractor.Operation{{
 		Type:       extractor.OperationAdd,
 		Memory:     "Attended a backyard BBQ on June 3",
@@ -2478,7 +2521,7 @@ func TestReconcileOps_KeepsEpisodesWithDifferentParticipants(t *testing.T) {
 		},
 		Score: 0.95,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 	in := []*extractor.Operation{{
 		Type:         extractor.OperationAdd,
 		Memory:       "Met artists at the museum reception",
@@ -2508,7 +2551,7 @@ func TestReconcileOps_KeepsEpisodesWithDifferentLocations(t *testing.T) {
 		},
 		Score: 0.95,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 	in := []*extractor.Operation{{
 		Type:       extractor.OperationAdd,
 		Memory:     "Visited a museum exhibition",
@@ -2539,7 +2582,7 @@ func TestReconcileOps_ReconcilesEpisodeParticipantEnrichment(t *testing.T) {
 		},
 		Score: 0.95,
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 	in := []*extractor.Operation{{
 		Type:         extractor.OperationAdd,
 		Memory:       "Attended a museum lecture with Dr. Rivera and Alex",

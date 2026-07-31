@@ -31,8 +31,7 @@ func TestRankResultsByAssistantResultIntent(t *testing.T) {
 	actual := rankResultsByAssistantResultIntent(
 		"How many languages do I currently know?", vector, keyword,
 	)
-	require.Len(t, actual, 2)
-	assert.Equal(t, []string{"user-1", "user-2"}, assistantRankingEntryIDs(actual))
+	assert.Nil(t, actual)
 
 	actual = rankResultsByAssistantResultIntent(
 		"Remind me what you recommended in our previous conversation.",
@@ -60,7 +59,7 @@ func TestRankResultsByAssistantResultIntentRequiresMixedProvenance(t *testing.T)
 	))
 }
 
-func TestRankResultsByAssistantResultIntentPrefersUserChoice(
+func TestRankResultsByAssistantResultIntentDoesNotInferUserProvenance(
 	t *testing.T,
 ) {
 	user := &memory.Entry{
@@ -78,8 +77,7 @@ func TestRankResultsByAssistantResultIntentPrefersUserChoice(
 		[]*memory.Entry{assistant, user},
 	)
 
-	require.Len(t, actual, 1)
-	assert.Same(t, user, actual[0])
+	assert.Nil(t, actual)
 }
 
 func TestAsksForAssistantResult(t *testing.T) {
@@ -112,7 +110,7 @@ func TestAsksForAssistantResult(t *testing.T) {
 	}
 }
 
-func TestAssistantResultIntentContributesToHybridRanking(t *testing.T) {
+func TestAmbiguousIntentPreservesBackendRanking(t *testing.T) {
 	assistant := assistantResultEntry("assistant", "Estimated cost is $40.")
 	user := &memory.Entry{
 		ID: "user", Memory: &memory.Memory{Memory: "Taxi cost is $60."},
@@ -123,8 +121,7 @@ func TestAssistantResultIntentContributesToHybridRanking(t *testing.T) {
 	)
 
 	require.Len(t, actual, 2)
-	assert.Equal(t, "user", actual[0].ID)
-	assert.Greater(t, actual[0].Score, actual[1].Score)
+	assert.Equal(t, "assistant", actual[0].ID)
 }
 
 func assistantResultEntry(id, content string) *memory.Entry {

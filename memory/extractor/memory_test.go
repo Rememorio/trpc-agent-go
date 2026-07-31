@@ -154,6 +154,10 @@ func TestNewExtractor(t *testing.T) {
 	t.Run("default prompt", func(t *testing.T) {
 		e := NewExtractor(m)
 		require.NotNil(t, e)
+		extractor := e.(*memoryExtractor)
+		assert.Equal(t, defaultPrompt, extractor.prompt)
+		assert.NotContains(t, extractor.prompt, "CURRENT-TURN GROUNDING")
+		assert.NotContains(t, extractor.prompt, "SELF-CONTAINED RELATIONS")
 
 		// Check metadata.
 		meta := e.Metadata()
@@ -163,7 +167,11 @@ func TestNewExtractor(t *testing.T) {
 
 	t.Run("custom prompt", func(t *testing.T) {
 		customPrompt := "Custom extraction prompt."
-		e := NewExtractor(m, WithPrompt(customPrompt))
+		e := NewExtractor(m,
+			WithPrompt(customPrompt),
+			WithUpdatePolicy(UpdatePolicyHistoryPreserving),
+			WithAssistantResultExtraction(true),
+		)
 		require.NotNil(t, e)
 
 		// Verify the extractor was created with custom prompt.
@@ -254,9 +262,10 @@ func TestExtractor_AssistantResultExtractionOption(t *testing.T) {
 		"assistant's direct reply")
 }
 
-func TestExtractor_DefaultPromptGroundsCurrentTurnReferences(t *testing.T) {
+func TestExtractor_EnhancedPromptGroundsCurrentTurnReferences(t *testing.T) {
 	extractor := NewExtractor(
 		&mockModel{name: "test-model"},
+		WithUpdatePolicy(UpdatePolicyHistoryPreserving),
 	).(*memoryExtractor)
 	prompt := extractor.buildSystemPrompt(time.Now(), nil)
 	assert.Contains(t, prompt, "CURRENT-TURN GROUNDING")
@@ -266,9 +275,10 @@ func TestExtractor_DefaultPromptGroundsCurrentTurnReferences(t *testing.T) {
 		"nearest explicit question, label, or restatement")
 }
 
-func TestExtractor_DefaultPromptRequiresGroundedStateTransitions(t *testing.T) {
+func TestExtractor_EnhancedPromptRequiresGroundedStateTransitions(t *testing.T) {
 	extractor := NewExtractor(
 		&mockModel{name: "test-model"},
+		WithUpdatePolicy(UpdatePolicyHistoryPreserving),
 	).(*memoryExtractor)
 	prompt := extractor.buildSystemPrompt(time.Now(), nil)
 	normalizedPrompt := strings.Join(strings.Fields(prompt), " ")
@@ -285,9 +295,10 @@ func TestExtractor_DefaultPromptRequiresGroundedStateTransitions(t *testing.T) {
 		`explicit source wording such as "sold", "traded in", "replaced"`)
 }
 
-func TestExtractor_DefaultPromptAnchorsCumulativeStateToObservation(t *testing.T) {
+func TestExtractor_EnhancedPromptAnchorsCumulativeStateToObservation(t *testing.T) {
 	extractor := NewExtractor(
 		&mockModel{name: "test-model"},
+		WithUpdatePolicy(UpdatePolicyHistoryPreserving),
 	).(*memoryExtractor)
 	prompt := extractor.buildSystemPrompt(
 		time.Date(2023, 5, 30, 0, 0, 0, 0, time.UTC), nil,
@@ -305,9 +316,10 @@ func TestExtractor_DefaultPromptAnchorsCumulativeStateToObservation(t *testing.T
 		"2023-02-28 describes when the activity began")
 }
 
-func TestExtractor_DefaultPromptPreservesRelationScope(t *testing.T) {
+func TestExtractor_EnhancedPromptPreservesRelationScope(t *testing.T) {
 	extractor := NewExtractor(
 		&mockModel{name: "test-model"},
+		WithUpdatePolicy(UpdatePolicyHistoryPreserving),
 	).(*memoryExtractor)
 	prompt := extractor.buildSystemPrompt(time.Now(), nil)
 	assert.Contains(t, prompt, "SELF-CONTAINED RELATIONS")
@@ -315,6 +327,43 @@ func TestExtractor_DefaultPromptPreservesRelationScope(t *testing.T) {
 		"Keep a relationship, its value, and every qualifier")
 	assert.Contains(t, prompt,
 		"As Product Owner, leads three UX researchers")
+}
+
+func TestExtractor_GroundedTopicQualificationIsOptIn(t *testing.T) {
+	args, err := json.Marshal(map[string]any{
+		"memory": "Deadline is Friday.",
+		"topics": []string{"Project Atlas", "deadline"},
+	})
+	require.NoError(t, err)
+	messages := []model.Message{
+		model.NewUserMessage("Project Atlas has a deadline this Friday."),
+	}
+
+	t.Run("default reconcile", func(t *testing.T) {
+		e := NewExtractor(newMockModelWithToolCalls([]model.ToolCall{
+			makeToolCall(memory.AddToolName, args),
+		}))
+		ops, extractErr := e.Extract(context.Background(), messages, nil)
+		require.NoError(t, extractErr)
+		require.Len(t, ops, 1)
+		assert.Equal(t, "Deadline is Friday.", ops[0].Memory)
+	})
+
+	t.Run("history preserving", func(t *testing.T) {
+		e := NewExtractor(
+			newMockModelWithToolCalls([]model.ToolCall{
+				makeToolCall(memory.AddToolName, args),
+			}),
+			WithUpdatePolicy(UpdatePolicyHistoryPreserving),
+		)
+		ops, extractErr := e.Extract(context.Background(), messages, nil)
+		require.NoError(t, extractErr)
+		require.Len(t, ops, 1)
+		assert.Equal(t,
+			"Project Atlas: Deadline is Friday.",
+			ops[0].Memory,
+		)
+	})
 }
 
 func TestExtractor_AssistantResultExtractionCombinedPass(t *testing.T) {

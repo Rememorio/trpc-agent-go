@@ -49,6 +49,27 @@ func TestUpdatePolicyFromMetadata(t *testing.T) {
 	assert.Equal(t, extractor.UpdatePolicyReconcile, updatePolicyFromMetadata(nil))
 }
 
+func TestLossAwareReconcileFromMetadata(t *testing.T) {
+	assert.False(t, lossAwareReconcileFromMetadata(
+		nil, extractor.UpdatePolicyReconcile,
+	))
+	assert.True(t, lossAwareReconcileFromMetadata(
+		nil, extractor.UpdatePolicyHistoryPreserving,
+	))
+	assert.False(t, lossAwareReconcileFromMetadata(
+		&mockExtractor{metadata: map[string]any{
+			extractorMetadataAssistantResults: "true",
+		}},
+		extractor.UpdatePolicyReconcile,
+	))
+	assert.True(t, lossAwareReconcileFromMetadata(
+		&mockExtractor{metadata: map[string]any{
+			extractorMetadataAssistantResults: true,
+		}},
+		extractor.UpdatePolicyReconcile,
+	))
+}
+
 func TestHistoryPreservingPolicy_ReconcilesAddsAndPreservesHistory(
 	t *testing.T,
 ) {
@@ -62,8 +83,7 @@ func TestHistoryPreservingPolicy_ReconcilesAddsAndPreservesHistory(
 	}}
 	operator := newMockOperator()
 	operator.searchResults = stored
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, operator)
-	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+	worker := newHistoryPreservingReconcileWorker(operator)
 
 	out := worker.applyUpdatePolicy(
 		context.Background(),
@@ -94,8 +114,7 @@ func TestHistoryPreservingPolicy_ReconcilesAddsAndPreservesHistory(
 func TestHistoryPreservingPolicy_FiltersDestructiveAssistantOperations(
 	t *testing.T,
 ) {
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
-	worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+	worker := newHistoryPreservingReconcileWorker(newMockOperator())
 
 	out := worker.applyAssistantResultPolicy(
 		context.Background(),
@@ -130,7 +149,7 @@ func TestUpdatePoliciesPreserveDistinctResult(t *testing.T) {
 	}}
 	op := newMockOperator()
 	op.searchResults = stored
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, op)
+	worker := newHistoryPreservingReconcileWorker(op)
 
 	ordinary := worker.applyUpdatePolicy(
 		context.Background(), reconcileUserKey(), incoming, stored,
@@ -149,7 +168,9 @@ func TestUpdatePoliciesPreserveDistinctResult(t *testing.T) {
 	assert.Nil(t, worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(), nil, stored,
 	))
-	worker.updatePolicy = extractor.UpdatePolicyAddOnly
+	worker = newUpdatePolicyWorker(
+		extractor.UpdatePolicyAddOnly, op,
+	)
 	assistantResult = worker.applyAssistantResultPolicy(
 		context.Background(), reconcileUserKey(), []*extractor.Operation{{
 			Type:     extractor.OperationUpdate,
@@ -216,10 +237,7 @@ func TestAssistantResultPolicy_StrictEnrichmentRespectsUpdatePolicy(
 	}}
 
 	t.Run("history preserving permits lossless enrichment", func(t *testing.T) {
-		worker := NewAutoMemoryWorker(
-			AutoMemoryConfig{}, newMockOperator(),
-		)
-		worker.updatePolicy = extractor.UpdatePolicyHistoryPreserving
+		worker := newHistoryPreservingReconcileWorker(newMockOperator())
 
 		out := worker.applyAssistantResultPolicy(
 			context.Background(), reconcileUserKey(), in, existing,
@@ -232,10 +250,9 @@ func TestAssistantResultPolicy_StrictEnrichmentRespectsUpdatePolicy(
 	})
 
 	t.Run("add only remains additive", func(t *testing.T) {
-		worker := NewAutoMemoryWorker(
-			AutoMemoryConfig{}, newMockOperator(),
+		worker := newUpdatePolicyWorker(
+			extractor.UpdatePolicyAddOnly, newMockOperator(),
 		)
-		worker.updatePolicy = extractor.UpdatePolicyAddOnly
 
 		out := worker.applyAssistantResultPolicy(
 			context.Background(), reconcileUserKey(), in, existing,
@@ -436,8 +453,9 @@ func TestAddOnlyPolicy_EnforcesAllowedOperationsAndDeduplicates(t *testing.T) {
 			Kind:   memory.KindFact,
 		},
 	}}
-	worker := NewAutoMemoryWorker(AutoMemoryConfig{}, newMockOperator())
-	worker.updatePolicy = extractor.UpdatePolicyAddOnly
+	worker := newUpdatePolicyWorker(
+		extractor.UpdatePolicyAddOnly, newMockOperator(),
+	)
 	in := []*extractor.Operation{
 		{Type: extractor.OperationAdd, Memory: "likes COFFEE"},
 		{Type: extractor.OperationUpdate, MemoryID: "job", Memory: "Works at Globex", Topics: []string{"work"}},

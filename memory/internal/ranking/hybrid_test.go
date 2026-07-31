@@ -65,7 +65,7 @@ func TestMergeHybridUsesFocusedRanking(t *testing.T) {
 	assert.Equal(t, "languages", results[0].ID)
 }
 
-func TestMergeHybridDoesNotFocusAssistantResultForUserRecall(t *testing.T) {
+func TestMergeHybridPreservesAmbiguousProvenanceRanking(t *testing.T) {
 	t.Parallel()
 
 	assistant := &memory.Entry{
@@ -90,5 +90,5 @@ func TestMergeHybridDoesNotFocusAssistantResultForUserRecall(t *testing.T) {
 	)
 
 	require.Len(t, results, 2)
-	assert.Equal(t, "user", results[0].ID)
+	assert.Equal(t, "assistant", results[0].ID)
 }

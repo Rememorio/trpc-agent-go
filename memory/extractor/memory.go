@@ -46,6 +46,7 @@ const (
 type memoryExtractor struct {
 	model                   model.Model
 	prompt                  string
+	customPrompt            bool
 	checkers                []Checker
 	updatePolicy            UpdatePolicy
 	extractAssistantResults bool
@@ -65,6 +66,7 @@ func WithPrompt(prompt string) Option {
 	return func(e *memoryExtractor) {
 		if prompt != "" {
 			e.prompt = prompt
+			e.customPrompt = true
 		}
 	}
 }
@@ -127,6 +129,9 @@ func NewExtractor(m model.Model, opts ...Option) MemoryExtractor {
 	for _, opt := range opts {
 		opt(e)
 	}
+	if !e.customPrompt && e.usesEnhancedExtraction() {
+		e.prompt = enhancedDefaultPrompt
+	}
 	return e
 }
 
@@ -168,9 +173,11 @@ func (e *memoryExtractor) ExtractOperationStages(
 	}
 	ctx, ops, err := e.generateOperations(ctx, primaryRequest)
 	primary, assistantResults := splitExtractionOperations(ops)
-	qualifyOperationsWithGroundedTopics(
-		conversationSourceText(messages), primary,
-	)
+	if e.usesEnhancedExtraction() {
+		qualifyOperationsWithGroundedTopics(
+			conversationSourceText(messages), primary,
+		)
+	}
 	if err != nil || !includeAssistantResults {
 		return primary, assistantResults, err
 	}
@@ -292,6 +299,7 @@ func (e *memoryExtractor) generateOperations(
 func (e *memoryExtractor) SetPrompt(prompt string) {
 	if prompt != "" {
 		e.prompt = prompt
+		e.customPrompt = true
 	}
 }
 
@@ -405,6 +413,11 @@ func (e *memoryExtractor) shouldExtractAssistantResult(
 		}
 	}
 	return hasUser && hasAssistant
+}
+
+func (e *memoryExtractor) usesEnhancedExtraction() bool {
+	return e.updatePolicy != UpdatePolicyReconcile ||
+		e.extractAssistantResults
 }
 
 func messageHasText(message model.Message) bool {
@@ -887,14 +900,6 @@ Today's date is {current_date}. You MUST use this date to resolve ALL relative t
   For example, if a user says "I went to Paris with Alice and we ate at
   Le Cinq, then visited the Louvre", create SEPARATE memories for:
   the dinner at Le Cinq, the Louvre visit, and that Alice traveled with User.
-- **SELF-CONTAINED RELATIONS**: An atomic memory must still be a complete
-  proposition. Keep a relationship, its value, and every qualifier that scopes
-  that value in the same memory. Do not split a count, choice, status, or other
-  value from the named role, project, person, location, or time that makes it
-  true. Good: "As Product Owner, leads three UX researchers." Bad: separate
-  memories saying only "Is Product Owner" and "Leads three people" when the
-  team size is specific to that role. Separate independent claims, not the
-  arguments or qualifiers of one claim.
 - **DEDUPLICATION**: Before every memory_add, compare the candidate against
   the existing memories list. Do not add duplicates caused only by paraphrasing,
   wording changes, tense changes, repeated mentions, topic renaming, or
@@ -904,27 +909,6 @@ Today's date is {current_date}. You MUST use this date to resolve ALL relative t
   supporting signals and do NOT mean two different-day episodes are the same
   memory. When it is a duplicate, emit no tool call. When it corrects or
   replaces an existing memory, use memory_update.
-- **CURRENT-TURN GROUNDING**: Resolve pronouns, ellipsis, and terse follow-up
-  answers from the nearest explicit question, label, or restatement in the
-  current conversation. A later assistant restatement may clarify what the
-  preceding user reply referred to. Existing memories are comparison context
-  for deduplication, not evidence for choosing an ambiguous referent. Never
-  attach one person's or object's new details to another existing memory merely
-  because that memory is semantically similar.
-- **SOURCE-FAITHFUL STATE**: Before writing a transition or lifecycle
-  relationship, identify source words that explicitly state that relationship.
-  If no such words exist, omit the relationship and write each supported claim
-  as a separate atomic memory. Different sizes, names, or identifiers denote
-  different subjects even when the objects share a category; acquiring or
-  setting up one does not update another. Words such as "old", "new",
-  "another", and "since" express age, identity, or sequence, not replacement
-  or loss of ownership.
-  Example: "I have an old laptop. I've since set up a new desktop." supports
-  "Has an old laptop" and "Set up a new desktop". It does NOT support
-  "The desktop replaced the laptop", "Moved on from the laptop", "Previously
-  had the laptop", or "No longer owns the laptop". By contrast, explicit
-  source wording such as "sold", "traded in", "replaced", "moved from", or
-  "no longer owns" does support the corresponding state transition.
 - **NO SUBJECT PREFIX**: Create memories as brief, concise statements that
   directly describe attributes or facts WITHOUT a subject prefix. Omit
   "User", "The user", or any equivalent pronoun/noun at the start, because
@@ -974,11 +958,9 @@ Today's date is {current_date}. You MUST use this date to resolve ALL relative t
   in existing memories rather than inventing synonyms. For example, if
   existing memories use "work", do not use "job" or "career" for the
   same concept.
-- When a fact has explicitly and genuinely CHANGED (e.g., the user says they
-  left one job and started another), update the existing memory. A related new
-  fact does not prove that the old fact ended. Unless the conversation states
-  a transition for the same subject, create a NEW memory and do not merge it
-  into or use it to replace an existing one.
+- When a fact has genuinely CHANGED (e.g., user got a new job), update
+  the existing memory. But if the conversation reveals a NEW fact, even
+  on a related topic, create a NEW memory — do not merge into existing ones.
 - Use delete when the user explicitly asks to forget something, or when
   a memory should be removed entirely rather than corrected or replaced
   (for example, a mistaken extraction, a withdrawn fact, or stale detail
@@ -1016,15 +998,7 @@ For EPISODES (memory_kind="episode"):
   "on May 7, 2023"), preserve that original date in BOTH the memory text
   and event_time field.
 - When someone mentions a duration (e.g., "painting for 7 years"), subtract
-  the duration from today's date to derive the start date only when the main
-  assertion is when the activity or relationship began.
-- Anchor event_time to the main assertion, not automatically to the earliest
-  date in the sentence. For a current cumulative state observed in this
-  conversation (e.g., "has completed seven paintings since starting three
-  months ago"), event_time is today's date because that is when the count is
-  known to be seven. Preserve the derived start date in the memory text or as
-  a separate start-date memory. Never move a current count backward to its
-  "since" date.
+  the duration from today's date to derive the start date.
 - Capture WHO was involved in the participants field.
 - Capture WHERE it happened in the location field.
 - Each distinct event should be a SEPARATE episode memory.
@@ -1093,22 +1067,12 @@ Example 3 – Episode with conversation detail:
      memory_kind="episode", event_time="2024-06-09",
      participants=["Bob"], topics=["Bob", "dinner", "startup", "AI tutoring"])
 
-Example 4 – Start-date derivation from a pure duration:
+Example 4 – Duration-based date derivation:
   User says: "I've been painting for about 7 years now."
   (today = 2023-05-08)
   → memory_add(memory="User has been painting since approximately 2016.",
      memory_kind="fact", event_time="2016-01-01",
      topics=["painting", "hobby", "art"])
-
-Example 4b – Current cumulative state with a start boundary:
-  User says: "I've been painting for three months and have completed seven
-  paintings since I started."
-  (today = 2023-05-30)
-  → memory_add(memory="User has completed seven paintings since starting
-     around late February 2023.", memory_kind="fact",
-     event_time="2023-05-30", topics=["painting", "art", "progress"])
-  The seven-painting count is observed today. 2023-02-28 describes when the
-  activity began and must not be used as the count's event_time.
 
 Example 5 – Extracting specific details from casual conversation:
   Speaker A (Jon): "I just got back from Rome, it was amazing! Also I started
