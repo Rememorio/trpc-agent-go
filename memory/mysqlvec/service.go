@@ -23,7 +23,6 @@ import (
 
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	imemory "trpc.group/trpc-go/trpc-agent-go/memory/internal/memory"
-	iranking "trpc.group/trpc-go/trpc-agent-go/memory/internal/ranking"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	storage "trpc.group/trpc-go/trpc-agent-go/storage/mysql"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -735,11 +734,11 @@ func (s *Service) applyHybridSearch(
 		return results
 	}
 	keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
-	if kwErr != nil {
-		keywordResults = nil
+	if kwErr != nil || len(keywordResults) == 0 {
+		return results
 	}
-	return iranking.MergeHybrid(
-		opts.Query, results, keywordResults, opts.HybridRRFK, maxResults,
+	return imemory.MergeHybridResults(
+		results, keywordResults, opts.HybridRRFK, maxResults,
 	)
 }
 

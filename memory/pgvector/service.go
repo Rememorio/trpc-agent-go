@@ -23,7 +23,6 @@ import (
 	"github.com/pgvector/pgvector-go"
 	"trpc.group/trpc-go/trpc-agent-go/memory"
 	imemory "trpc.group/trpc-go/trpc-agent-go/memory/internal/memory"
-	iranking "trpc.group/trpc-go/trpc-agent-go/memory/internal/ranking"
 	"trpc.group/trpc-go/trpc-agent-go/session"
 	storage "trpc.group/trpc-go/trpc-agent-go/storage/postgres"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -783,15 +782,15 @@ func (s *Service) SearchMemories(
 		}
 	}
 
-	// Hybrid search fuses vector, keyword, and focused-passage rankings.
+	// Hybrid search: run keyword search and merge with vector results
+	// using Reciprocal Rank Fusion (RRF).
 	if opts.HybridSearch {
 		keywordResults, kwErr := s.executeKeywordSearch(ctx, userKey, opts, maxResults)
-		if kwErr != nil {
-			keywordResults = nil
+		if kwErr == nil && len(keywordResults) > 0 {
+			results = imemory.MergeHybridResults(
+				results, keywordResults, opts.HybridRRFK, maxResults,
+			)
 		}
-		results = iranking.MergeHybrid(
-			query, results, keywordResults, opts.HybridRRFK, maxResults,
-		)
 	}
 
 	// Apply similarity threshold filtering.
