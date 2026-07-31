@@ -502,6 +502,38 @@ func TestRouteAssistantResultOperationsOwnsPrimaryUpdate(t *testing.T) {
 	)
 }
 
+func TestRouteAssistantResultOperationsOwnsDetailedPrimaryUpdate(
+	t *testing.T,
+) {
+	primary := &Operation{
+		Type:     OperationUpdate,
+		MemoryID: "previous-result",
+		Memory: "Assistant result: Recommended Atlas for speed, Birch " +
+			"for cost, and Cedar for simplicity, with setup instructions " +
+			"and detailed migration notes for each option.",
+		Topics: []string{"recommendations"},
+	}
+	result := &Operation{
+		Type: OperationAdd,
+		Memory: "Assistant result: Recommended Atlas for speed, Birch " +
+			"for cost, and Cedar for simplicity.",
+		Topics: []string{"Atlas", "Birch", "Cedar"},
+	}
+
+	gotPrimary, gotResults := routeAssistantResultOperations(
+		[]*Operation{primary}, []*Operation{result},
+	)
+
+	assert.Empty(t, gotPrimary)
+	require.Len(t, gotResults, 1)
+	assert.Equal(t, result.Memory, gotResults[0].Memory)
+	assert.Equal(
+		t,
+		[]string{"Atlas", "Birch", "Cedar", "recommendations"},
+		gotResults[0].Topics,
+	)
+}
+
 func TestRouteAssistantResultOperationsKeepsDistinctPrimaryFact(t *testing.T) {
 	primary := &Operation{
 		Type:   OperationAdd,

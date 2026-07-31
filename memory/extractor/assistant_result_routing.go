@@ -107,8 +107,13 @@ func likelySameAssistantResult(left, right *Operation) bool {
 			shared++
 		}
 	}
-	return shared >= 6 && shared*100 >= minCount*80 &&
-		shared*100 >= maxCount*80
+	if shared < 6 || shared*100 < minCount*80 {
+		return false
+	}
+	if left.Type == OperationUpdate {
+		return true
+	}
+	return shared*100 >= maxCount*80
 }
 
 func mergeAssistantResultOperationMetadata(
