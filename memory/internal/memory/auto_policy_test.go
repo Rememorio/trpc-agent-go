@@ -49,25 +49,52 @@ func TestUpdatePolicyFromMetadata(t *testing.T) {
 	assert.Equal(t, extractor.UpdatePolicyReconcile, updatePolicyFromMetadata(nil))
 }
 
-func TestLossAwareReconcileFromMetadata(t *testing.T) {
-	assert.False(t, lossAwareReconcileFromMetadata(
-		nil, extractor.UpdatePolicyReconcile,
-	))
-	assert.True(t, lossAwareReconcileFromMetadata(
-		nil, extractor.UpdatePolicyHistoryPreserving,
-	))
-	assert.False(t, lossAwareReconcileFromMetadata(
-		&mockExtractor{metadata: map[string]any{
-			extractorMetadataAssistantResults: "true",
-		}},
-		extractor.UpdatePolicyReconcile,
-	))
-	assert.True(t, lossAwareReconcileFromMetadata(
-		&mockExtractor{metadata: map[string]any{
-			extractorMetadataAssistantResults: true,
-		}},
-		extractor.UpdatePolicyReconcile,
-	))
+func TestAssistantResultExtractionDoesNotChangeOrdinaryReconcile(
+	t *testing.T,
+) {
+	operator := newMockOperator()
+	operator.searchResults = []*memory.Entry{{
+		ID: "reservation",
+		Memory: &memory.Memory{
+			Memory: "Dinner reservation is for 8 people at 7 PM.",
+		},
+		Score: 0.97,
+	}}
+	incoming := []*extractor.Operation{{
+		Type:   extractor.OperationAdd,
+		Memory: "Dinner reservation is at 7 PM.",
+		Topics: []string{"reservation"},
+	}}
+
+	worker := NewAutoMemoryWorker(AutoMemoryConfig{
+		Extractor: extractor.NewExtractor(
+			nil,
+			extractor.WithAssistantResultExtraction(true),
+		),
+	}, operator)
+	assert.Equal(t, extractor.UpdatePolicyReconcile, worker.updatePolicy)
+	out := worker.reconcileOps(
+		context.Background(), reconcileUserKey(), incoming,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationUpdate, out[0].Type)
+	assert.Equal(t, "reservation", out[0].MemoryID)
+
+	worker = NewAutoMemoryWorker(AutoMemoryConfig{
+		Extractor: extractor.NewExtractor(
+			nil,
+			extractor.WithAssistantResultExtraction(true),
+			extractor.WithUpdatePolicy(
+				extractor.UpdatePolicyHistoryPreserving,
+			),
+		),
+	}, operator)
+	out = worker.reconcileOps(
+		context.Background(), reconcileUserKey(), incoming,
+	)
+	require.Len(t, out, 1)
+	assert.Equal(t, extractor.OperationAdd, out[0].Type)
+	assert.Empty(t, out[0].MemoryID)
 }
 
 func TestHistoryPreservingPolicy_ReconcilesAddsAndPreservesHistory(

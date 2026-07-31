@@ -224,14 +224,13 @@ type MemoryOperator interface {
 
 // AutoMemoryWorker manages async memory extraction workers.
 type AutoMemoryWorker struct {
-	config             AutoMemoryConfig
-	operator           MemoryOperator
-	updatePolicy       extractor.UpdatePolicy
-	lossAwareReconcile bool
-	jobChans           []chan *MemoryJob
-	wg                 sync.WaitGroup
-	mu                 sync.RWMutex
-	started            bool
+	config       AutoMemoryConfig
+	operator     MemoryOperator
+	updatePolicy extractor.UpdatePolicy
+	jobChans     []chan *MemoryJob
+	wg           sync.WaitGroup
+	mu           sync.RWMutex
+	started      bool
 }
 
 // NewAutoMemoryWorker creates a new auto memory worker.
@@ -247,9 +246,6 @@ func NewAutoMemoryWorker(
 		config:       config,
 		operator:     operator,
 		updatePolicy: policy,
-		lossAwareReconcile: lossAwareReconcileFromMetadata(
-			config.Extractor, policy,
-		),
 	}
 }
 
@@ -980,7 +976,7 @@ func (w *AutoMemoryWorker) decideAddOp(
 	}
 	best, bestJaccard, bestTier := selectReconcileCandidate(
 		op, candidates,
-		w.lossAwareReconcile,
+		w.updatePolicy == extractor.UpdatePolicyHistoryPreserving,
 	)
 	if best == nil || best.Memory == nil || best.ID == "" {
 		return op

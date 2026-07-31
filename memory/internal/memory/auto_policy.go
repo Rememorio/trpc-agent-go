@@ -22,8 +22,7 @@ import (
 )
 
 const (
-	extractorMetadataUpdatePolicy     = "update_policy"
-	extractorMetadataAssistantResults = "assistant_result_extraction"
+	extractorMetadataUpdatePolicy = "update_policy"
 
 	assistantResultPolicyName = "assistant-result-preserving"
 	resultOldCoverage         = 0.95
@@ -79,20 +78,6 @@ func updatePolicyFromMetadata(ext extractor.MemoryExtractor) extractor.UpdatePol
 	default:
 		return extractor.UpdatePolicyReconcile
 	}
-}
-
-func lossAwareReconcileFromMetadata(
-	ext extractor.MemoryExtractor,
-	policy extractor.UpdatePolicy,
-) bool {
-	if policy != extractor.UpdatePolicyReconcile {
-		return true
-	}
-	if ext == nil {
-		return false
-	}
-	enabled, _ := ext.Metadata()[extractorMetadataAssistantResults].(bool)
-	return enabled
 }
 
 func (w *AutoMemoryWorker) applyUpdatePolicy(
