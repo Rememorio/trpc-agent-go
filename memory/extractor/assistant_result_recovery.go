@@ -10,8 +10,11 @@ package extractor
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"trpc.group/trpc-go/trpc-agent-go/model"
 	"trpc.group/trpc-go/trpc-agent-go/tool"
@@ -19,9 +22,13 @@ import (
 
 const (
 	minimumStructuredAssistantResultItems = 3
+	maximumQuotedAssistantResultRunes     = 64
 	assistantResultCurrentDatePlaceholder = "{current_date}"
 	assistantResultRecoveryUserSuffix     = "Re-check the structured assistant " +
 		"response above and store only a concrete requested result, if present."
+	quotedAssistantResultRecoveryUserSuffix = "Re-check the quoted value in the " +
+		"assistant response above and store it only if it directly answers the " +
+		"user's question."
 )
 
 const assistantResultRecoveryPrompt = `You are an Assistant Result Memory Manager.
@@ -48,14 +55,54 @@ eligible result and emit no tool call otherwise.
   explicit after persistence.
 </assistant_result_recovery>`
 
-func (e *memoryExtractor) recoverStructuredAssistantResults(
+const quotedAssistantResultRecoveryPrompt = `You are an Assistant Result Memory Manager.
+Today's date is {current_date}.
+
+A broader memory pass did not identify an assistant result. Re-check the direct
+answer for a short quoted value that answers the user's explicit question. Use
+memory_add_assistant_result for an eligible result and emit no tool call
+otherwise.
+
+<quoted_assistant_result_recovery>
+- Store a quoted identifier, designation, code, name, label, or other bounded
+  value only when it directly answers the user's question.
+- Preserve the exact quoted value and enough question context to identify what
+  the value means.
+- The result may come from roleplay, analysis, or non-personal source material
+  when the user explicitly requested it.
+- Do not store quoted examples, excerpts, generic definitions, tutorial text,
+  unselected alternatives, acknowledgments, or filler.
+- Do not infer a value that is not present in the assistant's direct reply.
+- Every memory must begin with "Assistant result:" so its provenance remains
+  explicit after persistence.
+</quoted_assistant_result_recovery>`
+
+var quotedAssistantResultPattern = regexp.MustCompile(
+	`"[^"\r\n]+"|“[^”\r\n]+”|` + "`[^`\\r\\n]+`",
+)
+
+func (e *memoryExtractor) recoverAssistantResults(
+	ctx context.Context,
+	messages []model.Message,
+) (context.Context, []*Operation, error) {
+	if hasStructuredAssistantResultCandidate(messages) {
+		return e.recoverAssistantResultsWithPrompt(
+			ctx,
+			e.buildAssistantResultRecoveryMessages(ctx, messages),
+		)
+	}
+	return e.recoverAssistantResultsWithPrompt(
+		ctx,
+		e.buildQuotedAssistantResultRecoveryMessages(ctx, messages),
+	)
+}
+
+func (e *memoryExtractor) recoverAssistantResultsWithPrompt(
 	ctx context.Context,
 	messages []model.Message,
 ) (context.Context, []*Operation, error) {
 	req := &model.Request{
-		Messages: e.buildAssistantResultRecoveryMessages(
-			ctx, messages,
-		),
+		Messages: messages,
 		Tools: map[string]tool.Tool{
 			assistantResultAddToolName: assistantResultAddTool,
 		},
@@ -68,13 +115,39 @@ func (e *memoryExtractor) recoverStructuredAssistantResults(
 	return ctx, assistantResults, nil
 }
 
+func (e *memoryExtractor) buildQuotedAssistantResultRecoveryMessages(
+	ctx context.Context,
+	messages []model.Message,
+) []model.Message {
+	return e.buildAssistantResultRecoveryMessagesWithPrompt(
+		ctx,
+		messages,
+		quotedAssistantResultRecoveryPrompt,
+		quotedAssistantResultRecoveryUserSuffix,
+	)
+}
+
 func (e *memoryExtractor) buildAssistantResultRecoveryMessages(
 	ctx context.Context,
 	messages []model.Message,
 ) []model.Message {
+	return e.buildAssistantResultRecoveryMessagesWithPrompt(
+		ctx,
+		messages,
+		assistantResultRecoveryPrompt,
+		assistantResultRecoveryUserSuffix,
+	)
+}
+
+func (e *memoryExtractor) buildAssistantResultRecoveryMessagesWithPrompt(
+	ctx context.Context,
+	messages []model.Message,
+	prompt string,
+	suffix string,
+) []model.Message {
 	result := make([]model.Message, 0, len(messages)+2)
 	result = append(result, model.NewSystemMessage(
-		e.buildAssistantResultRecoveryPrompt(ctx),
+		e.buildAssistantResultRecoveryPrompt(ctx, prompt),
 	))
 	for _, message := range messages {
 		if message.Role != model.RoleUser &&
@@ -87,17 +160,17 @@ func (e *memoryExtractor) buildAssistantResultRecoveryMessages(
 		}
 		result = append(result, message)
 	}
-	result = append(result,
-		model.NewUserMessage(assistantResultRecoveryUserSuffix))
+	result = append(result, model.NewUserMessage(suffix))
 	return result
 }
 
 func (e *memoryExtractor) buildAssistantResultRecoveryPrompt(
 	ctx context.Context,
+	prompt string,
 ) string {
 	var result strings.Builder
 	result.WriteString(strings.ReplaceAll(
-		assistantResultRecoveryPrompt,
+		prompt,
 		assistantResultCurrentDatePlaceholder,
 		referenceDate(ctx).UTC().Format(time.DateOnly),
 	))
@@ -121,6 +194,54 @@ func hasStructuredAssistantResultCandidate(messages []model.Message) bool {
 			}
 			items++
 			if items >= minimumStructuredAssistantResultItems {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasAssistantResultRecoveryCandidate(messages []model.Message) bool {
+	return hasStructuredAssistantResultCandidate(messages) ||
+		hasQuotedAssistantResultCandidate(messages)
+}
+
+func hasQuotedAssistantResultCandidate(messages []model.Message) bool {
+	questionPending := false
+	for _, message := range messages {
+		switch message.Role {
+		case model.RoleUser:
+			questionPending = messageHasDirectQuestion(message)
+		case model.RoleAssistant:
+			if message.ToolID != "" || len(message.ToolCalls) > 0 ||
+				!messageHasText(message) {
+				continue
+			}
+			if questionPending && hasBoundedQuotedValue(
+				extractionMessageText(message),
+			) {
+				return true
+			}
+			questionPending = false
+		}
+	}
+	return false
+}
+
+func messageHasDirectQuestion(message model.Message) bool {
+	text := extractionMessageText(message)
+	return strings.Contains(text, "?") || strings.Contains(text, "？")
+}
+
+func hasBoundedQuotedValue(text string) bool {
+	for _, quoted := range quotedAssistantResultPattern.FindAllString(text, -1) {
+		value := strings.TrimSpace(strings.Trim(quoted, "\"“”`"))
+		if value == "" || utf8.RuneCountInString(value) >
+			maximumQuotedAssistantResultRunes {
+			continue
+		}
+		for _, r := range value {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
 				return true
 			}
 		}

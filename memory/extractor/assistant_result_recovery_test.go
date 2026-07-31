@@ -20,34 +20,50 @@ import (
 	"trpc.group/trpc-go/trpc-agent-go/model"
 )
 
-func TestHasStructuredAssistantResultCandidate(t *testing.T) {
+func TestHasAssistantResultRecoveryCandidate(t *testing.T) {
 	t.Parallel()
 	contentPartText := "- Alpha\n- Beta\n- Gamma"
 
-	assert.True(t, hasStructuredAssistantResultCandidate([]model.Message{
+	assert.True(t, hasAssistantResultRecoveryCandidate([]model.Message{
 		model.NewAssistantMessage("1. Alpha\n2. Beta\n3. Gamma"),
 	}))
-	assert.True(t, hasStructuredAssistantResultCandidate([]model.Message{
+	assert.True(t, hasAssistantResultRecoveryCandidate([]model.Message{
 		model.NewAssistantMessage("* Alpha\n* Beta\n* Gamma"),
 	}))
-	assert.True(t, hasStructuredAssistantResultCandidate([]model.Message{
+	assert.True(t, hasAssistantResultRecoveryCandidate([]model.Message{
 		model.NewAssistantMessage("\u2022 Alpha\n\u2022 Beta\n\u2022 Gamma"),
 	}))
-	assert.True(t, hasStructuredAssistantResultCandidate([]model.Message{{
+	assert.True(t, hasAssistantResultRecoveryCandidate([]model.Message{{
 		Role: model.RoleAssistant,
 		ContentParts: []model.ContentPart{{
 			Type: model.ContentTypeText,
 			Text: &contentPartText,
 		}},
 	}}))
-	assert.False(t, hasStructuredAssistantResultCandidate([]model.Message{
+	assert.False(t, hasAssistantResultRecoveryCandidate([]model.Message{
 		model.NewAssistantMessage("- Alpha\n- Beta"),
 	}))
-	assert.False(t, hasStructuredAssistantResultCandidate([]model.Message{
+	assert.False(t, hasAssistantResultRecoveryCandidate([]model.Message{
 		model.NewUserMessage("1. Alpha\n2. Beta\n3. Gamma"),
 	}))
-	assert.False(t, hasStructuredAssistantResultCandidate([]model.Message{
+	assert.False(t, hasAssistantResultRecoveryCandidate([]model.Message{
 		model.NewAssistantMessage("Evolution is the selected entity."),
+	}))
+	assert.True(t, hasAssistantResultRecoveryCandidate([]model.Message{
+		model.NewUserMessage("What designation was on the jumpsuit?"),
+		model.NewAssistantMessage("The designation was \"LIV\"."),
+	}))
+	assert.True(t, hasAssistantResultRecoveryCandidate([]model.Message{
+		model.NewUserMessage("Which deployment should I use?"),
+		model.NewAssistantMessage("Use `blue-17` for this rollout."),
+	}))
+	assert.False(t, hasAssistantResultRecoveryCandidate([]model.Message{
+		model.NewUserMessage("The designation was unclear."),
+		model.NewAssistantMessage("The designation was \"LIV\"."),
+	}))
+	assert.False(t, hasAssistantResultRecoveryCandidate([]model.Message{
+		model.NewUserMessage("What does \"eventual consistency\" mean?"),
+		model.NewAssistantMessage("Replicas may converge over time."),
 	}))
 }
 
@@ -102,6 +118,40 @@ func TestExtractor_RecoversStructuredAssistantResult(t *testing.T) {
 		"<existing_memories>")
 	assert.Equal(t, model.RoleUser,
 		m.requests[1].Messages[len(m.requests[1].Messages)-1].Role)
+}
+
+func TestExtractor_RecoversQuotedAssistantResult(t *testing.T) {
+	resultArgs, err := json.Marshal(map[string]any{
+		"memory": "Assistant result: The jumpsuit designation is LIV.",
+	})
+	require.NoError(t, err)
+	m := &sequenceModel{
+		name: "test-model",
+		responses: [][]*model.Response{
+			nil,
+			{{Choices: []model.Choice{{Message: model.Message{
+				ToolCalls: []model.ToolCall{
+					makeToolCall(assistantResultAddToolName, resultArgs),
+				},
+			}}}}},
+		},
+	}
+	e := NewExtractor(m, WithAssistantResultExtraction(true))
+
+	ops, err := e.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("What designation was on the jumpsuit?"),
+		model.NewAssistantMessage("The designation was \"LIV\"."),
+	}, nil)
+
+	require.NoError(t, err)
+	require.Len(t, ops, 1)
+	assert.Equal(t, "Assistant result: The jumpsuit designation is LIV.",
+		ops[0].Memory)
+	assert.Len(t, m.requests, 2)
+	assert.Contains(t, m.requests[1].Messages[0].Content,
+		"<quoted_assistant_result_recovery>")
+	assert.NotContains(t, m.requests[1].Messages[0].Content,
+		"<assistant_result_recovery>")
 }
 
 func TestExtractor_DoesNotRecoverWhenCombinedPassHasResult(t *testing.T) {

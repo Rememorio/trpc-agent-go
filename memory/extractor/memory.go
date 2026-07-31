@@ -182,9 +182,9 @@ func (e *memoryExtractor) ExtractOperationStages(
 		return primary, assistantResults, err
 	}
 	if len(assistantResults) == 0 &&
-		hasStructuredAssistantResultCandidate(messages) {
+		hasAssistantResultRecoveryCandidate(messages) {
 		recoveryCtx, recovered, recoveryErr :=
-			e.recoverStructuredAssistantResults(
+			e.recoverAssistantResults(
 				ctx, messages,
 			)
 		if recoveryErr != nil {
@@ -192,7 +192,7 @@ func (e *memoryExtractor) ExtractOperationStages(
 				return primary, nil, recoveryErr
 			}
 			log.WarnfContext(ctx,
-				"extractor: structured assistant result recovery failed: %v",
+				"extractor: assistant result recovery failed: %v",
 				recoveryErr,
 			)
 		} else {
