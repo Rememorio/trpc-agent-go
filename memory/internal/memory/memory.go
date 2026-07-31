@@ -1582,8 +1582,9 @@ func DeduplicateResults(results []*memory.Entry) []*memory.Entry {
 }
 
 // DeduplicateResultsPreservingConflicts behaves like DeduplicateResults but
-// retains near-duplicates with different critical values as state history and
-// orders the newer conflicting state first.
+// retains different critical values as state history and orders the newer
+// conflicting state first. Exact, sufficiently specific topic identity is a
+// conservative fallback when differently worded states are not near-duplicates.
 func DeduplicateResultsPreservingConflicts(
 	results []*memory.Entry,
 ) []*memory.Entry {
@@ -1594,17 +1595,22 @@ func deduplicateResults(
 	results []*memory.Entry,
 	preserveConflicts bool,
 ) []*memory.Entry {
-	const jaccardThreshold = 0.80
+	const (
+		jaccardThreshold      = 0.80
+		minimumConflictTopics = 3
+	)
 	if len(results) < 2 {
 		return results
 	}
 
 	// Build token sets once per entry; reused across all comparisons.
 	sets := make([]map[string]struct{}, len(results))
+	topicSets := make([]map[string]struct{}, len(results))
 	criticalValues := make([]string, len(results))
 	for i, r := range results {
 		sets[i] = entryTokenSet(r)
 		if preserveConflicts {
+			topicSets[i] = entryTopicSet(r)
 			criticalValues[i] = memoryCriticalValueSignature(r)
 		}
 	}
@@ -1646,9 +1652,20 @@ func deduplicateResults(
 		isDup := false
 		for prev := 0; prev < pos; prev++ {
 			k := order[prev]
-			if jaccardAtLeast(sets[idx], sets[k], jaccardThreshold) &&
-				(!preserveConflicts ||
-					!criticalValuesConflict(criticalValues[idx], criticalValues[k])) {
+			contentDuplicate := jaccardAtLeast(
+				sets[idx], sets[k], jaccardThreshold,
+			)
+			if contentDuplicate &&
+				(!preserveConflicts || !relatedConflictingMemoryStates(
+					sets[idx],
+					sets[k],
+					topicSets[idx],
+					topicSets[k],
+					criticalValues[idx],
+					criticalValues[k],
+					jaccardThreshold,
+					minimumConflictTopics,
+				)) {
 				isDup = true
 				break
 			}
@@ -1663,17 +1680,24 @@ func deduplicateResults(
 	// the historical ordering semantics keep working.
 	deduped := make([]*memory.Entry, 0, len(results))
 	dedupedSets := make([]map[string]struct{}, 0, len(results))
+	dedupedTopicSets := make([]map[string]struct{}, 0, len(results))
 	dedupedCriticalValues := make([]string, 0, len(results))
 	for i, r := range results {
 		if kept[i] {
 			deduped = append(deduped, r)
 			dedupedSets = append(dedupedSets, sets[i])
+			dedupedTopicSets = append(dedupedTopicSets, topicSets[i])
 			dedupedCriticalValues = append(dedupedCriticalValues, criticalValues[i])
 		}
 	}
 	if preserveConflicts {
 		orderConflictingMemoryStates(
-			deduped, dedupedSets, dedupedCriticalValues, jaccardThreshold,
+			deduped,
+			dedupedSets,
+			dedupedTopicSets,
+			dedupedCriticalValues,
+			jaccardThreshold,
+			minimumConflictTopics,
 		)
 	}
 	return deduped
@@ -1681,6 +1705,37 @@ func deduplicateResults(
 
 func criticalValuesConflict(left, right string) bool {
 	return left != "" && right != "" && left != right
+}
+
+func relatedConflictingMemoryStates(
+	leftTokens, rightTokens map[string]struct{},
+	leftTopics, rightTopics map[string]struct{},
+	leftValues, rightValues string,
+	contentThreshold float64,
+	minimumTopics int,
+) bool {
+	if !criticalValuesConflict(leftValues, rightValues) {
+		return false
+	}
+	return jaccardAtLeast(leftTokens, rightTokens, contentThreshold) ||
+		sameTopicIdentity(leftTopics, rightTopics, minimumTopics)
+}
+
+func sameTopicIdentity(
+	left, right map[string]struct{},
+	minimumTopics int,
+) bool {
+	// Topics identify a state only when both complete sets match. Partial
+	// overlap is common among unrelated memories in the same broad domain.
+	if len(left) < minimumTopics || len(left) != len(right) {
+		return false
+	}
+	for topic := range left {
+		if _, ok := right[topic]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func memoryCriticalValueSignature(entry *memory.Entry) string {
@@ -1704,18 +1759,29 @@ func memoryCriticalValueSignature(entry *memory.Entry) string {
 func orderConflictingMemoryStates(
 	results []*memory.Entry,
 	sets []map[string]struct{},
+	topicSets []map[string]struct{},
 	criticalValues []string,
 	threshold float64,
+	minimumTopics int,
 ) {
 	for i := 0; i < len(results); i++ {
 		for j := i + 1; j < len(results); j++ {
-			if !criticalValuesConflict(criticalValues[i], criticalValues[j]) ||
-				!jaccardAtLeast(sets[i], sets[j], threshold) ||
+			if !relatedConflictingMemoryStates(
+				sets[i],
+				sets[j],
+				topicSets[i],
+				topicSets[j],
+				criticalValues[i],
+				criticalValues[j],
+				threshold,
+				minimumTopics,
+			) ||
 				!memoryEntryNewer(results[j], results[i]) {
 				continue
 			}
 			results[i], results[j] = results[j], results[i]
 			sets[i], sets[j] = sets[j], sets[i]
+			topicSets[i], topicSets[j] = topicSets[j], topicSets[i]
 			criticalValues[i], criticalValues[j] = criticalValues[j], criticalValues[i]
 		}
 	}
@@ -1748,6 +1814,20 @@ func entryTokenSet(e *memory.Entry) map[string]struct{} {
 	}
 	for _, w := range buildFallbackCJKTrigrams(e.Memory.Memory) {
 		set[w] = struct{}{}
+	}
+	return set
+}
+
+func entryTopicSet(e *memory.Entry) map[string]struct{} {
+	if e == nil || e.Memory == nil {
+		return map[string]struct{}{}
+	}
+	set := make(map[string]struct{}, len(e.Memory.Topics))
+	for _, topic := range e.Memory.Topics {
+		normalized := strings.ToLower(strings.Join(strings.Fields(topic), " "))
+		if normalized != "" {
+			set[normalized] = struct{}{}
+		}
 	}
 	return set
 }
