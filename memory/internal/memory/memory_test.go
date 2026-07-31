@@ -881,6 +881,108 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		assert.Equal(t, "four", deduped[1].ID)
 	})
 
+	t.Run("topic identity orders differently worded conflicting states", func(t *testing.T) {
+		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
+		topics := []string{"Rachel", "team", "women", "diversity", "leadership"}
+		five := &memory.Entry{
+			ID:        "five",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "Rachel currently leads a team of 10 people, half of whom (5) are women.",
+				Topics: topics,
+			},
+		}
+		six := &memory.Entry{
+			ID:        "six",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "Diversity update: 6 women now work on Rachel's 10-person team.",
+				Topics: []string{"leadership", "diversity", "women", "team", "Rachel"},
+			},
+		}
+
+		ordinary := DeduplicateResults([]*memory.Entry{five, six})
+		require.Len(t, ordinary, 2)
+		assert.Equal(t, "five", ordinary[0].ID)
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{five, six},
+		)
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "six", deduped[0].ID)
+		assert.Equal(t, "five", deduped[1].ID)
+	})
+
+	t.Run("topic identity does not reorder one-sided detail enrichment", func(t *testing.T) {
+		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
+		topics := []string{"bird", "window", "wildlife", "observation"}
+		original := &memory.Entry{
+			ID:        "original",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "On 2023-05-27, a bird appeared outside the kitchen window.",
+				Topics: topics,
+			},
+		}
+		detail := &memory.Entry{
+			ID:        "detail",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "The 2023-05-27 visitor was observed briefly; no photograph was taken.",
+				Topics: []string{"wildlife", "observation", "bird", "window"},
+			},
+		}
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{original, detail},
+		)
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "original", deduped[0].ID)
+		assert.Equal(t, "detail", deduped[1].ID)
+	})
+
+	t.Run("broad topic pairs do not define state identity", func(t *testing.T) {
+		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
+		first := &memory.Entry{
+			ID:        "first",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "Rachel manages 5 designers.",
+				Topics: []string{"Rachel", "team"},
+			},
+		}
+		second := &memory.Entry{
+			ID:        "second",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "Rachel has completed 6 marathons.",
+				Topics: []string{"team", "Rachel"},
+			},
+		}
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{first, second},
+		)
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "first", deduped[0].ID)
+		assert.Equal(t, "second", deduped[1].ID)
+	})
+
 	t.Run("deduplicate normalizes equivalent number forms", func(t *testing.T) {
 		results := []*memory.Entry{
 			{ID: "word", Score: 0.9, Memory: &memory.Memory{
