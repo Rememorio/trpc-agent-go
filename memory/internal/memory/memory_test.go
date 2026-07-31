@@ -918,6 +918,39 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		assert.Equal(t, "five", deduped[1].ID)
 	})
 
+	t.Run("topic identity does not reorder one-sided detail enrichment", func(t *testing.T) {
+		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		newer := older.Add(time.Hour)
+		topics := []string{"bird", "window", "wildlife", "observation"}
+		original := &memory.Entry{
+			ID:        "original",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "On 2023-05-27, a bird appeared outside the kitchen window.",
+				Topics: topics,
+			},
+		}
+		detail := &memory.Entry{
+			ID:        "detail",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "The 2023-05-27 visitor was observed briefly; no photograph was taken.",
+				Topics: []string{"wildlife", "observation", "bird", "window"},
+			},
+		}
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{original, detail},
+		)
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "original", deduped[0].ID)
+		assert.Equal(t, "detail", deduped[1].ID)
+	})
+
 	t.Run("broad topic pairs do not define state identity", func(t *testing.T) {
 		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 		newer := older.Add(time.Hour)

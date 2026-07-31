@@ -1717,8 +1717,41 @@ func relatedConflictingMemoryStates(
 	if !criticalValuesConflict(leftValues, rightValues) {
 		return false
 	}
-	return jaccardAtLeast(leftTokens, rightTokens, contentThreshold) ||
-		sameTopicIdentity(leftTopics, rightTopics, minimumTopics)
+	if jaccardAtLeast(leftTokens, rightTokens, contentThreshold) {
+		return true
+	}
+	return sameTopicIdentity(leftTopics, rightTopics, minimumTopics) &&
+		criticalValueAlternativesConflict(leftValues, rightValues)
+}
+
+func criticalValueAlternativesConflict(left, right string) bool {
+	leftSet := criticalValueSet(left)
+	rightSet := criticalValueSet(right)
+	var leftOnly, rightOnly bool
+	for value := range leftSet {
+		if _, ok := rightSet[value]; !ok {
+			leftOnly = true
+			break
+		}
+	}
+	for value := range rightSet {
+		if _, ok := leftSet[value]; !ok {
+			rightOnly = true
+			break
+		}
+	}
+	return leftOnly && rightOnly
+}
+
+func criticalValueSet(signature string) map[string]struct{} {
+	values := strings.Split(signature, "|")
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	return set
 }
 
 func sameTopicIdentity(
