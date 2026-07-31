@@ -261,7 +261,7 @@ func finalizeSearchResults(
 		}
 	}
 	if opts.Deduplicate && len(results) > 1 {
-		results = imemory.DeduplicateResults(results)
+		results = imemory.DeduplicateResultsPreservingConflicts(results)
 	}
 	if opts.MaxResults > 0 && len(results) > opts.MaxResults {
 		results = results[:opts.MaxResults]

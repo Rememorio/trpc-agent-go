@@ -409,6 +409,35 @@ func TestServiceSearchMemoriesDeduplicatesContent(t *testing.T) {
 	assert.Len(t, results, 1)
 }
 
+func TestFinalizeSearchResultsPreservesConflictingStateHistory(t *testing.T) {
+	older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	results := finalizeSearchResults([]*memory.Entry{
+		{
+			ID:        "older",
+			Score:     0.95,
+			CreatedAt: older,
+			UpdatedAt: older,
+			Memory: &memory.Memory{
+				Memory: "The support rotation currently has 4 engineers assigned to overnight incident response",
+			},
+		},
+		{
+			ID:        "newer",
+			Score:     0.90,
+			CreatedAt: newer,
+			UpdatedAt: newer,
+			Memory: &memory.Memory{
+				Memory: "The support rotation currently has 7 engineers assigned to overnight incident response",
+			},
+		},
+	}, memory.SearchOptions{Deduplicate: true, MaxResults: 10})
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "newer", results[0].ID)
+	assert.Equal(t, "older", results[1].ID)
+}
+
 func TestServiceSearchMemoriesHybridCandidateLimitIsIndependent(t *testing.T) {
 	embedder := &testEmbedder{
 		dimension: 2,

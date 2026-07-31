@@ -1768,6 +1768,39 @@ func TestSearchEntries_OrderByEventTimeKeepsHigherScoreFirst(t *testing.T) {
 	assert.Equal(t, "earlier-weaker", results[1].ID)
 }
 
+func TestSearchEntries_DeduplicatePreservesConflictingStateHistory(
+	t *testing.T,
+) {
+	older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	entries := []*memory.Entry{
+		newSearchTestEntry(
+			"older",
+			"The support rotation currently has 4 engineers assigned to overnight incident response",
+			[]string{"support", "rotation", "engineers", "incident response"},
+			older,
+			older,
+		),
+		newSearchTestEntry(
+			"newer",
+			"The support rotation currently has 7 engineers assigned to overnight incident response",
+			[]string{"support", "rotation", "engineers", "incident response"},
+			newer,
+			newer,
+		),
+	}
+
+	results := SearchEntries(entries, memory.SearchOptions{
+		Query:       "support rotation engineers incident response",
+		Deduplicate: true,
+		MaxResults:  10,
+	}, 0.3, 10)
+
+	require.Len(t, results, 2)
+	assert.Equal(t, "newer", results[0].ID)
+	assert.Equal(t, "older", results[1].ID)
+}
+
 func TestSearchEntries_PrefersRarerPartialMatches(t *testing.T) {
 	now := time.Now().UTC()
 	entries := []*memory.Entry{

@@ -1286,7 +1286,7 @@ func SearchEntries(
 	}
 
 	if opts.Deduplicate && len(results) > 1 {
-		results = DeduplicateResults(results)
+		results = DeduplicateResultsPreservingConflicts(results)
 	}
 	if limit > 0 && len(results) > limit {
 		results = results[:limit]
