@@ -466,6 +466,42 @@ func TestRouteAssistantResultOperationsMergesTopics(t *testing.T) {
 	assert.NotSame(t, result, gotResults[0])
 }
 
+func TestRouteAssistantResultOperationsOwnsPrimaryUpdate(t *testing.T) {
+	primary := &Operation{
+		Type:     OperationUpdate,
+		MemoryID: "previous-result",
+		Memory: "Assistant result: Recommended Atlas for speed, Birch " +
+			"for cost, and Cedar for simplicity.",
+		Topics: []string{"recommendations", "tradeoffs"},
+	}
+	result := &Operation{
+		Type: OperationAdd,
+		Memory: "Assistant result: Recommended Atlas for speed, Birch " +
+			"for cost, and Cedar for simplicity.",
+		Topics: []string{"Atlas", "Birch", "Cedar"},
+	}
+
+	gotPrimary, gotResults := routeAssistantResultOperations(
+		[]*Operation{primary}, []*Operation{result},
+	)
+
+	assert.Empty(t, gotPrimary)
+	require.Len(t, gotResults, 1)
+	assert.Equal(t, OperationAdd, gotResults[0].Type)
+	assert.Empty(t, gotResults[0].MemoryID)
+	assert.Equal(
+		t,
+		[]string{
+			"Atlas",
+			"Birch",
+			"Cedar",
+			"recommendations",
+			"tradeoffs",
+		},
+		gotResults[0].Topics,
+	)
+}
+
 func TestRouteAssistantResultOperationsKeepsDistinctPrimaryFact(t *testing.T) {
 	primary := &Operation{
 		Type:   OperationAdd,

@@ -81,7 +81,8 @@ func explicitAssistantSubject(text string) bool {
 
 func likelySameAssistantResult(left, right *Operation) bool {
 	if left == nil || right == nil ||
-		left.Type != OperationAdd || right.Type != OperationAdd ||
+		(left.Type != OperationAdd && left.Type != OperationUpdate) ||
+		right.Type != OperationAdd ||
 		left.MemoryKind != right.MemoryKind ||
 		!sameOptionalTime(left.EventTime, right.EventTime) ||
 		!equalFoldedStringSets(left.Participants, right.Participants) ||
