@@ -1886,7 +1886,7 @@ func entryTopicSet(e *memory.Entry) map[string]struct{} {
 
 func memoryStateChangeMarker(e *memory.Entry) bool {
 	return e != nil && e.Memory != nil &&
-		changeMarkerPattern.MatchString(e.Memory.Memory)
+		memoryChangeMarkerPattern.MatchString(e.Memory.Memory)
 }
 
 func jaccardSimilarity(a, b map[string]struct{}) float64 {

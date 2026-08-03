@@ -1082,8 +1082,8 @@ func reconcileAddPreservesStoredMemory(
 		negationSignature(stored.Memory) != negationSignature(op.Memory) {
 		return false
 	}
-	if changeMarkerPattern.MatchString(op.Memory) &&
-		!changeMarkerPattern.MatchString(stored.Memory) {
+	if memoryChangeMarkerPattern.MatchString(op.Memory) &&
+		!memoryChangeMarkerPattern.MatchString(stored.Memory) {
 		return false
 	}
 	return true
