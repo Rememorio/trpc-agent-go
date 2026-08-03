@@ -1841,6 +1841,11 @@ func memoryEntryNewer(left, right *memory.Entry) bool {
 	if right == nil {
 		return true
 	}
+	if left.Memory != nil && right.Memory != nil &&
+		left.Memory.EventTime != nil && right.Memory.EventTime != nil &&
+		!left.Memory.EventTime.Equal(*right.Memory.EventTime) {
+		return left.Memory.EventTime.After(*right.Memory.EventTime)
+	}
 	if !left.UpdatedAt.Equal(right.UpdatedAt) {
 		return left.UpdatedAt.After(right.UpdatedAt)
 	}

@@ -881,6 +881,41 @@ func TestSearchResultDeduplicationHelpers(t *testing.T) {
 		assert.Equal(t, "four", deduped[1].ID)
 	})
 
+	t.Run("conflicting states prefer event time over ingestion time", func(t *testing.T) {
+		earlierEvent := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+		laterEvent := earlierEvent.Add(24 * time.Hour)
+		earlierWrite := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		laterWrite := earlierWrite.Add(time.Hour)
+		oldState := &memory.Entry{
+			ID:        "old-state",
+			Score:     0.95,
+			CreatedAt: laterWrite,
+			UpdatedAt: laterWrite,
+			Memory: &memory.Memory{
+				Memory:    "The support rotation has 4 engineers on call.",
+				EventTime: &earlierEvent,
+			},
+		}
+		newState := &memory.Entry{
+			ID:        "new-state",
+			Score:     0.90,
+			CreatedAt: earlierWrite,
+			UpdatedAt: earlierWrite,
+			Memory: &memory.Memory{
+				Memory:    "The support rotation has 7 engineers on call.",
+				EventTime: &laterEvent,
+			},
+		}
+
+		deduped := DeduplicateResultsPreservingConflicts(
+			[]*memory.Entry{oldState, newState},
+		)
+
+		require.Len(t, deduped, 2)
+		assert.Equal(t, "new-state", deduped[0].ID)
+		assert.Equal(t, "old-state", deduped[1].ID)
+	})
+
 	t.Run("topic identity orders differently worded conflicting states", func(t *testing.T) {
 		older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 		newer := older.Add(time.Hour)
