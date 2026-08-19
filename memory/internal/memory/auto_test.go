@@ -1104,16 +1104,7 @@ func (m *assistantBestEffortModel) GenerateContent(
 	m.calls++
 	switch m.calls {
 	case 1:
-		arguments, _ := json.Marshal(map[string]string{
-			"memory": "User wants two recommendations.",
-		})
-		return responseChannel([]model.ToolCall{{
-			Type: "function",
-			Function: model.FunctionDefinitionParam{
-				Name:      memory.AddToolName,
-				Arguments: arguments,
-			},
-		}}), nil
+		return responseChannel(nil), nil
 	case 2:
 		return nil, errors.New("assistant stage unavailable")
 	default:
@@ -1853,7 +1844,7 @@ func TestAutoMemoryWorker_AssistantOptionalFailureAdvancesWatermark(t *testing.T
 	watermark, err := time.Parse(time.RFC3339Nano, string(raw))
 	require.NoError(t, err)
 	assert.True(t, watermark.Equal(latest))
-	assert.Equal(t, 1, op.addCalls)
+	assert.Equal(t, 0, op.addCalls)
 	assert.Equal(t, 2, extractionModel.calls)
 }
 

@@ -107,6 +107,10 @@ func (e *memoryExtractor) extractWithAssistantEpisodes(
 	if !e.assistantEpisodeAddEnabled() {
 		return ordinary.operations, nil
 	}
+	_, userMessageCount := assistantEpisodeOrdinaryMessages(messages)
+	if userMessageCount == 1 && len(ordinary.operations) > 0 {
+		return ordinary.operations, nil
+	}
 	if ordinary.destructiveScopeUnknown {
 		return ordinary.operations, nil
 	}
@@ -318,6 +322,7 @@ func (e *memoryExtractor) extractAssistantEpisodes(
 	}
 	operations := make([]*Operation, len(sources))
 	seenIDs := make(map[string]struct{}, len(sources))
+	invalidIDs := make(map[string]struct{}, len(sources))
 	nextCtx, err := e.runExtractionRequest(ctx, &model.Request{
 		Messages: messages,
 		Tools: map[string]tool.Tool{
@@ -348,17 +353,27 @@ func (e *memoryExtractor) extractAssistantEpisodes(
 			source.userText+"\n"+source.assistantText,
 		)
 		if parseErr != nil {
-			logAssistantEpisodeRejection(callCtx, "content validation failed")
+			invalidIDs[pairID] = struct{}{}
+			logAssistantEpisodeRejection(
+				callCtx,
+				"content validation failed; using source fallback",
+			)
 			return
 		}
 		seenIDs[pairID] = struct{}{}
+		delete(invalidIDs, pairID)
 		operations[indexByID[pairID]] = operation
 	})
 	if err != nil {
 		return nextCtx, nil, err
 	}
 	result := make([]*Operation, 0, len(operations))
-	for _, operation := range operations {
+	for i, operation := range operations {
+		if operation == nil {
+			if _, ok := invalidIDs[sources[i].id]; ok {
+				operation = e.assistantEpisodeSourceFallback(ctx, sources[i])
+			}
+		}
 		if operation != nil {
 			result = append(result, operation)
 		}
@@ -400,10 +415,38 @@ func (e *memoryExtractor) parseAssistantEpisode(
 	if err := validateAssistantEpisodeNumbers(memoryText, source); err != nil {
 		return nil, err
 	}
+	return e.newAssistantEpisodeOperation(ctx, memoryText, toStringSlice(args[argKeyTopics])), nil
+}
+
+func (e *memoryExtractor) assistantEpisodeSourceFallback(
+	ctx context.Context,
+	source assistantEpisodeSource,
+) *Operation {
+	memoryText := "User request:\n" + source.userText +
+		"\nAssistant response:\n" + source.assistantText
+	if len(memoryText) > assistantEpisodeMaxBytes {
+		available := assistantEpisodeMaxBytes - len(assistantEpisodeTruncationMarker)
+		headBytes := available / 2
+		headEnd := trimSplitUTF8End(memoryText, headBytes)
+		tailStart := trimSplitUTF8Start(
+			memoryText,
+			len(memoryText)-(available-headBytes),
+		)
+		memoryText = memoryText[:headEnd] +
+			assistantEpisodeTruncationMarker + memoryText[tailStart:]
+	}
+	return e.newAssistantEpisodeOperation(ctx, memoryText, nil)
+}
+
+func (e *memoryExtractor) newAssistantEpisodeOperation(
+	ctx context.Context,
+	memoryText string,
+	topics []string,
+) *Operation {
 	op := &Operation{
 		Type:         OperationAdd,
 		Memory:       assistantmemory.Prefix + memoryText,
-		Topics:       toStringSlice(args[argKeyTopics]),
+		Topics:       topics,
 		MemoryKind:   memory.KindEpisode,
 		Participants: []string{"User", "Assistant"},
 	}
@@ -411,7 +454,7 @@ func (e *memoryExtractor) parseAssistantEpisode(
 		eventTime = eventTime.UTC()
 		op.EventTime = &eventTime
 	}
-	return op, nil
+	return op
 }
 
 func selectAssistantEpisodePairs(messages []model.Message) []assistantEpisodePair {

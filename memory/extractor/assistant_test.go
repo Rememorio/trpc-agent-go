@@ -325,21 +325,15 @@ func TestAssistantEpisodeExtractionDoesNotInterpretForgetWording(t *testing.T) {
 	}
 }
 
-func TestAssistantEpisodeExtractionUsesConditionalSecondStage(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{
-		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
+func TestAssistantEpisodeExtractionSkipsSecondStageAfterSinglePairOperation(t *testing.T) {
+	m := &assistantTestModel{steps: []assistantModelStep{{
+		calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
 			"memory":"User wants options for a compact kitchen."
-		}`))}},
-		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
-			"pair_id":"pair-1",
-			"memory":"When the user requested compact-kitchen options, the assistant recommended Alpha and Beta.",
-			"topics":["compact kitchen","recommendations"]
-		}`)}},
-	}}
+		}`))},
+	}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
-	reference := time.Date(2026, time.July, 21, 10, 30, 0, 0, time.UTC)
 	operations, err := ext.Extract(
-		WithReferenceDate(context.Background(), reference),
+		context.Background(),
 		[]model.Message{
 			model.NewUserMessage("Recommend options for a compact kitchen."),
 			model.NewAssistantMessage("- Alpha\n- Beta"),
@@ -349,40 +343,15 @@ func TestAssistantEpisodeExtractionUsesConditionalSecondStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if !requestContainsRoleContent(m.requests[0], model.RoleAssistant, "- Alpha\n- Beta") {
 		t.Fatal("ordinary extraction omitted assistant context")
 	}
-	if got := len(m.requests[1].Tools); got != 1 {
-		t.Fatalf("second-stage tool count = %d, want 1", got)
-	}
-	if _, ok := m.requests[1].Tools[assistantEpisodeToolName]; !ok {
-		t.Fatal("second stage does not expose the assistant episode tool")
-	}
-	if got := m.requests[1].Messages[0].Content; got != assistantEpisodeSystemPrompt {
-		t.Fatalf("default second-stage prompt changed:\n%s", got)
-	}
-	if len(operations) != 2 {
-		t.Fatalf("operation count = %d, want 2", len(operations))
-	}
-	assistantOperation := operations[1]
-	if assistantOperation.MemoryKind != memory.KindEpisode {
-		t.Fatalf("assistant kind = %q, want %q", assistantOperation.MemoryKind, memory.KindEpisode)
-	}
-	if !strings.HasPrefix(assistantOperation.Memory, assistantEpisodePrefix) {
-		t.Fatalf("assistant memory = %q", assistantOperation.Memory)
-	}
-	if !reflect.DeepEqual(
-		assistantOperation.Participants,
-		[]string{"User", "Assistant"},
-	) {
-		t.Fatalf("participants = %#v", assistantOperation.Participants)
-	}
-	if assistantOperation.EventTime == nil ||
-		!assistantOperation.EventTime.Equal(reference) {
-		t.Fatalf("event time = %v, want %v", assistantOperation.EventTime, reference)
+	if len(operations) != 1 ||
+		operations[0].Memory != "User wants options for a compact kitchen." {
+		t.Fatalf("operations = %#v, want ordinary operation only", operations)
 	}
 }
 
@@ -1160,30 +1129,7 @@ func TestExtractAssistantEpisodeRejectsInvalidArguments(t *testing.T) {
 	}
 }
 
-func TestAssistantEpisodeExtractionSkipsInvalidContentAndKeepsOrdinaryOperations(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{
-		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
-			"memory":"User wants two recommendations."
-		}`))}},
-		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
-				"pair_id":"pair-1",
-				"memory":"The assistant recommended 99 options."
-		}`)}},
-	}}
-	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
-	operations, err := ext.Extract(context.Background(), []model.Message{
-		model.NewUserMessage("Recommend two options."),
-		model.NewAssistantMessage("1. Alpha\n2. Beta"),
-	}, nil)
-	if err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-	if len(operations) != 1 || operations[0].Memory != "User wants two recommendations." {
-		t.Fatalf("operations = %#v, want ordinary operation only", operations)
-	}
-}
-
-func TestAssistantEpisodeExtractionBatchSkipsOnlyInvalidPair(t *testing.T) {
+func TestAssistantEpisodeExtractionBatchFallsBackOnlyInvalidPair(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
 		{},
 		{calls: []model.ToolCall{
@@ -1207,8 +1153,33 @@ func TestAssistantEpisodeExtractionBatchSkipsOnlyInvalidPair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(operations) != 1 || !strings.Contains(operations[0].Memory, "Gamma and Delta") {
-		t.Fatalf("operations = %#v, want valid pair only", operations)
+	if len(operations) != 2 {
+		t.Fatalf("operations = %#v, want source fallback and valid pair", operations)
+	}
+	if !strings.Contains(operations[0].Memory, "1. Alpha\n2. Beta") ||
+		!strings.Contains(operations[1].Memory, "Gamma and Delta") {
+		t.Fatalf("operations are not ordered source fallback then valid pair: %#v", operations)
+	}
+}
+
+func TestAssistantEpisodeSourceFallbackBoundsContent(t *testing.T) {
+	ext := NewExtractor(nil, WithAssistantEpisodeExtraction()).(*memoryExtractor)
+	operation := ext.assistantEpisodeSourceFallback(
+		context.Background(),
+		assistantEpisodeSource{
+			userText:      strings.Repeat("user ", 1000),
+			assistantText: strings.Repeat("assistant ", 1000),
+		},
+	)
+	memoryText := strings.TrimPrefix(operation.Memory, assistantmemory.Prefix)
+	if len(memoryText) > assistantEpisodeMaxBytes {
+		t.Fatalf("fallback bytes = %d, want <= %d", len(memoryText), assistantEpisodeMaxBytes)
+	}
+	if !utf8.ValidString(memoryText) {
+		t.Fatal("fallback split UTF-8 content")
+	}
+	if !strings.Contains(memoryText, assistantEpisodeTruncationMarker) {
+		t.Fatal("fallback omitted truncation marker")
 	}
 }
 
