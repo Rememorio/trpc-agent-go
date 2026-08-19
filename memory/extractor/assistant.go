@@ -55,6 +55,7 @@ type assistantEpisodeOrdinaryResult struct {
 	clearSourceIndex        int
 	deletedSourceIndexes    map[int]struct{}
 	destructiveScopeUnknown bool
+	structuredMemoryLeak    bool
 }
 
 type assistantEpisodeSource struct {
@@ -225,6 +226,21 @@ func (e *memoryExtractor) extractAssistantEpisodesInSinglePass(
 		)
 		return fallback.operations, fallbackErr
 	}
+	if ordinary.structuredMemoryLeak {
+		log.WarnfContext(
+			nextCtx,
+			"extractor: combined extraction leaked structured arguments into memory text; retrying ordinary extraction",
+		)
+		var fallbackErr error
+		nextCtx, ordinary, fallbackErr = ordinaryExtractor.extractAssistantEpisodeOrdinaryStage(
+			nextCtx,
+			messages,
+			existing,
+		)
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+	}
 	if ordinary.destructiveScopeUnknown {
 		return ordinary.operations, nil
 	}
@@ -300,6 +316,10 @@ func (e *memoryExtractor) collectAssistantEpisodeOrdinaryCall(
 	userMessageCount int,
 	result *assistantEpisodeOrdinaryResult,
 ) {
+	if assistantEpisodeCallHasStructuredMemoryLeak(call) {
+		result.structuredMemoryLeak = true
+		return
+	}
 	op := e.parseToolCall(ctx, call)
 	if op == nil {
 		return
@@ -332,6 +352,53 @@ func (e *memoryExtractor) collectAssistantEpisodeOrdinaryCall(
 			result.deletedSourceIndexes[index] = struct{}{}
 		}
 	}
+}
+
+func assistantEpisodeCallHasStructuredMemoryLeak(call model.ToolCall) bool {
+	if call.Function.Name != memory.AddToolName &&
+		call.Function.Name != memory.UpdateToolName {
+		return false
+	}
+	var args map[string]any
+	if err := json.Unmarshal(call.Function.Arguments, &args); err != nil {
+		return false
+	}
+	memoryText, _ := args[argKeyMemory].(string)
+	for offset := 0; offset < len(memoryText); {
+		quote := strings.IndexByte(memoryText[offset:], '"')
+		if quote < 0 {
+			return false
+		}
+		quote += offset
+		tail := strings.TrimSpace(memoryText[quote+1:])
+		if strings.HasPrefix(tail, ",") {
+			var embedded map[string]json.RawMessage
+			if json.Unmarshal(
+				[]byte("{"+strings.TrimSpace(tail[1:])+"}"),
+				&embedded,
+			) == nil && assistantEpisodeHasOperationFields(embedded) {
+				return true
+			}
+		}
+		offset = quote + 1
+	}
+	return false
+}
+
+func assistantEpisodeHasOperationFields(fields map[string]json.RawMessage) bool {
+	for _, key := range []string{
+		argKeyMemoryID,
+		argKeyTopics,
+		argKeyMemoryKind,
+		argKeyEventTime,
+		argKeyParticipants,
+		argKeyLocation,
+	} {
+		if _, ok := fields[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func selectAssistantEpisodeCandidates(
@@ -435,6 +502,10 @@ func (e *memoryExtractor) parseAssistantEpisode(
 	if err := validateAssistantEpisodeNumbers(memoryText, source); err != nil {
 		return nil, err
 	}
+	memoryText, err := preserveAssistantEpisodeReferences(memoryText, source)
+	if err != nil {
+		return nil, err
+	}
 	op := &Operation{
 		Type:         OperationAdd,
 		Memory:       assistantmemory.Prefix + memoryText,
@@ -447,6 +518,109 @@ func (e *memoryExtractor) parseAssistantEpisode(
 		op.EventTime = &eventTime
 	}
 	return op, nil
+}
+
+func preserveAssistantEpisodeReferences(memoryText, source string) (string, error) {
+	lines := missingAssistantEpisodeReferenceLines(memoryText, source)
+	if len(lines) == 0 {
+		return memoryText, nil
+	}
+	suffix := "\nSource references:\n" + strings.Join(lines, "\n")
+	if len(suffix) >= assistantEpisodeMaxBytes {
+		return "", fmt.Errorf(
+			"assistant episode source references exceed %d bytes",
+			assistantEpisodeMaxBytes,
+		)
+	}
+	available := assistantEpisodeMaxBytes - len(suffix)
+	if len(memoryText) > available {
+		marker := strings.TrimSpace(assistantEpisodeTruncationMarker)
+		if available <= len(marker) {
+			end := trimSplitUTF8End(memoryText, available)
+			memoryText = memoryText[:end]
+		} else {
+			end := trimSplitUTF8End(memoryText, available-len(marker))
+			memoryText = strings.TrimSpace(memoryText[:end]) + marker
+		}
+	}
+	return strings.TrimSpace(memoryText) + suffix, nil
+}
+
+func missingAssistantEpisodeReferenceLines(memoryText, source string) []string {
+	seenURLs := make(map[string]struct{})
+	result := make([]string, 0)
+	for _, line := range strings.Split(source, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		urls := assistantEpisodeURLs(line)
+		missing := false
+		for _, current := range urls {
+			if strings.Contains(memoryText, current) {
+				continue
+			}
+			if _, ok := seenURLs[current]; ok {
+				continue
+			}
+			seenURLs[current] = struct{}{}
+			missing = true
+		}
+		if missing {
+			result = append(result, line)
+		}
+	}
+	return result
+}
+
+func assistantEpisodeURLs(text string) []string {
+	result := make([]string, 0)
+	seen := make(map[string]struct{})
+	for offset := 0; offset < len(text); {
+		start := assistantEpisodeNextURL(text, offset)
+		if start < 0 {
+			break
+		}
+		end := start
+		for end < len(text) {
+			current, size := utf8.DecodeRuneInString(text[end:])
+			if unicode.IsSpace(current) || strings.ContainsRune("<>\"'[]{}", current) {
+				break
+			}
+			end += size
+		}
+		for end > start && strings.ContainsRune(".,;:!?)", rune(text[end-1])) {
+			end--
+		}
+		if end > start {
+			current := text[start:end]
+			if _, ok := seen[current]; !ok {
+				seen[current] = struct{}{}
+				result = append(result, current)
+			}
+		}
+		if end <= start {
+			offset = start + 1
+		} else {
+			offset = end
+		}
+	}
+	return result
+}
+
+func assistantEpisodeNextURL(text string, offset int) int {
+	http := strings.Index(text[offset:], "http://")
+	https := strings.Index(text[offset:], "https://")
+	switch {
+	case http < 0 && https < 0:
+		return -1
+	case http < 0:
+		return offset + https
+	case https < 0:
+		return offset + http
+	default:
+		return offset + min(http, https)
+	}
 }
 
 func selectAssistantEpisodePairs(messages []model.Message) []assistantEpisodePair {

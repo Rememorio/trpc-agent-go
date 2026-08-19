@@ -409,6 +409,80 @@ func TestAssistantEpisodeExtractionFailureKeepsOrdinaryOperations(t *testing.T) 
 	}
 }
 
+func TestAssistantEpisodeExtractionRetriesStructuredMemoryLeak(t *testing.T) {
+	m := &assistantTestModel{steps: []assistantModelStep{
+		{calls: []model.ToolCall{
+			makeToolCall(memory.AddToolName, []byte(`{
+				"memory":"Visited Dr. Smith on 2023-03-03.\", \"memory_kind\": \"episode\", \"event_time\": \"2023-03-03\""
+			}`)),
+			assistantEpisodeToolCall(`{
+				"pair_id":"pair-1",
+				"memory":"The assistant recommended Alpha and Beta."
+			}`),
+		}},
+		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
+			"memory":"Visited Dr. Smith on 2023-03-03.",
+			"memory_kind":"episode",
+			"event_time":"2023-03-03"
+		}`))}},
+	}}
+	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
+	operations, err := ext.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Recommend two options after my appointment."),
+		model.NewAssistantMessage("1. Alpha\n2. Beta"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(m.requests) != 2 {
+		t.Fatalf("model calls = %d, want combined request and ordinary retry", len(m.requests))
+	}
+	if _, ok := m.requests[1].Tools[assistantEpisodeToolName]; ok {
+		t.Fatal("ordinary retry includes assistant episode tool")
+	}
+	if len(operations) != 2 {
+		t.Fatalf("operations = %#v, want ordinary and assistant operations", operations)
+	}
+	if operations[0].Memory != "Visited Dr. Smith on 2023-03-03." ||
+		operations[0].MemoryKind != memory.KindEpisode {
+		t.Fatalf("ordinary operation = %#v", operations[0])
+	}
+	if !strings.Contains(operations[1].Memory, "Alpha and Beta") {
+		t.Fatalf("assistant operation = %#v", operations[1])
+	}
+}
+
+func TestAssistantEpisodeExtractionPreservesSourceReferenceLines(t *testing.T) {
+	m := &assistantTestModel{steps: []assistantModelStep{{
+		calls: []model.ToolCall{assistantEpisodeToolCall(`{
+			"pair_id":"pair-1",
+			"memory":"The assistant recommended the Alpha and Beta guides."
+		}`)},
+	}}}
+	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
+	operations, err := ext.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Recommend two guides."),
+		model.NewAssistantMessage(
+			"1. Alpha guide: <https://example.com/alpha>\n" +
+				"2. Beta guide: https://example.com/beta.",
+		),
+	}, nil)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(operations) != 1 {
+		t.Fatalf("operations = %#v, want one assistant operation", operations)
+	}
+	for _, want := range []string{
+		"1. Alpha guide: <https://example.com/alpha>",
+		"2. Beta guide: https://example.com/beta.",
+	} {
+		if !strings.Contains(operations[0].Memory, want) {
+			t.Fatalf("assistant memory %q does not contain %q", operations[0].Memory, want)
+		}
+	}
+}
+
 func TestAssistantEpisodeExtractionUsesCustomPromptInCombinedRequest(t *testing.T) {
 	const customPolicy = "Never retain medical information from any conversation."
 	const customPrompt = customPolicy + " Current date: {current_date}."
