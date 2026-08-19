@@ -355,6 +355,33 @@ func TestAssistantEpisodeExtractionSkipsSecondStageAfterSinglePairOperation(t *t
 	}
 }
 
+func TestAssistantEpisodeExtractionKeepsStableReferenceAfterOrdinaryOperation(t *testing.T) {
+	m := &assistantTestModel{steps: []assistantModelStep{
+		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
+			"memory":"User wants a resource to share."
+		}`))}},
+		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
+			"pair_id":"pair-1",
+			"memory":"The assistant recommended Alpha: https://example.com/alpha"
+		}`)}},
+	}}
+	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
+	operations, err := ext.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Recommend a resource."),
+		model.NewAssistantMessage("- Alpha: https://example.com/alpha\n- Beta: https://example.com/beta"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(m.requests) != 2 {
+		t.Fatalf("model calls = %d, want ordinary and assistant stages", len(m.requests))
+	}
+	if len(operations) != 2 ||
+		!strings.Contains(operations[1].Memory, "https://example.com/alpha") {
+		t.Fatalf("operations = %#v, want stable assistant reference", operations)
+	}
+}
+
 func TestAssistantEpisodeExtractionFailureKeepsOrdinaryOperations(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
 		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{

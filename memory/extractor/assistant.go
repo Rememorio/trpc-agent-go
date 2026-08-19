@@ -107,10 +107,6 @@ func (e *memoryExtractor) extractWithAssistantEpisodes(
 	if !e.assistantEpisodeAddEnabled() {
 		return ordinary.operations, nil
 	}
-	_, userMessageCount := assistantEpisodeOrdinaryMessages(messages)
-	if userMessageCount == 1 && len(ordinary.operations) > 0 {
-		return ordinary.operations, nil
-	}
 	if ordinary.destructiveScopeUnknown {
 		return ordinary.operations, nil
 	}
@@ -120,6 +116,11 @@ func (e *memoryExtractor) extractWithAssistantEpisodes(
 		ordinary.deletedSourceIndexes,
 	)
 	if len(candidates) == 0 {
+		return ordinary.operations, nil
+	}
+	_, userMessageCount := assistantEpisodeOrdinaryMessages(messages)
+	if userMessageCount == 1 && len(ordinary.operations) > 0 &&
+		!assistantEpisodeCandidatesHaveStableReference(candidates) {
 		return ordinary.operations, nil
 	}
 	candidates, skipped := boundAssistantEpisodeCandidates(candidates)
@@ -248,6 +249,18 @@ func selectAssistantEpisodeCandidates(
 		candidates = append(candidates, pair)
 	}
 	return candidates
+}
+
+func assistantEpisodeCandidatesHaveStableReference(
+	pairs []assistantEpisodePair,
+) bool {
+	for _, pair := range pairs {
+		text := strings.ToLower(assistantEpisodeMessageText(pair.assistant))
+		if strings.Contains(text, "https://") || strings.Contains(text, "http://") {
+			return true
+		}
+	}
+	return false
 }
 
 func boundAssistantEpisodeCandidates(
