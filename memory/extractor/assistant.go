@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -36,7 +35,6 @@ const (
 	// These private limits bound the optional request; overflow is best effort.
 	assistantEpisodeRequestMaxPairs       = 32
 	assistantEpisodeRequestMaxSourceBytes = 64 * 1024
-	assistantEpisodeDeadlineReserve       = 5 * time.Second
 	assistantEpisodePrefix                = assistantmemory.Prefix
 	assistantEpisodeTruncationMarker      = "\n...[truncated]...\n"
 )
@@ -63,6 +61,7 @@ type assistantEpisodeSource struct {
 	id            string
 	userText      string
 	assistantText string
+	userIndex     int
 }
 
 type assistantEpisodeNumber struct {
@@ -96,53 +95,149 @@ func (e *memoryExtractor) extractWithAssistantEpisodes(
 	if e.enabledTools != nil && len(e.enabledTools) == 0 {
 		return nil, nil
 	}
-	nextCtx, ordinary, err := e.extractAssistantEpisodeOrdinaryStage(
-		ctx,
-		messages,
-		existing,
-	)
-	if err != nil {
-		return nil, err
-	}
 	if !e.assistantEpisodeAddEnabled() {
-		return ordinary.operations, nil
+		_, ordinary, err := e.extractAssistantEpisodeOrdinaryStage(
+			ctx,
+			messages,
+			existing,
+		)
+		return ordinary.operations, err
 	}
-	if ordinary.destructiveScopeUnknown {
-		return ordinary.operations, nil
-	}
-	candidates := selectAssistantEpisodeCandidates(
-		messages,
-		ordinary.clearSourceIndex,
-		ordinary.deletedSourceIndexes,
-	)
+	candidates := selectAssistantEpisodeCandidates(messages, 0, nil)
 	if len(candidates) == 0 {
-		return ordinary.operations, nil
+		_, ordinary, err := e.extractAssistantEpisodeOrdinaryStage(
+			ctx,
+			messages,
+			existing,
+		)
+		return ordinary.operations, err
 	}
 	candidates, skipped := boundAssistantEpisodeCandidates(candidates)
 	if skipped > 0 {
 		log.WarnfContext(
-			nextCtx,
+			ctx,
 			"extractor: assistant episode request budget skipped %d of %d candidates",
 			skipped,
 			skipped+len(candidates),
 		)
 	}
+	return e.extractAssistantEpisodesInSinglePass(ctx, messages, existing, candidates)
+}
 
-	assistantCallCtx, cancel := assistantEpisodeRequestContext(nextCtx)
-	defer cancel()
-	_, assistantOps, err := e.extractAssistantEpisodes(assistantCallCtx, candidates)
+func (e *memoryExtractor) extractAssistantEpisodesInSinglePass(
+	ctx context.Context,
+	messages []model.Message,
+	existing []*memory.Entry,
+	candidates []assistantEpisodePair,
+) ([]*Operation, error) {
+	ordinaryExtractor := *e
+	ordinaryExtractor.assistantEpisodeExtraction = false
+	ordinaryTools := ordinaryExtractor.extractionTools()
+	ordinaryInput, userMessageCount := assistantEpisodeOrdinaryMessages(messages)
+	if len(ordinaryTools) == 0 || userMessageCount == 0 {
+		return nil, nil
+	}
+	if _, ok := ordinaryTools[memory.DeleteToolName]; ok {
+		ordinaryTools = assistantEpisodeOrdinaryTools(
+			ordinaryTools,
+			userMessageCount,
+		)
+	} else if _, ok := ordinaryTools[memory.ClearToolName]; ok {
+		ordinaryTools = assistantEpisodeOrdinaryTools(
+			ordinaryTools,
+			userMessageCount,
+		)
+	}
+
+	sources := assistantEpisodeSources(candidates)
+	requestTools := make(map[string]tool.Tool, len(ordinaryTools)+1)
+	for name, current := range ordinaryTools {
+		requestTools[name] = current
+	}
+	requestTools[assistantEpisodeToolName] = newAssistantEpisodeTool(sources)
+	requestMessages := ordinaryExtractor.buildMessages(ctx, ordinaryInput, existing)
+	requestMessages[0].Content += assistantEpisodeOrdinaryContextPolicy
+	requestMessages[0].Content += assistantEpisodeCombinedPolicy(sources)
+
+	var ordinary assistantEpisodeOrdinaryResult
+	assistantOperations := make([]*Operation, len(sources))
+	sourceByID := make(map[string]assistantEpisodeSource, len(sources))
+	indexByID := make(map[string]int, len(sources))
+	seenIDs := make(map[string]struct{}, len(sources))
+	for i, source := range sources {
+		sourceByID[source.id] = source
+		indexByID[source.id] = i
+	}
+	nextCtx, err := ordinaryExtractor.runExtractionRequest(
+		ctx,
+		&model.Request{Messages: requestMessages, Tools: requestTools},
+		func(callCtx context.Context, call model.ToolCall) {
+			if call.Function.Name != assistantEpisodeToolName {
+				ordinaryExtractor.collectAssistantEpisodeOrdinaryCall(
+					callCtx,
+					call,
+					userMessageCount,
+					&ordinary,
+				)
+				return
+			}
+			var args map[string]any
+			if err := json.Unmarshal(call.Function.Arguments, &args); err != nil {
+				logAssistantEpisodeRejection(callCtx, "invalid tool arguments")
+				return
+			}
+			pairID, _ := args[assistantEpisodePairIDKey].(string)
+			source, ok := sourceByID[pairID]
+			if !ok {
+				logAssistantEpisodeRejection(callCtx, "unknown pair id")
+				return
+			}
+			if _, ok := seenIDs[pairID]; ok {
+				logAssistantEpisodeRejection(callCtx, "duplicate pair id")
+				return
+			}
+			operation, parseErr := ordinaryExtractor.parseAssistantEpisode(
+				callCtx,
+				args,
+				source.userText+"\n"+source.assistantText,
+			)
+			if parseErr != nil {
+				logAssistantEpisodeRejection(callCtx, "content validation failed")
+				return
+			}
+			seenIDs[pairID] = struct{}{}
+			assistantOperations[indexByID[pairID]] = operation
+		},
+	)
 	if err != nil {
-		if nextCtx.Err() != nil {
-			return nil, fmt.Errorf("extract assistant episodes: %w", err)
+		if ctx.Err() != nil || nextCtx.Err() != nil {
+			return nil, err
 		}
 		log.WarnfContext(
 			nextCtx,
-			"extractor: optional assistant episode extraction failed: %v",
+			"extractor: combined assistant episode extraction failed; retrying ordinary extraction: %v",
 			err,
 		)
+		_, fallback, fallbackErr := ordinaryExtractor.extractAssistantEpisodeOrdinaryStage(
+			nextCtx,
+			messages,
+			existing,
+		)
+		return fallback.operations, fallbackErr
+	}
+	if ordinary.destructiveScopeUnknown {
 		return ordinary.operations, nil
 	}
-	return append(ordinary.operations, assistantOps...), nil
+	for i, operation := range assistantOperations {
+		if operation == nil || sources[i].userIndex <= ordinary.clearSourceIndex {
+			continue
+		}
+		if _, deleted := ordinary.deletedSourceIndexes[sources[i].userIndex]; deleted {
+			continue
+		}
+		ordinary.operations = append(ordinary.operations, operation)
+	}
+	return ordinary.operations, nil
 }
 
 func (e *memoryExtractor) extractAssistantEpisodeOrdinaryStage(
@@ -184,34 +279,12 @@ func (e *memoryExtractor) extractAssistantEpisodeOrdinaryStage(
 			ctx,
 			req,
 			func(callCtx context.Context, call model.ToolCall) {
-				if op := ordinaryExtractor.parseToolCall(callCtx, call); op != nil {
-					result.operations = append(result.operations, op)
-					switch op.Type {
-					case OperationClear:
-						sourceIndex, ok := assistantEpisodeOperationSourceIndex(
-							call, userMessageCount,
-						)
-						if !ok {
-							result.destructiveScopeUnknown = true
-						} else if sourceIndex > result.clearSourceIndex {
-							result.clearSourceIndex = sourceIndex
-						}
-					case OperationDelete:
-						indexes, ok := assistantEpisodeDeleteSourceIndexes(
-							call, userMessageCount,
-						)
-						if !ok {
-							result.destructiveScopeUnknown = true
-							break
-						}
-						if result.deletedSourceIndexes == nil {
-							result.deletedSourceIndexes = make(map[int]struct{})
-						}
-						for _, index := range indexes {
-							result.deletedSourceIndexes[index] = struct{}{}
-						}
-					}
-				}
+				ordinaryExtractor.collectAssistantEpisodeOrdinaryCall(
+					callCtx,
+					call,
+					userMessageCount,
+					&result,
+				)
 			},
 		)
 		if err != nil {
@@ -219,6 +292,46 @@ func (e *memoryExtractor) extractAssistantEpisodeOrdinaryStage(
 		}
 	}
 	return nextCtx, result, nil
+}
+
+func (e *memoryExtractor) collectAssistantEpisodeOrdinaryCall(
+	ctx context.Context,
+	call model.ToolCall,
+	userMessageCount int,
+	result *assistantEpisodeOrdinaryResult,
+) {
+	op := e.parseToolCall(ctx, call)
+	if op == nil {
+		return
+	}
+	result.operations = append(result.operations, op)
+	switch op.Type {
+	case OperationClear:
+		sourceIndex, ok := assistantEpisodeOperationSourceIndex(
+			call,
+			userMessageCount,
+		)
+		if !ok {
+			result.destructiveScopeUnknown = true
+		} else if sourceIndex > result.clearSourceIndex {
+			result.clearSourceIndex = sourceIndex
+		}
+	case OperationDelete:
+		indexes, ok := assistantEpisodeDeleteSourceIndexes(
+			call,
+			userMessageCount,
+		)
+		if !ok {
+			result.destructiveScopeUnknown = true
+			return
+		}
+		if result.deletedSourceIndexes == nil {
+			result.deletedSourceIndexes = make(map[int]struct{})
+		}
+		for _, index := range indexes {
+			result.deletedSourceIndexes[index] = struct{}{}
+		}
+	}
 }
 
 func selectAssistantEpisodeCandidates(
@@ -267,30 +380,12 @@ func boundAssistantEpisodeCandidates(
 	return bounded, len(pairs) - len(bounded)
 }
 
-func assistantEpisodeRequestContext(
-	ctx context.Context,
-) (context.Context, context.CancelFunc) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return context.WithCancel(ctx)
-	}
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return context.WithDeadline(ctx, deadline)
-	}
-	reserve := min(assistantEpisodeDeadlineReserve, remaining/2)
-	return context.WithDeadline(ctx, deadline.Add(-reserve))
-}
-
-func (e *memoryExtractor) extractAssistantEpisodes(
-	ctx context.Context,
+func assistantEpisodeSources(
 	pairs []assistantEpisodePair,
-) (context.Context, []*Operation, error) {
+) []assistantEpisodeSource {
 	sources := make([]assistantEpisodeSource, 0, len(pairs))
-	messages := make([]model.Message, 0, len(pairs)*2+2)
-	messages = append(messages, model.NewSystemMessage(e.assistantEpisodePrompt(ctx)))
 	for i, pair := range pairs {
-		source := assistantEpisodeSource{
+		sources = append(sources, assistantEpisodeSource{
 			id: fmt.Sprintf("pair-%d", i+1),
 			userText: assistantEpisodeSourceExcerpt(
 				assistantEpisodeMessageText(pair.user),
@@ -298,90 +393,30 @@ func (e *memoryExtractor) extractAssistantEpisodes(
 			assistantText: assistantEpisodeSourceExcerpt(
 				assistantEpisodeMessageText(pair.assistant),
 			),
-		}
-		sources = append(sources, source)
-		messages = append(
-			messages,
-			model.NewUserMessage(source.id+" user request:\n"+source.userText),
-			model.NewAssistantMessage(source.id+" assistant response:\n"+source.assistantText),
-		)
+			userIndex: pair.userIndex,
+		})
 	}
-	messages = append(messages, model.NewUserMessage(
-		"Extract every eligible assistant result. Set pair_id to the pair label "+
-			"shown with its source, and call the tool at most once for each pair.",
-	))
-	sourceByID := make(map[string]assistantEpisodeSource, len(sources))
-	indexByID := make(map[string]int, len(sources))
-	for i, source := range sources {
-		sourceByID[source.id] = source
-		indexByID[source.id] = i
-	}
-	operations := make([]*Operation, len(sources))
-	seenIDs := make(map[string]struct{}, len(sources))
-	nextCtx, err := e.runExtractionRequest(ctx, &model.Request{
-		Messages: messages,
-		Tools: map[string]tool.Tool{
-			assistantEpisodeToolName: newAssistantEpisodeTool(sources),
-		},
-	}, func(callCtx context.Context, call model.ToolCall) {
-		if call.Function.Name != assistantEpisodeToolName {
-			return
-		}
-		var args map[string]any
-		if err := json.Unmarshal(call.Function.Arguments, &args); err != nil {
-			logAssistantEpisodeRejection(callCtx, "invalid tool arguments")
-			return
-		}
-		pairID, _ := args[assistantEpisodePairIDKey].(string)
-		source, ok := sourceByID[pairID]
-		if !ok {
-			logAssistantEpisodeRejection(callCtx, "unknown pair id")
-			return
-		}
-		if _, ok := seenIDs[pairID]; ok {
-			logAssistantEpisodeRejection(callCtx, "duplicate pair id")
-			return
-		}
-		operation, parseErr := e.parseAssistantEpisode(
-			callCtx,
-			args,
-			source.userText+"\n"+source.assistantText,
-		)
-		if parseErr != nil {
-			logAssistantEpisodeRejection(callCtx, "content validation failed")
-			return
-		}
-		seenIDs[pairID] = struct{}{}
-		operations[indexByID[pairID]] = operation
-	})
-	if err != nil {
-		return nextCtx, nil, err
-	}
-	result := make([]*Operation, 0, len(operations))
-	for _, operation := range operations {
-		if operation != nil {
-			result = append(result, operation)
-		}
-	}
-	return nextCtx, result, nil
+	return sources
 }
 
 func logAssistantEpisodeRejection(ctx context.Context, reason string) {
 	log.WarnfContext(ctx, "extractor: skipped invalid assistant episode: %s", reason)
 }
 
-func (e *memoryExtractor) assistantEpisodePrompt(ctx context.Context) string {
-	base := assistantEpisodeSystemPrompt
-	if e.prompt == defaultPrompt {
-		return base
+func assistantEpisodeCombinedPolicy(sources []assistantEpisodeSource) string {
+	var builder strings.Builder
+	builder.WriteString(assistantEpisodeSystemPrompt)
+	builder.WriteString("\nEligible pair labels in the conversation above:\n")
+	for _, source := range sources {
+		fmt.Fprintf(
+			&builder,
+			"- %s: the final assistant response after text user message %d.\n",
+			source.id,
+			source.userIndex,
+		)
 	}
-	return base + `
-
-The following application-defined extraction policy also applies to this
-request. If it conflicts with the assistant episode instructions, do not
-extract the conflicting information:
-
-` + e.renderPrompt(referenceDate(ctx))
+	builder.WriteString("</assistant_episode_policy>")
+	return builder.String()
 }
 
 func (e *memoryExtractor) parseAssistantEpisode(
@@ -826,11 +861,15 @@ Only user messages can supply or authorize ordinary memory operations in this
 stage. Assistant messages are context only: use them to interpret references,
 confirmations, and short user replies. Do not create, update, delete, or clear
 memory from information supplied only by an assistant message. Reusable
-assistant results are handled by a separate extraction stage.
+assistant results, when enabled for this request, are handled only by
+memory_assistant_episode.
 </assistant_context_policy>`
 
-const assistantEpisodeSystemPrompt = `You extract durable results previously
-provided by the assistant as attributed conversation episodes.
+const assistantEpisodeSystemPrompt = `
+
+<assistant_episode_policy>
+Extract durable results previously provided by the assistant as attributed
+conversation episodes.
 
 - Call memory_assistant_episode at most once for each labeled pair that
   contains a durable, reusable result.

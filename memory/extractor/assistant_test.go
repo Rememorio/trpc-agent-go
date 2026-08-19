@@ -25,10 +25,9 @@ import (
 )
 
 type assistantModelStep struct {
-	calls         []model.ToolCall
-	err           error
-	before        func()
-	waitForCancel bool
+	calls  []model.ToolCall
+	err    error
+	before func()
 }
 
 type assistantTestModel struct {
@@ -48,10 +47,6 @@ func (m *assistantTestModel) GenerateContent(
 	step := m.steps[stepIndex]
 	if step.before != nil {
 		step.before()
-	}
-	if step.waitForCancel {
-		<-ctx.Done()
-		return nil, ctx.Err()
 	}
 	if step.err != nil {
 		return nil, step.err
@@ -275,7 +270,7 @@ func TestAssistantEpisodeExtractionIncludesStoredEpisodesInOrdinaryStage(t *test
 }
 
 func TestAssistantEpisodeExtractionDoesNotApplyEarlierForgetToLaterExchange(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+	m := &assistantTestModel{steps: []assistantModelStep{{}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 
 	_, err := ext.Extract(context.Background(), []model.Message{
@@ -288,23 +283,24 @@ func TestAssistantEpisodeExtractionDoesNotApplyEarlierForgetToLaterExchange(t *t
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if !requestContainsRoleSubstring(
-		m.requests[1], model.RoleUser, "Recommend two options.",
+		m.requests[0], model.RoleUser, "Recommend two options.",
 	) {
-		t.Fatal("assistant request omitted the later exchange")
+		t.Fatal("combined request omitted the later exchange")
 	}
-	if requestContainsRoleSubstring(
-		m.requests[1], model.RoleUser, "clear all my memories",
+	if !requestContainsRoleSubstring(
+		m.requests[0], model.RoleSystem,
+		"pair-1: the final assistant response after text user message 2",
 	) {
-		t.Fatal("assistant request included the earlier clear request")
+		t.Fatal("assistant candidate was not associated with the later exchange")
 	}
 }
 
 func TestAssistantEpisodeExtractionDoesNotInterpretForgetWording(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+	m := &assistantTestModel{steps: []assistantModelStep{{}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -317,24 +313,26 @@ func TestAssistantEpisodeExtractionDoesNotInterpretForgetWording(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if len(operations) != 0 {
 		t.Fatalf("operations = %#v, want none", operations)
 	}
 }
 
-func TestAssistantEpisodeExtractionUsesConditionalSecondStage(t *testing.T) {
+func TestAssistantEpisodeExtractionUsesSinglePassForCandidate(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
-			"memory":"User wants options for a compact kitchen."
-		}`))}},
-		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
+		{calls: []model.ToolCall{
+			makeToolCall(memory.AddToolName, []byte(`{
+				"memory":"User wants options for a compact kitchen."
+			}`)),
+			assistantEpisodeToolCall(`{
 			"pair_id":"pair-1",
 			"memory":"When the user requested compact-kitchen options, the assistant recommended Alpha and Beta.",
 			"topics":["compact kitchen","recommendations"]
-		}`)}},
+		}`),
+		}},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	reference := time.Date(2026, time.July, 21, 10, 30, 0, 0, time.UTC)
@@ -349,20 +347,22 @@ func TestAssistantEpisodeExtractionUsesConditionalSecondStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if !requestContainsRoleContent(m.requests[0], model.RoleAssistant, "- Alpha\n- Beta") {
 		t.Fatal("ordinary extraction omitted assistant context")
 	}
-	if got := len(m.requests[1].Tools); got != 1 {
-		t.Fatalf("second-stage tool count = %d, want 1", got)
+	if got := len(m.requests[0].Tools); got != len(backgroundTools)+1 {
+		t.Fatalf("combined tool count = %d, want %d", got, len(backgroundTools)+1)
 	}
-	if _, ok := m.requests[1].Tools[assistantEpisodeToolName]; !ok {
-		t.Fatal("second stage does not expose the assistant episode tool")
+	if _, ok := m.requests[0].Tools[assistantEpisodeToolName]; !ok {
+		t.Fatal("combined request does not expose the assistant episode tool")
 	}
-	if got := m.requests[1].Messages[0].Content; got != assistantEpisodeSystemPrompt {
-		t.Fatalf("default second-stage prompt changed:\n%s", got)
+	if !requestContainsRoleSubstring(
+		m.requests[0], model.RoleSystem, "<assistant_episode_policy>",
+	) {
+		t.Fatal("combined request omitted the assistant episode policy")
 	}
 	if len(operations) != 2 {
 		t.Fatalf("operation count = %d, want 2", len(operations))
@@ -388,10 +388,10 @@ func TestAssistantEpisodeExtractionUsesConditionalSecondStage(t *testing.T) {
 
 func TestAssistantEpisodeExtractionFailureKeepsOrdinaryOperations(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
+		{err: errors.New("combined model unavailable")},
 		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
 			"memory":"User wants two recommendations."
 		}`))}},
-		{err: errors.New("assistant model unavailable")},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -404,9 +404,12 @@ func TestAssistantEpisodeExtractionFailureKeepsOrdinaryOperations(t *testing.T) 
 	if len(operations) != 1 || operations[0].Memory != "User wants two recommendations." {
 		t.Fatalf("operations = %#v, want ordinary operation", operations)
 	}
+	if len(m.requests) != 2 {
+		t.Fatalf("model calls = %d, want one combined attempt and one ordinary fallback", len(m.requests))
+	}
 }
 
-func TestAssistantEpisodeExtractionUsesCustomPromptInBothStages(t *testing.T) {
+func TestAssistantEpisodeExtractionUsesCustomPromptInCombinedRequest(t *testing.T) {
 	const customPolicy = "Never retain medical information from any conversation."
 	const customPrompt = customPolicy + " Current date: {current_date}."
 	reference := time.Date(2026, time.August, 5, 10, 30, 0, 0, time.UTC)
@@ -429,7 +432,7 @@ func TestAssistantEpisodeExtractionUsesCustomPromptInBothStages(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+			m := &assistantTestModel{steps: []assistantModelStep{{}}}
 			ext := NewExtractor(m, WithAssistantEpisodeExtraction()).(*memoryExtractor)
 			test.configure(ext)
 			_, err := ext.Extract(WithReferenceDate(context.Background(), reference), []model.Message{
@@ -439,8 +442,8 @@ func TestAssistantEpisodeExtractionUsesCustomPromptInBothStages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("extract: %v", err)
 			}
-			if len(m.requests) != 2 {
-				t.Fatalf("model calls = %d, want 2", len(m.requests))
+			if len(m.requests) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(m.requests))
 			}
 			for requestIndex, request := range m.requests {
 				if !requestContainsRoleSubstring(request, model.RoleSystem, customPolicy) ||
@@ -457,7 +460,6 @@ func TestAssistantEpisodeExtractionUsesCustomPromptInBothStages(t *testing.T) {
 
 func TestAssistantEpisodeExtractionProcessesAllEligiblePairs(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{},
 		{calls: []model.ToolCall{
 			assistantEpisodeToolCall(`{
 				"pair_id":"pair-1",
@@ -480,22 +482,21 @@ func TestAssistantEpisodeExtractionProcessesAllEligiblePairs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if !requestContainsRoleSubstring(
-		m.requests[1],
+		m.requests[0],
 		model.RoleSystem,
 		"at most once for each labeled pair",
 	) {
-		t.Fatal("assistant stage did not use the multi-pair prompt")
+		t.Fatal("combined request did not use the multi-pair prompt")
 	}
-	if !requestContainsRoleSubstring(m.requests[1], model.RoleAssistant, "1. Alpha\n2. Beta") ||
-		requestContainsRoleSubstring(m.requests[1], model.RoleAssistant, "Let me check.") {
-		t.Fatal("batch assistant stage did not use the final reply for its first user turn")
+	if !requestContainsRoleSubstring(m.requests[0], model.RoleAssistant, "1. Alpha\n2. Beta") {
+		t.Fatal("combined request omitted the final reply for its first user turn")
 	}
-	if !requestContainsRoleSubstring(m.requests[1], model.RoleAssistant, "1. Gamma\n2. Delta") {
-		t.Fatal("batch assistant stage is not associated with the second user turn")
+	if !requestContainsRoleSubstring(m.requests[0], model.RoleAssistant, "1. Gamma\n2. Delta") {
+		t.Fatal("combined request is not associated with the second user turn")
 	}
 	if len(operations) != 2 {
 		t.Fatalf("operations = %#v, want 2 assistant episodes", operations)
@@ -510,7 +511,7 @@ func TestAssistantEpisodeExtractionProcessesAllEligiblePairs(t *testing.T) {
 }
 
 func TestAssistantEpisodeExtractionKeepsInBudgetEligiblePairs(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+	m := &assistantTestModel{steps: []assistantModelStep{{}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	const pairCount = 17
 	messages := make([]model.Message, 0, pairCount*2)
@@ -529,13 +530,10 @@ func TestAssistantEpisodeExtractionKeepsInBudgetEligiblePairs(t *testing.T) {
 	if len(operations) != 0 {
 		t.Fatalf("operations = %#v, want none", operations)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
-	if !requestContainsRoleSubstring(m.requests[1], model.RoleUser, "pair-17 user request") {
-		t.Fatal("assistant request dropped an eligible pair")
-	}
-	declaration := m.requests[1].Tools[assistantEpisodeToolName].Declaration()
+	declaration := m.requests[0].Tools[assistantEpisodeToolName].Declaration()
 	pairIDs := declaration.InputSchema.Properties[assistantEpisodePairIDKey].Enum
 	if len(pairIDs) != pairCount || pairIDs[pairCount-1] != "pair-17" {
 		t.Fatalf("pair id enum = %#v, want all %d pairs", pairIDs, pairCount)
@@ -578,7 +576,7 @@ func TestAssistantEpisodeExtractionBoundsCandidateWork(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+			m := &assistantTestModel{steps: []assistantModelStep{{}}}
 			ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 			messages := make([]model.Message, 0, test.pairCount*2)
 			for i := 0; i < test.pairCount; i++ {
@@ -596,19 +594,19 @@ func TestAssistantEpisodeExtractionBoundsCandidateWork(t *testing.T) {
 			if len(operations) != 0 {
 				t.Fatalf("operations = %#v, want none", operations)
 			}
-			if len(m.requests) != 2 {
-				t.Fatalf("model calls = %d, want 2", len(m.requests))
+			if len(m.requests) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(m.requests))
 			}
-			declaration := m.requests[1].Tools[assistantEpisodeToolName].Declaration()
+			declaration := m.requests[0].Tools[assistantEpisodeToolName].Declaration()
 			pairIDs := declaration.InputSchema.Properties[assistantEpisodePairIDKey].Enum
 			if len(pairIDs) != test.wantPairs {
 				t.Fatalf("pair id count = %d, want %d", len(pairIDs), test.wantPairs)
 			}
 			if requestContainsRoleSubstring(
-				m.requests[1], model.RoleUser,
-				fmt.Sprintf("case %d", test.wantPairs),
+				m.requests[0], model.RoleSystem,
+				fmt.Sprintf("pair-%d:", test.wantPairs+1),
 			) {
-				t.Fatal("assistant request includes a candidate past its budget")
+				t.Fatal("assistant policy includes a candidate past its budget")
 			}
 		})
 	}
@@ -616,7 +614,6 @@ func TestAssistantEpisodeExtractionBoundsCandidateWork(t *testing.T) {
 
 func TestAssistantEpisodeExtractionTreatsEveryUserTurnAsBoundary(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{},
 		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
 			"pair_id":"pair-1",
 			"memory":"The assistant recommended Alpha and Beta."
@@ -638,24 +635,27 @@ func TestAssistantEpisodeExtractionTreatsEveryUserTurnAsBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
-	if !requestContainsRoleSubstring(m.requests[1], model.RoleAssistant, "1. Alpha\n2. Beta") ||
-		requestContainsRoleSubstring(m.requests[1], model.RoleAssistant, "1. Gamma\n2. Delta") {
-		t.Fatal("assistant reply crossed a non-text user-turn boundary")
+	declaration := m.requests[0].Tools[assistantEpisodeToolName].Declaration()
+	if got := declaration.InputSchema.Properties[assistantEpisodePairIDKey].Enum; !reflect.DeepEqual(
+		got,
+		[]any{"pair-1"},
+	) {
+		t.Fatalf("assistant reply crossed a non-text user-turn boundary: pair ids = %#v", got)
 	}
 	if len(operations) != 1 || !strings.Contains(operations[0].Memory, "Alpha and Beta") {
 		t.Fatalf("operations = %#v, want the first user turn only", operations)
 	}
 }
 
-func TestAssistantEpisodeExtractionDeadlineKeepsOrdinaryOperations(t *testing.T) {
+func TestAssistantEpisodeExtractionCombinedFailureRetriesOrdinaryExtraction(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
+		{err: errors.New("combined request failed")},
 		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
 			"memory":"User wants two recommendations."
 		}`))}},
-		{waitForCancel: true},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	messages := []model.Message{
@@ -665,25 +665,22 @@ func TestAssistantEpisodeExtractionDeadlineKeepsOrdinaryOperations(t *testing.T)
 		model.NewAssistantMessage("1. Gamma\n2. Delta"),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	operations, err := ext.Extract(ctx, messages, nil)
+	operations, err := ext.Extract(context.Background(), messages, nil)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
-	}
-	if ctx.Err() != nil {
-		t.Fatalf("parent context ended before ordinary operations returned: %v", ctx.Err())
 	}
 	if len(operations) != 1 || operations[0].Memory != "User wants two recommendations." {
 		t.Fatalf("operations = %#v, want ordinary operation", operations)
 	}
 	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+		t.Fatalf("model calls = %d, want one combined attempt and one ordinary fallback", len(m.requests))
 	}
 }
 
 func TestAssistantEpisodeExtractionReturnsOrdinaryStageError(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{{
+		err: errors.New("combined extraction failed"),
+	}, {
 		err: errors.New("ordinary extraction failed"),
 	}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
@@ -702,7 +699,6 @@ func TestAssistantEpisodeExtractionReturnsOrdinaryStageError(t *testing.T) {
 func TestAssistantEpisodeExtractionPropagatesCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{},
 		{before: cancel, err: context.Canceled},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
@@ -719,7 +715,7 @@ func TestAssistantEpisodeExtractionPropagatesCancellation(t *testing.T) {
 }
 
 func TestAssistantEpisodeExtractionAllowsNoAssistantOperation(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+	m := &assistantTestModel{steps: []assistantModelStep{{}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
 		model.NewUserMessage("Recommend two options."),
@@ -728,8 +724,8 @@ func TestAssistantEpisodeExtractionAllowsNoAssistantOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if len(operations) != 0 {
 		t.Fatalf("operations = %#v, want none", operations)
@@ -772,7 +768,7 @@ func TestAssistantEpisodeExtractionRespectsEnabledTools(t *testing.T) {
 	}
 }
 
-func TestAssistantEpisodeExtractionSkipsSecondStageWithoutAddTool(t *testing.T) {
+func TestAssistantEpisodeExtractionSkipsAssistantToolWithoutAddTool(t *testing.T) {
 	tests := []struct {
 		name         string
 		policy       UpdatePolicy
@@ -866,6 +862,10 @@ func TestAssistantEpisodeOrdinaryStageUsesUpdatePolicyTools(t *testing.T) {
 
 func TestAssistantEpisodeExtractionSkipsAfterClearOperation(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{{calls: []model.ToolCall{
+		assistantEpisodeToolCall(`{
+			"pair_id":"pair-1",
+			"memory":"The assistant recommended Alpha and Beta."
+		}`),
 		makeToolCall(memory.ClearToolName, []byte(`{"source_user_index":1}`)),
 	}}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
@@ -886,9 +886,15 @@ func TestAssistantEpisodeExtractionSkipsAfterClearOperation(t *testing.T) {
 
 func TestAssistantEpisodeExtractionSkipsAfterDeleteWithoutSource(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{{
-		calls: []model.ToolCall{makeToolCall(memory.DeleteToolName, []byte(`{
-			"memory_id":"stale"
-		}`))},
+		calls: []model.ToolCall{
+			assistantEpisodeToolCall(`{
+				"pair_id":"pair-1",
+				"memory":"The assistant recommended Alpha and Beta."
+			}`),
+			makeToolCall(memory.DeleteToolName, []byte(`{
+				"memory_id":"stale"
+			}`)),
+		},
 	}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -908,14 +914,16 @@ func TestAssistantEpisodeExtractionSkipsAfterDeleteWithoutSource(t *testing.T) {
 
 func TestAssistantEpisodeExtractionKeepsPairUnrelatedToDelete(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{calls: []model.ToolCall{makeToolCall(memory.DeleteToolName, []byte(`{
-			"memory_id":"birthday",
-			"affected_source_user_indexes":[]
-		}`))}},
-		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
-			"pair_id":"pair-1",
-			"memory":"The assistant recommended Alpha and Beta."
-		}`)}},
+		{calls: []model.ToolCall{
+			makeToolCall(memory.DeleteToolName, []byte(`{
+				"memory_id":"birthday",
+				"affected_source_user_indexes":[]
+			}`)),
+			assistantEpisodeToolCall(`{
+				"pair_id":"pair-1",
+				"memory":"The assistant recommended Alpha and Beta."
+			}`),
+		}},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -927,8 +935,8 @@ func TestAssistantEpisodeExtractionKeepsPairUnrelatedToDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if len(operations) != 2 || operations[0].Type != OperationDelete ||
 		operations[1].Type != OperationAdd {
@@ -938,10 +946,16 @@ func TestAssistantEpisodeExtractionKeepsPairUnrelatedToDelete(t *testing.T) {
 
 func TestAssistantEpisodeExtractionSkipsPairCoveredByDelete(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{{
-		calls: []model.ToolCall{makeToolCall(memory.DeleteToolName, []byte(`{
-			"memory_id":"recommendation",
-			"affected_source_user_indexes":[1]
-		}`))},
+		calls: []model.ToolCall{
+			assistantEpisodeToolCall(`{
+				"pair_id":"pair-1",
+				"memory":"The assistant recommended Alpha and Beta."
+			}`),
+			makeToolCall(memory.DeleteToolName, []byte(`{
+				"memory_id":"recommendation",
+				"affected_source_user_indexes":[1]
+			}`)),
+		},
 	}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -963,14 +977,16 @@ func TestAssistantEpisodeExtractionSkipsPairCoveredByDelete(t *testing.T) {
 
 func TestAssistantEpisodeExtractionContinuesAfterEarlierClear(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{calls: []model.ToolCall{makeToolCall(
-			memory.ClearToolName,
-			[]byte(`{"source_user_index":1}`),
-		)}},
-		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
-			"pair_id":"pair-1",
-			"memory":"The assistant recommended Alpha and Beta."
-		}`)}},
+		{calls: []model.ToolCall{
+			makeToolCall(
+				memory.ClearToolName,
+				[]byte(`{"source_user_index":1}`),
+			),
+			assistantEpisodeToolCall(`{
+				"pair_id":"pair-1",
+				"memory":"The assistant recommended Alpha and Beta."
+			}`),
+		}},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -982,8 +998,8 @@ func TestAssistantEpisodeExtractionContinuesAfterEarlierClear(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 	if len(operations) != 2 || operations[0].Type != OperationClear ||
 		operations[1].Type != OperationAdd {
@@ -993,6 +1009,10 @@ func TestAssistantEpisodeExtractionContinuesAfterEarlierClear(t *testing.T) {
 
 func TestAssistantEpisodeExtractionSkipsPairBeforeLaterClear(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{{calls: []model.ToolCall{
+		assistantEpisodeToolCall(`{
+			"pair_id":"pair-1",
+			"memory":"The assistant recommended Alpha and Beta."
+		}`),
 		makeToolCall(memory.ClearToolName, []byte(`{"source_user_index":2}`)),
 	}}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
@@ -1014,7 +1034,7 @@ func TestAssistantEpisodeExtractionSkipsPairBeforeLaterClear(t *testing.T) {
 }
 
 func TestAssistantEpisodeExtractionUserWordingDoesNotControlOptionalStage(t *testing.T) {
-	m := &assistantTestModel{steps: []assistantModelStep{{}, {}}}
+	m := &assistantTestModel{steps: []assistantModelStep{{}}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	_, err := ext.Extract(context.Background(), []model.Message{
 		model.NewUserMessage("Please forget my old recommendation."),
@@ -1027,8 +1047,8 @@ func TestAssistantEpisodeExtractionUserWordingDoesNotControlOptionalStage(t *tes
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}
-	if len(m.requests) != 2 {
-		t.Fatalf("model calls = %d, want 2", len(m.requests))
+	if len(m.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(m.requests))
 	}
 }
 
@@ -1144,14 +1164,11 @@ func TestExtractAssistantEpisodeRejectsInvalidArguments(t *testing.T) {
 			}`),
 		},
 	}}}
-	ext := NewExtractor(m, WithAssistantEpisodeExtraction()).(*memoryExtractor)
-	_, operations, err := ext.extractAssistantEpisodes(
-		context.Background(),
-		[]assistantEpisodePair{{
-			user:      model.NewUserMessage("Recommend two options."),
-			assistant: model.NewAssistantMessage("1. Alpha\n2. Beta"),
-		}},
-	)
+	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
+	operations, err := ext.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Recommend two options."),
+		model.NewAssistantMessage("1. Alpha\n2. Beta"),
+	}, nil)
 	if err != nil {
 		t.Fatalf("error = %v, want content rejection to be non-fatal", err)
 	}
@@ -1162,13 +1179,15 @@ func TestExtractAssistantEpisodeRejectsInvalidArguments(t *testing.T) {
 
 func TestAssistantEpisodeExtractionSkipsInvalidContentAndKeepsOrdinaryOperations(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{calls: []model.ToolCall{makeToolCall(memory.AddToolName, []byte(`{
-			"memory":"User wants two recommendations."
-		}`))}},
-		{calls: []model.ToolCall{assistantEpisodeToolCall(`{
+		{calls: []model.ToolCall{
+			makeToolCall(memory.AddToolName, []byte(`{
+				"memory":"User wants two recommendations."
+			}`)),
+			assistantEpisodeToolCall(`{
 				"pair_id":"pair-1",
 				"memory":"The assistant recommended 99 options."
-		}`)}},
+			}`),
+		}},
 	}}
 	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
 	operations, err := ext.Extract(context.Background(), []model.Message{
@@ -1185,7 +1204,6 @@ func TestAssistantEpisodeExtractionSkipsInvalidContentAndKeepsOrdinaryOperations
 
 func TestAssistantEpisodeExtractionBatchSkipsOnlyInvalidPair(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{},
 		{calls: []model.ToolCall{
 			assistantEpisodeToolCall(`{
 				"pair_id":"pair-1",
@@ -1214,9 +1232,7 @@ func TestAssistantEpisodeExtractionBatchSkipsOnlyInvalidPair(t *testing.T) {
 
 func TestAssistantEpisodeExtractionBatchRejectsInvalidCallsIndependently(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{
-		{},
 		{calls: []model.ToolCall{
-			makeToolCall(memory.AddToolName, []byte(`{"memory":"ignored"}`)),
 			assistantEpisodeToolCall(`{"pair_id":`),
 			assistantEpisodeToolCall(`{
 				"pair_id":"unknown",
@@ -1257,7 +1273,6 @@ func TestAssistantEpisodeExtractionBatchRejectsInvalidCallsIndependently(t *test
 
 func TestExtractAssistantEpisodeUsesFirstValidCall(t *testing.T) {
 	m := &assistantTestModel{steps: []assistantModelStep{{calls: []model.ToolCall{
-		makeToolCall(memory.AddToolName, []byte(`{"memory":"ignored"}`)),
 		assistantEpisodeToolCall(`{
 			"pair_id":"pair-1",
 			"memory":"The assistant recommended Alpha and Beta."
@@ -1267,14 +1282,11 @@ func TestExtractAssistantEpisodeUsesFirstValidCall(t *testing.T) {
 			"memory":"The assistant recommended Gamma and Delta."
 		}`),
 	}}}}
-	ext := NewExtractor(m, WithAssistantEpisodeExtraction()).(*memoryExtractor)
-	_, operations, err := ext.extractAssistantEpisodes(
-		context.Background(),
-		[]assistantEpisodePair{{
-			user:      model.NewUserMessage("Recommend two options."),
-			assistant: model.NewAssistantMessage("1. Alpha\n2. Beta"),
-		}},
-	)
+	ext := NewExtractor(m, WithAssistantEpisodeExtraction())
+	operations, err := ext.Extract(context.Background(), []model.Message{
+		model.NewUserMessage("Recommend two options."),
+		model.NewAssistantMessage("1. Alpha\n2. Beta"),
+	}, nil)
 	if err != nil {
 		t.Fatalf("extract assistant episode: %v", err)
 	}
